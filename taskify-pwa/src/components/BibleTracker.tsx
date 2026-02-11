@@ -159,6 +159,8 @@ export function BibleTracker({
   onToggleBook,
   onToggleChapter,
   onReset,
+  onOpenPrint,
+  onOpenScan,
   onDeleteArchive,
   onRestoreArchive,
   onUpdateChapterVerses,
@@ -168,6 +170,8 @@ export function BibleTracker({
   onToggleBook: (bookId: string) => void;
   onToggleChapter: (bookId: string, chapter: number) => void;
   onReset: () => void;
+  onOpenPrint: () => void;
+  onOpenScan: () => void;
   onDeleteArchive: (id: string) => void;
   onRestoreArchive: (id: string) => void;
   onUpdateChapterVerses: (
@@ -389,8 +393,14 @@ export function BibleTracker({
               {totalRead} of {TOTAL_BIBLE_CHAPTERS} chapters read · since {formatDate(state.lastResetISO)}
             </p>
           </div>
-          <div className="ml-auto flex items-center gap-2 text-sm whitespace-nowrap">
+          <div className="ml-auto flex flex-wrap items-center gap-2 text-sm">
             <div className="text-secondary">{formatPercent(percentComplete)} complete</div>
+            <button className="ghost-button button-sm pressable" onClick={onOpenPrint}>
+              Print sheet
+            </button>
+            <button className="ghost-button button-sm pressable" onClick={onOpenScan}>
+              Scan sheet
+            </button>
             <button className="ghost-button button-sm pressable" onClick={onReset}>
               Reset progress
             </button>

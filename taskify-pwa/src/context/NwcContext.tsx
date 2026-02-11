@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { NwcClient, parseNwcUri, type ParsedNwcUri } from "../wallet/nwc";
+import { kvStorage } from "../storage/kvStorage";
 
 const LS_NWC_URI = "cashu_nwc_connection_v1";
 
@@ -108,11 +109,11 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let parsed: ParsedNwcUri | null = null;
     try {
-      const saved = localStorage.getItem(LS_NWC_URI);
+      const saved = kvStorage.getItem(LS_NWC_URI);
       if (saved) parsed = parseNwcUri(saved);
     } catch (err) {
       console.warn("Failed to restore NWC connection", err);
-      localStorage.removeItem(LS_NWC_URI);
+      kvStorage.removeItem(LS_NWC_URI);
     }
     if (parsed) {
       setConnection(parsed);
@@ -154,7 +155,7 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
       setInfo(combined ?? null);
       infoRef.current = combined ?? null;
       setStatus("connected");
-      try { localStorage.setItem(LS_NWC_URI, parsed.uri); } catch {}
+      try { kvStorage.setItem(LS_NWC_URI, parsed.uri); } catch {}
     } catch (err: any) {
       const message = err instanceof Error ? err.message : String(err);
       setLastError(message);
@@ -170,7 +171,7 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     infoRef.current = null;
     setStatus("idle");
     setLastError(null);
-    try { localStorage.removeItem(LS_NWC_URI); } catch {}
+    try { kvStorage.removeItem(LS_NWC_URI); } catch {}
   }, [setClient]);
 
   const refreshInfo = useCallback(async () => {

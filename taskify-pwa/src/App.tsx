@@ -1,10 +1,14 @@
-import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, lazy, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Proof } from "@cashu/cashu-ts";
 import { createPortal } from "react-dom";
-import { finalizeEvent, getPublicKey, generateSecretKey, SimplePool, type EventTemplate, nip19, nip04 } from "nostr-tools";
-const CashuWalletModal = lazy(() => import("./components/CashuWalletModal"));
+import { QRCodeCanvas } from "qrcode.react";
+import QrScannerLib from "qr-scanner";
+import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
+const loadCashuWalletModal = () => import("./components/CashuWalletModal");
+const CashuWalletModal = lazy(loadCashuWalletModal);
 import {
   BibleTracker,
+  type BibleTrackerProgress,
   type BibleTrackerState,
   sanitizeBibleTrackerState,
   cloneBibleProgress,
@@ -16,15 +20,47 @@ import {
   getBibleBookOrder,
   MAX_VERSE_COUNT,
 } from "./components/BibleTracker";
+import { BibleTrackerPrintPreview, type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
+import { BibleTrackerScanPanel } from "./components/BibleTrackerScanSheet";
+import { buildBiblePrintLayout } from "./components/BibleTrackerPrintLayout";
+import { BoardPrintPreview } from "./components/BoardPrintSheet";
+import { BoardScanPanel } from "./components/BoardScanSheet";
+import { BOARD_PRINT_LAYOUT_VERSION, buildBoardPrintLayout, type BoardPrintJob, type BoardPrintTask } from "./components/BoardPrintLayout";
+import { isPrintPaperSize, type PrintPaperSize } from "./components/printPaper";
 import { ScriptureMemoryCard, type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
+import { buildBibleTrackerPrintPdf, buildBoardPrintPdf } from "./lib/printPdf";
 import { useCashu } from "./context/CashuContext";
 import {
   LS_LIGHTNING_CONTACTS,
   LS_BTC_USD_PRICE_CACHE,
   LS_MINT_BACKUP_ENABLED,
+  LS_CONTACTS_SYNC_META,
+  LS_CONTACT_NIP05_CACHE,
 } from "./localStorageKeys";
-import { LS_NOSTR_RELAYS, LS_NOSTR_SK } from "./nostrKeys";
+import { kvStorage } from "./storage/kvStorage";
+import {
+  cleanupMigratedLegacyLocalStorageKeys as cleanupLegacyStorage,
+  hasMigratedLegacyLocalStorageKeys,
+} from "./storage/legacyStorageCleanup";
+import { idbKeyValue } from "./storage/idbKeyValue";
+import { startMigration, subscribeMigrationProgress } from "./storage/storageMigration";
+import type { StorageMigrationProgress, StorageMigrationState } from "./storage/storageMigration";
+import {
+  MIGRATION_COMPLETED_AT_KEY,
+  MIGRATION_DEFERRED_KEY,
+  MIGRATION_STATE_KEY,
+  STORAGE_MIGRATION_MARKER_KEY,
+  setStorageWritesBlocked,
+} from "./storage/storageWriteLock";
+import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./storage/taskifyDb";
+import {
+  LS_NOSTR_BACKUP_STATE,
+  LS_NOSTR_BIBLE_TRACKER_SYNC_STATE,
+  LS_NOSTR_RELAYS,
+  LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE,
+  LS_NOSTR_SK,
+} from "./nostrKeys";
 import {
   loadStore as loadProofStore,
   saveStore as saveProofStore,
@@ -58,6 +94,23 @@ import {
   persistMintBackupCache,
   type MintBackupPayload,
 } from "./wallet/mintBackup";
+import {
+  decryptNostrBackupPayload,
+  encryptNostrBackupPayload,
+  NOSTR_APP_BACKUP_CLIENT_TAG,
+  NOSTR_APP_BACKUP_D_TAG,
+  NOSTR_APP_BACKUP_KIND,
+  type NostrAppBackupBoard,
+  type NostrAppBackupPayload,
+} from "./nostrBackup";
+import {
+  decryptNostrSyncPayload,
+  encryptNostrSyncPayload,
+  NOSTR_APP_STATE_CLIENT_TAG,
+  NOSTR_APP_STATE_KIND,
+  NOSTR_BIBLE_TRACKER_D_TAG,
+  NOSTR_SCRIPTURE_MEMORY_D_TAG,
+} from "./nostrAppState";
 import { encryptToBoard, decryptFromBoard, boardTag } from "./boardCrypto";
 import { useToast } from "./context/ToastContext";
 import { useP2PK, type P2PKKey } from "./context/P2PKContext";
@@ -73,19 +126,181 @@ import {
   type TaskDocument,
 } from "./lib/documents";
 import { normalizeNostrPubkey } from "./lib/nostr";
+import { shouldSkipMigrationReload, recordMigrationReload } from "./lib/app/migrationReloadGuard";
+import {
+  buildNostrBackupSnapshot as buildNostrBackupSnapshotDomain,
+  mergeBackupBoards,
+  sanitizeSettingsForNostrBackup,
+} from "./lib/app/nostrBackupDomain";
+import {
+  ensureWeekRecurrencesForCurrentWeek,
+  tasksInSameSeries,
+} from "./lib/app/weekRecurrenceDomain";
+import {
+  TASKIFY_CALENDAR_EVENT_KIND,
+  TASKIFY_CALENDAR_VIEW_KIND,
+  TASKIFY_CALENDAR_RSVP_KIND,
+  calendarAddress,
+  parseCalendarAddress,
+  generateEventKey,
+  generateInviteToken,
+  encryptCalendarPayloadForBoard,
+  decryptCalendarPayloadForBoard,
+  encryptCalendarPayloadWithEventKey,
+  decryptCalendarPayloadWithEventKey,
+  encryptCalendarRsvpPayload,
+  decryptCalendarRsvpPayload,
+  decryptCalendarRsvpPayloadForAttendee,
+  deriveBoardRsvpToken,
+  parseCalendarCanonicalPayload,
+  parseCalendarViewPayload,
+  parseCalendarRsvpPayload,
+  type CalendarRsvpFb,
+  type CalendarRsvpStatus,
+} from "./lib/privateCalendar";
 import { DEFAULT_NOSTR_RELAYS } from "./lib/relays";
 import { ActionSheet } from "./components/ActionSheet";
 import type { Contact } from "./lib/contacts";
-import { loadContactsFromStorage, makeContactId, saveContactsToStorage } from "./lib/contacts";
+import {
+  contactPrimaryName,
+  formatContactNpub,
+  loadContactsFromStorage,
+  makeContactId,
+  normalizeContact,
+  contactHasNpub,
+  saveContactsToStorage,
+} from "./lib/contacts";
 import { COINBASE_SPOT_PRICE_URL } from "./lib/pricing";
+import {
+  markHistoryEntrySpentRaw,
+  MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
+  type HistoryEntryRaw,
+} from "./lib/walletHistory";
+import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "./lib/fileStorage";
+import { NostrSession } from "./nostr/NostrSession";
+import { SessionPool } from "./nostr/SessionPool";
+import { BoardKeyManager } from "./nostr/BoardKeyManager";
+import { publishFileServerPreference } from "./nostr/ProfilePublisher";
 import { EcashGlyph } from "./components/EcashGlyph";
+import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
+import {
+  buildBoardShareEnvelope,
+  buildCalendarEventInviteEnvelope,
+  buildTaskShareEnvelope,
+  parseShareEnvelope,
+  sendShareMessage,
+  type ShareEnvelope,
+  type SharedCalendarEventInvitePayload,
+  type SharedContactPayload,
+  type SharedTaskPayload,
+} from "./lib/shareInbox";
+import type { WalletMessageItem } from "./types/walletMessages";
+import { markBootOk } from "./recovery/recoveryState";
 
 const DEBUG_CONSOLE_STORAGE_KEY = "taskify.debugConsole.enabled";
-const LS_PENDING_NOSTR_QUEUE = "taskify.pendingNostrQueue";
+const LEGACY_CLEANUP_DONE_KEY = "legacy_cleanup_done";
+const ADD_BOARD_OPTION_ID = "__add-board__";
+const BOARD_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SPECIAL_CALENDAR_US_HOLIDAYS_ID = "special:us-holidays";
+const SPECIAL_CALENDAR_US_HOLIDAYS_LABEL = "US Holidays";
+const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS = 1;
+const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
+
+type MigrationGateState = "not_started" | "in_progress" | "completed";
+type ScanResult = QrScannerLib.ScanResult;
+
+type BoardSharePayload = {
+  boardId: string;
+  boardName?: string;
+  relaysCsv?: string;
+};
+
+function normalizeMigrationGateState(raw: string | null): MigrationGateState | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (trimmed === "not_started" || trimmed === "in_progress" || trimmed === "completed") return trimmed;
+  return null;
+}
+
+function mapEngineStateToGateState(state: StorageMigrationState): MigrationGateState {
+  if (state === "migration_in_progress") return "in_progress";
+  if (state === "migration_complete") return "completed";
+  return "not_started";
+}
+
+function mapGateStateToEngineState(state: MigrationGateState): StorageMigrationState {
+  if (state === "in_progress") return "migration_in_progress";
+  if (state === "completed") return "migration_complete";
+  return "migration_not_started";
+}
+
+function parseBoardSharePayload(raw: string): BoardSharePayload | null {
+  const trimmed = (raw || "").trim();
+  if (!trimmed) return null;
+  const envelope = parseShareEnvelope(trimmed);
+  if (envelope?.item?.type === "board") {
+    const relaysCsv = envelope.item.relays?.length ? envelope.item.relays.join(",") : undefined;
+    return {
+      boardId: envelope.item.boardId,
+      boardName: envelope.item.boardName || undefined,
+      relaysCsv,
+    };
+  }
+  if (!BOARD_ID_REGEX.test(trimmed)) return null;
+  return { boardId: trimmed };
+}
+
+const STARTUP_HAS_MIGRATED_LEGACY_KEYS = (() => {
+  try {
+    return hasMigratedLegacyLocalStorageKeys();
+  } catch {
+    return false;
+  }
+})();
+
+const STARTUP_MIGRATION_GATE_STATE: MigrationGateState = (() => {
+  try {
+    const stored = normalizeMigrationGateState(kvStorage.getItem(MIGRATION_STATE_KEY));
+    if (stored) {
+      if (stored === "not_started" && !STARTUP_HAS_MIGRATED_LEGACY_KEYS) return "completed";
+      return stored;
+    }
+    const legacy = (kvStorage.getItem(STORAGE_MIGRATION_MARKER_KEY) || "").trim();
+    if (legacy === "migration_not_started") return STARTUP_HAS_MIGRATED_LEGACY_KEYS ? "not_started" : "completed";
+    if (legacy === "migration_in_progress") return "in_progress";
+    if (legacy === "migration_complete") return "completed";
+    return STARTUP_HAS_MIGRATED_LEGACY_KEYS ? "not_started" : "completed";
+  } catch {
+    return STARTUP_HAS_MIGRATED_LEGACY_KEYS ? "not_started" : "completed";
+  }
+})();
+
+const STARTUP_ENGINE_MIGRATION_STATE: StorageMigrationState = (() => {
+  try {
+    const raw = (kvStorage.getItem(STORAGE_MIGRATION_MARKER_KEY) || "").trim();
+    if (raw === "migration_not_started") return STARTUP_HAS_MIGRATED_LEGACY_KEYS ? raw : "migration_complete";
+    if (raw === "migration_in_progress" || raw === "migration_complete") return raw;
+    return mapGateStateToEngineState(STARTUP_MIGRATION_GATE_STATE);
+  } catch {
+    return mapGateStateToEngineState(STARTUP_MIGRATION_GATE_STATE);
+  }
+})();
+
+const STARTUP_LEGACY_CLEANUP_DONE = (() => {
+  try {
+    return kvStorage.getBoolean(LEGACY_CLEANUP_DONE_KEY, false);
+  } catch {
+    return false;
+  }
+})();
+
+if (STARTUP_MIGRATION_GATE_STATE === "in_progress") {
+  setStorageWritesBlocked(true);
+}
 
 /* ================= Types ================= */
 type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6; // 0=Sun
-type DayChoice = Weekday | "bounties" | string; // string = custom list columnId
+type DayChoice = Weekday | string; // string = custom list columnId
 const WD_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const WEEKDAYS: Weekday[] = [1, 2, 3, 4, 5];
 const WD_FULL = [
@@ -144,21 +359,209 @@ type QuickLockOption = {
   contactId?: string;
 };
 
+type Nip05CheckState = {
+  status: "pending" | "valid" | "invalid";
+  nip05: string;
+  npub: string;
+  checkedAt: number;
+  contactUpdatedAt?: number | null;
+};
+
+type InboxSender = {
+  pubkey: string;
+  name?: string;
+  npub?: string;
+};
+
+type InboxItem =
+  | {
+      type: "board";
+      boardId: string;
+      boardName?: string;
+      relays?: string[];
+      sender: InboxSender;
+      receivedAt: string;
+      status?: "pending" | "accepted" | "deleted";
+      dmEventId?: string;
+    }
+  | {
+      type: "contact";
+      contact: SharedContactPayload;
+      sender: InboxSender;
+      receivedAt: string;
+      status?: "pending" | "accepted" | "deleted";
+      dmEventId?: string;
+    }
+  | {
+      type: "task";
+      task: SharedTaskPayload;
+      sender: InboxSender;
+      receivedAt: string;
+      status?: "pending" | "accepted" | "deleted";
+      dmEventId?: string;
+    };
+
+type CalendarInviteStatus = "pending" | CalendarRsvpStatus | "dismissed";
+
+type CalendarInvite = {
+  id: string;
+  source: "dm" | "nostr";
+  eventId: string;
+  canonical: string;
+  view: string;
+  eventKey: string;
+  inviteToken: string;
+  title?: string;
+  start?: string;
+  end?: string;
+  relays?: string[];
+  sender?: InboxSender;
+  receivedAt: string;
+  status: CalendarInviteStatus;
+};
+
+type CalendarRsvpEnvelope = {
+  eventId: string;
+  authorPubkey: string;
+  createdAt: number;
+  status: CalendarRsvpStatus;
+  fb?: CalendarRsvpFb;
+  inviteToken?: string;
+};
+
+function normalizeNip05(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const atIndex = trimmed.indexOf("@");
+  if (atIndex <= 0 || atIndex === trimmed.length - 1) return null;
+  const name = trimmed.slice(0, atIndex).trim().toLowerCase();
+  const domain = trimmed.slice(atIndex + 1).trim().toLowerCase();
+  if (!name || !domain) return null;
+  return `${name}@${domain}`;
+}
+
+function compressedToRawHex(value: string): string {
+  if (typeof value !== "string") return value;
+  if (/^(02|03)[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
+  if (/^0x[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
+  if (/^[0-9a-fA-F]{64}$/.test(value)) return value.toLowerCase();
+  return value;
+}
+
+function normalizeNostrPubkeyHex(value: string | null | undefined): string | null {
+  const trimmed = (value || "").trim();
+  if (!trimmed) return null;
+  const normalized = normalizeNostrPubkey(trimmed);
+  const raw = compressedToRawHex(normalized ?? trimmed).toLowerCase();
+  return /^[0-9a-f]{64}$/.test(raw) ? raw : null;
+}
+
+function loadNip05Cache(): Record<string, Nip05CheckState> {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACT_NIP05_CACHE);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const entries: Record<string, Nip05CheckState> = {};
+    Object.entries(parsed as Record<string, any>).forEach(([key, value]) => {
+      if (!value || typeof value !== "object") return;
+      const status = (value as any).status;
+      const nip05 = typeof (value as any).nip05 === "string" ? (value as any).nip05 : "";
+      const npub = typeof (value as any).npub === "string" ? (value as any).npub : "";
+      const checkedAt = Number((value as any).checkedAt) || 0;
+      const contactUpdatedAtRaw = Number((value as any).contactUpdatedAt);
+      if (!nip05 || !npub) return;
+      if (status !== "pending" && status !== "valid" && status !== "invalid") return;
+      entries[key] = {
+        status,
+        nip05,
+        npub,
+        checkedAt: checkedAt || Date.now(),
+        contactUpdatedAt: Number.isFinite(contactUpdatedAtRaw) ? contactUpdatedAtRaw : null,
+      };
+    });
+    return entries;
+  } catch {
+    return {};
+  }
+}
+
+function contactVerifiedNip05(contact: Contact, cache: Record<string, Nip05CheckState>): string | null {
+  if (!contact?.id) return null;
+  const nip05 = contact.nip05?.trim();
+  const npub = contact.npub?.trim();
+  if (!nip05 || !npub) return null;
+  const normalizedNip05 = normalizeNip05(nip05);
+  const normalizedNpub = normalizeNostrPubkey(npub);
+  if (!normalizedNip05 || !normalizedNpub) return null;
+  const entry = cache[contact.id];
+  if (!entry || entry.status !== "valid") return null;
+  const cachedNip05 = normalizeNip05(entry.nip05);
+  const cachedHex = (entry.npub || "").toLowerCase();
+  const contactHex = compressedToRawHex(normalizedNpub).toLowerCase();
+  if (!cachedNip05 || cachedNip05 !== normalizedNip05) return null;
+  if (!cachedHex || cachedHex !== contactHex) return null;
+  return nip05 || entry.nip05;
+}
+
+function contactInitials(value: string): string {
+  const trimmed = (value || "").trim();
+  if (!trimmed) return "?";
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function VerifiedBadgeIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l.967 2.329a1.125 1.125 0 0 0 1.304.674l2.457-.624c1.119-.285 2.114.71 1.829 1.829l-.624 2.457a1.125 1.125 0 0 0 .674 1.304l2.329.967c1.077.448 1.077 1.976 0 2.424l-2.329.967a1.125 1.125 0 0 0-.674 1.304l.624 2.457c.285 1.119-.71 2.114-1.829 1.829l-2.457-.624a1.125 1.125 0 0 0-1.304.674l-.967 2.329c-.448 1.077-1.976 1.077-2.424 0l-.967-2.329a1.125 1.125 0 0 0-1.304-.674l-2.457.624c-1.119.285-2.114-.71-1.829-1.829l.624-2.457a1.125 1.125 0 0 0-.674-1.304l-2.329-.967c-1.077-.448-1.077-1.976 0-2.424l2.329-.967a1.125 1.125 0 0 0 .674-1.304l-.624-2.457c-.285-1.119.71-2.114 1.829-1.829l2.457.624a1.125 1.125 0 0 0 1.304-.674l.967-2.329Z"
+      />
+      <path
+        d="m9.4 12.75 1.9 1.9 3.85-3.85"
+        fill="none"
+        stroke="var(--surface-base)"
+        strokeWidth={1.6}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ShareBoardIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <path d="M12 3v12" />
+      <path d="m8 7 4-4 4 4" />
+      <path d="M4 13v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" />
+    </svg>
+  );
+}
+
+type TaskPriority = 1 | 2 | 3;
+
 type Task = {
   id: string;
   boardId: string;
   createdBy?: string;             // nostr pubkey of task creator
+  createdAt?: number;             // unix ms timestamp (local)
   title: string;
+  priority?: TaskPriority;        // 1-3 exclamation marks
   note?: string;
   images?: string[];              // base64 data URLs for pasted images
   documents?: TaskDocument[];     // supported document attachments
   dueISO: string;                 // for week board day grouping
+  dueDateEnabled?: boolean;       // whether the due date is active
   completed?: boolean;
   completedAt?: string;
   completedBy?: string;           // nostr pubkey of user who marked complete
   recurrence?: Recurrence;
   // Week board columns:
-  column?: "day" | "bounties";
+  column?: "day";
   // Custom boards (multi-list):
   columnId?: string;
   hiddenUntilISO?: string;        // controls visibility (appear at/after this date)
@@ -191,31 +594,149 @@ type Task = {
       | null;
   };
   dueTimeEnabled?: boolean;       // whether a specific due time is set
+  dueTimeZone?: string;           // IANA time zone for due time (defaults to device zone)
   reminders?: ReminderPreset[];   // preset reminder offsets before due time
+  reminderTime?: string;          // HH:mm reminder clock used when due time is not set
   scriptureMemoryId?: string;     // reference to scripture memory entry when auto-created
   scriptureMemoryStage?: number;  // stage at time of scheduling (for undo)
   scriptureMemoryPrevReviewISO?: string | null; // previous review timestamp snapshot
   scriptureMemoryScheduledAt?: string; // when this memory task was generated
   bountyLists?: string[];         // local-only set of bounty list keys the task belongs to
+  bountyDeletedAt?: string;       // local-only marker for recoverable bounty-task deletes
+  inboxItem?: InboxItem;          // shared inbox metadata (boards/contacts/tasks)
 };
 
-type BountyListRef = {
+type CalendarEventParticipant = {
+  pubkey: string;
+  relay?: string;
+  role?: string;
+};
+
+type CalendarEventBase = {
+  id: string;                     // stable event identifier
   boardId: string;
-  columnId?: string | null;
+  columnId?: string;              // list boards only
+  order?: number;                 // manual ordering within board/column
+  title: string;
+  summary?: string;
+  description?: string;
+  documents?: TaskDocument[];     // supported document attachments
+  image?: string;
+  locations?: string[];
+  geohash?: string;
+  participants?: CalendarEventParticipant[];
+  hashtags?: string[];
+  references?: string[];
+  reminders?: ReminderPreset[];   // per-device push reminders (not published)
+  reminderTime?: string;          // HH:mm reminder clock used for all-day events
+  hiddenUntilISO?: string;        // local visibility gating for board lists
+  recurrence?: Recurrence;        // client-managed recurrence
+  seriesId?: string;              // client-managed recurrence grouping
+  readOnly?: boolean;             // view-only event (cannot publish edits)
+  external?: boolean;             // boardless invitee event
+  originBoardId?: string;         // board id to publish edits/deletions when different from boardId
+  eventKey?: string;              // per-event share key (base64)
+  inviteTokens?: Record<string, string>; // board-only invite tokens keyed by pubkey
+  canonicalAddress?: string;      // canonical event address for invitees
+  viewAddress?: string;           // shareable view address for invitees
+  inviteToken?: string;           // invitee token for RSVP
+  inviteRelays?: string[];        // relays to fetch view + RSVP
+  boardPubkey?: string;           // canonical board pubkey for external RSVP
+  rsvpStatus?: CalendarRsvpStatus; // local RSVP state (external)
+  rsvpCreatedAt?: number;         // created_at for local RSVP (external)
+  rsvpFb?: CalendarRsvpFb;         // free/busy for local RSVP (external)
 };
 
-const DEFAULT_BOUNTY_BOARD_ID = "week-default";
-const DEFAULT_BOUNTY_COLUMN_ID = "bounties";
-const DEFAULT_BOUNTY_LIST: BountyListRef = {
-  boardId: DEFAULT_BOUNTY_BOARD_ID,
-  columnId: DEFAULT_BOUNTY_COLUMN_ID,
+type DateCalendarEvent = CalendarEventBase & {
+  kind: "date";
+  startDate: string;              // YYYY-MM-DD
+  endDate?: string;               // inclusive YYYY-MM-DD (UI-facing)
 };
 
-function bountyListKey(ref?: BountyListRef | null): string | null {
-  if (!ref || typeof ref.boardId !== "string" || !ref.boardId.trim()) return null;
-  const col = typeof ref.columnId === "string" && ref.columnId.trim() ? ref.columnId.trim() : "";
-  return `${ref.boardId}::${col}`;
+type TimeCalendarEvent = CalendarEventBase & {
+  kind: "time";
+  startISO: string;               // ISO timestamp (UTC)
+  endISO?: string;                // ISO timestamp (UTC)
+  startTzid?: string;             // IANA TZID tag
+  endTzid?: string;
+};
+
+type CalendarEvent = DateCalendarEvent | TimeCalendarEvent;
+type ExternalCalendarEvent = CalendarEvent & {
+  external: true;
+  boardPubkey: string;
+};
+
+function isExternalCalendarEvent(event: CalendarEvent): event is ExternalCalendarEvent {
+  return event.external === true;
 }
+
+type EditItemType = "task" | "event";
+
+type EditingState =
+  | { type: "task"; originalType: EditItemType; originalId: string; task: Task }
+  | { type: "event"; originalType: EditItemType; originalId: string; event: CalendarEvent };
+
+const TASK_PRIORITY_MARKS: Record<TaskPriority, string> = {
+  1: "!",
+  2: "!!",
+  3: "!!!",
+};
+
+function normalizeTaskPriority(value: unknown): TaskPriority | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const rounded = Math.round(value);
+    if (rounded === 1 || rounded === 2 || rounded === 3) return rounded as TaskPriority;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "!" || trimmed === "!!" || trimmed === "!!!") {
+      return trimmed.length as TaskPriority;
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    if (parsed === 1 || parsed === 2 || parsed === 3) return parsed as TaskPriority;
+  }
+  return undefined;
+}
+
+function normalizeTaskCreatedAt(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return undefined;
+}
+
+function taskPriorityMarks(priority: TaskPriority | undefined): string {
+  return priority ? TASK_PRIORITY_MARKS[priority] : "";
+}
+
+type BoardSortMode = "manual" | "due" | "priority" | "created" | "alpha";
+type BoardSortDirection = "asc" | "desc";
+type UpcomingBoardGrouping = "mixed" | "grouped";
+
+const DEFAULT_BOARD_SORT_DIRECTION: Record<BoardSortMode, BoardSortDirection> = {
+  manual: "asc",
+  due: "asc",
+  priority: "desc",
+  created: "desc",
+  alpha: "asc",
+};
+
+const BOARD_SORT_MODE_IDS = new Set<BoardSortMode>(["manual", "due", "priority", "created", "alpha"]);
+
+function normalizeBoardSortState(value: unknown): { mode: BoardSortMode; direction: BoardSortDirection } | null {
+  const modeRaw = typeof (value as any)?.mode === "string" ? (value as any).mode : "";
+  if (!BOARD_SORT_MODE_IDS.has(modeRaw as BoardSortMode)) return null;
+  const mode = modeRaw as BoardSortMode;
+  const directionRaw = typeof (value as any)?.direction === "string" ? (value as any).direction : "";
+  const direction: BoardSortDirection =
+    directionRaw === "asc" || directionRaw === "desc" ? (directionRaw as BoardSortDirection) : DEFAULT_BOARD_SORT_DIRECTION[mode];
+  return { mode, direction };
+}
+
+const PINNED_BOUNTY_LIST_KEY = "taskify::pinned";
+const LS_MESSAGES_BOARD_ID = "taskify_messages_board_id_v1";
+const LS_INBOX_PROCESSED = "taskify_inbox_processed_v1";
+const MESSAGES_COLUMN_ID = "messages-shared";
+const SHARE_DM_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
 
 function taskHasBountyList(task: Task, key: string | null | undefined): boolean {
   if (!key) return false;
@@ -240,6 +761,10 @@ function withTaskRemovedFromBountyList(task: Task, key: string | null): Task {
     return clone;
   }
   return { ...task, bountyLists: filtered };
+}
+
+function isRecoverableBountyTask(task: Task): boolean {
+  return !!task.bounty && typeof task.bountyDeletedAt === "string" && task.bountyDeletedAt.trim().length > 0;
 }
 
 function normalizeBounty(bounty?: Task["bounty"] | null): Task["bounty"] | undefined {
@@ -344,9 +869,10 @@ function mergeLongestStreak(task: Task, streak: number | undefined): number | un
   return previous;
 }
 
-type BuiltinReminderPreset = "5m" | "15m" | "30m" | "1h" | "1d";
+type BuiltinReminderPreset = "5m" | "15m" | "30m" | "1h" | "1d" | "1w" | "0d";
 type CustomReminderPreset = `custom-${number}`;
 type ReminderPreset = BuiltinReminderPreset | CustomReminderPreset;
+type ReminderPresetMode = "timed" | "date";
 
 type PushPlatform = "ios" | "android";
 
@@ -362,6 +888,11 @@ type PublishTaskFn = (
   boardOverride?: Board,
   options?: { skipBoardMetadata?: boolean }
 ) => Promise<void>;
+type PublishCalendarEventFn = (
+  event: CalendarEvent,
+  boardOverride?: Board,
+  options?: { skipBoardMetadata?: boolean }
+) => Promise<void>;
 type ScriptureMemoryUpdate = {
   entryId: string;
   completedAt: string;
@@ -373,7 +904,7 @@ type CompleteTaskResult = {
 } | null;
 type CompleteTaskFn = (
   id: string,
-  options?: { skipScriptureMemoryUpdate?: boolean }
+  options?: { skipScriptureMemoryUpdate?: boolean; inboxAction?: "accept" | "dismiss" }
 ) => CompleteTaskResult;
 
 function detectPushPlatformFromNavigator(): PushPlatform {
@@ -397,12 +928,25 @@ function detectPushPlatformFromNavigator(): PushPlatform {
 
 const INFERRED_PUSH_PLATFORM: PushPlatform = detectPushPlatformFromNavigator();
 
-const BUILTIN_REMINDER_PRESETS: ReadonlyArray<{ id: BuiltinReminderPreset; label: string; badge: string; minutes: number }> = [
+const DEFAULT_DATE_REMINDER_TIME = "09:00";
+
+const TIMED_REMINDER_PRESETS: ReadonlyArray<{ id: BuiltinReminderPreset; label: string; badge: string; minutes: number }> = [
   { id: "5m", label: "5 minutes before", badge: "5m", minutes: 5 },
   { id: "15m", label: "15 minutes before", badge: "15m", minutes: 15 },
   { id: "30m", label: "30 minutes before", badge: "30m", minutes: 30 },
   { id: "1h", label: "1 hour before", badge: "1h", minutes: 60 },
   { id: "1d", label: "1 day before", badge: "1d", minutes: 1440 },
+];
+
+const DATE_REMINDER_PRESETS: ReadonlyArray<{ id: BuiltinReminderPreset; label: string; badge: string; minutes: number }> = [
+  { id: "1w", label: "1 week before", badge: "1w", minutes: 10080 },
+  { id: "1d", label: "1 day before", badge: "1d", minutes: 1440 },
+  { id: "0d", label: "On the day", badge: "day of", minutes: 0 },
+];
+
+const BUILTIN_REMINDER_PRESETS: ReadonlyArray<{ id: BuiltinReminderPreset; label: string; badge: string; minutes: number }> = [
+  ...DATE_REMINDER_PRESETS,
+  ...TIMED_REMINDER_PRESETS,
 ];
 
 const BUILTIN_REMINDER_IDS = new Set<BuiltinReminderPreset>(BUILTIN_REMINDER_PRESETS.map((opt) => opt.id));
@@ -411,9 +955,11 @@ const BUILTIN_REMINDER_MINUTES = new Map<BuiltinReminderPreset, number>(BUILTIN_
 const BIBLE_BOARD_ID = "bible-reading";
 const LS_SCRIPTURE_MEMORY = "taskify_scripture_memory_v1";
 const SCRIPTURE_MEMORY_SERIES_ID = "scripture-memory";
+const FASTING_REMINDER_SERIES_ID = "fasting-reminder";
 
 type ScriptureMemoryFrequency = "daily" | "every2d" | "twiceWeek" | "weekly";
 type ScriptureMemorySort = "canonical" | "oldest" | "newest" | "needsReview";
+type FastingRemindersMode = "weekday" | "random";
 
 type ScriptureMemoryEntry = {
   id: string;
@@ -467,7 +1013,15 @@ function clampCustomReminderMinutes(value: number): number {
   return Math.max(MIN_CUSTOM_REMINDER_MINUTES, Math.min(MAX_CUSTOM_REMINDER_MINUTES, Math.round(value)));
 }
 
+function normalizeReminderTime(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const parsed = parseTimeValue(value);
+  if (!parsed) return undefined;
+  return `${String(parsed.hour).padStart(2, "0")}:${String(parsed.minute).padStart(2, "0")}`;
+}
+
 function minutesToReminderId(minutes: number): ReminderPreset {
+  if (!Number.isFinite(minutes) || minutes <= 0) return "0d";
   const normalized = clampCustomReminderMinutes(minutes);
   for (const [id, builtinMinutes] of BUILTIN_REMINDER_MINUTES) {
     if (builtinMinutes === normalized) return id;
@@ -485,6 +1039,12 @@ function reminderPresetToMinutes(id: ReminderPreset): number {
 }
 
 function formatReminderLabel(minutes: number): { label: string; badge: string } {
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return {
+      label: "On the day",
+      badge: "day of",
+    };
+  }
   const mins = clampCustomReminderMinutes(minutes);
   if (mins % 1440 === 0) {
     const days = mins / 1440;
@@ -508,19 +1068,21 @@ function formatReminderLabel(minutes: number): { label: string; badge: string } 
 
 type ReminderOption = { id: ReminderPreset; label: string; badge: string; minutes: number; builtin: boolean };
 
-function buildReminderOptions(extraPresetIds: ReminderPreset[] = []): ReminderOption[] {
-  const options = new Map<ReminderPreset, ReminderOption>();
-  for (const preset of BUILTIN_REMINDER_PRESETS) {
-    options.set(preset.id, { ...preset, builtin: true });
-  }
+function buildReminderOptions(extraPresetIds: ReminderPreset[] = [], mode: ReminderPresetMode = "timed"): ReminderOption[] {
+  const modePresets = mode === "date" ? DATE_REMINDER_PRESETS : TIMED_REMINDER_PRESETS;
+  const options = new Map<ReminderPreset, ReminderOption>(
+    modePresets.map((preset) => [preset.id, { ...preset, builtin: true }] as const),
+  );
+  const extras: ReminderOption[] = [];
   for (const id of extraPresetIds) {
     if (options.has(id)) continue;
     const minutes = reminderPresetToMinutes(id);
-    if (!minutes) continue;
+    if (!Number.isFinite(minutes) || minutes < 0) continue;
     const { label, badge } = formatReminderLabel(minutes);
-    options.set(id, { id, label, badge, minutes, builtin: !String(id).startsWith('custom-') });
+    extras.push({ id, label, badge, minutes, builtin: !String(id).startsWith("custom-") });
   }
-  return [...options.values()].sort((a, b) => a.minutes - b.minutes);
+  extras.sort((a, b) => a.minutes - b.minutes);
+  return [...options.values(), ...extras];
 }
 
 function sanitizeReminderList(value: unknown): ReminderPreset[] | undefined {
@@ -534,14 +1096,14 @@ function sanitizeReminderList(value: unknown): ReminderPreset[] | undefined {
       }
       if (CUSTOM_REMINDER_PATTERN.test(item)) {
         const minutes = reminderPresetToMinutes(item as ReminderPreset);
-        if (minutes) dedup.add(minutesToReminderId(minutes));
+        if (Number.isFinite(minutes) && minutes >= 0) dedup.add(minutesToReminderId(minutes));
       }
       continue;
     }
-    if (typeof item === 'number' && Number.isFinite(item)) {
+    if (typeof item === 'number' && Number.isFinite(item) && item >= 0) {
       const remId = minutesToReminderId(item);
       const minutes = reminderPresetToMinutes(remId);
-      if (minutes) dedup.add(remId);
+      if (Number.isFinite(minutes) && minutes >= 0) dedup.add(remId);
     }
   }
   const sorted = [...dedup].sort((a, b) => reminderPresetToMinutes(a) - reminderPresetToMinutes(b));
@@ -777,10 +1339,40 @@ const DEFAULT_PUSH_PREFERENCES: PushPreferences = {
 const RAW_WORKER_BASE = (import.meta as any)?.env?.VITE_WORKER_BASE_URL || "";
 const FALLBACK_WORKER_BASE_URL = RAW_WORKER_BASE ? String(RAW_WORKER_BASE).replace(/\/$/, "") : "";
 const FALLBACK_VAPID_PUBLIC_KEY = (import.meta as any)?.env?.VITE_VAPID_PUBLIC_KEY || "";
+const PUSH_OPERATION_TIMEOUT_MS = 15000;
 
 function taskHasReminders(task: Task): boolean {
   if (task.completed) return false;
-  return !!task.dueTimeEnabled && Array.isArray(task.reminders) && task.reminders.length > 0;
+  if (task.dueDateEnabled === false) return false;
+  return Array.isArray(task.reminders) && task.reminders.length > 0;
+}
+
+function calendarEventHasReminders(event: CalendarEvent): boolean {
+  if (!Array.isArray(event.reminders) || event.reminders.length === 0) return false;
+  if (event.kind === "date") return ISO_DATE_PATTERN.test(event.startDate);
+  return !Number.isNaN(Date.parse(event.startISO));
+}
+
+function reminderScheduleISOForTask(task: Task, systemTimeZone: string): string | null {
+  if (!taskHasReminders(task)) return null;
+  if (task.dueTimeEnabled) {
+    return Number.isNaN(Date.parse(task.dueISO)) ? null : task.dueISO;
+  }
+  const dateKey = isoDatePart(task.dueISO, normalizeTimeZone(task.dueTimeZone) ?? systemTimeZone);
+  if (!ISO_DATE_PATTERN.test(dateKey)) return null;
+  const reminderClock = normalizeReminderTime(task.reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
+  const reminderISO = isoFromDateTime(dateKey, reminderClock, systemTimeZone);
+  return Number.isNaN(Date.parse(reminderISO)) ? null : reminderISO;
+}
+
+function reminderScheduleISOForCalendarEvent(event: CalendarEvent, systemTimeZone: string): string | null {
+  if (!calendarEventHasReminders(event)) return null;
+  if (event.kind === "time") {
+    return Number.isNaN(Date.parse(event.startISO)) ? null : event.startISO;
+  }
+  const reminderClock = normalizeReminderTime(event.reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
+  const reminderISO = isoFromDateTime(event.startDate, reminderClock, systemTimeZone);
+  return Number.isNaN(Date.parse(reminderISO)) ? null : reminderISO;
 }
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
@@ -808,6 +1400,20 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
       throw new Error(`Invalid VAPID public key: ${err.message}`);
     }
     throw new Error('Invalid VAPID public key.');
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -854,7 +1460,7 @@ function parseCompoundChildInput(raw: string): { boardId: string; relays: string
 }
 
 type Board =
-  | (BoardBase & { kind: "week" }) // fixed Sun–Sat + Bounties
+  | (BoardBase & { kind: "week" }) // fixed Sun–Sat
   | (BoardBase & { kind: "lists"; columns: ListColumn[]; indexCardEnabled?: boolean }) // multiple customizable columns
   | (BoardBase & {
       kind: "compound";
@@ -923,9 +1529,12 @@ type Settings = {
   scriptureMemoryBoardId?: string | null;
   scriptureMemoryFrequency: ScriptureMemoryFrequency;
   scriptureMemorySort: ScriptureMemorySort;
+  fastingRemindersEnabled: boolean;
+  fastingRemindersMode: FastingRemindersMode;
+  fastingRemindersPerMonth: number;
+  fastingRemindersWeekday: Weekday;
+  fastingRemindersRandomSeed: string;
   showFullWeekRecurring: boolean;
-  // Allow adding new lists from within the board view
-  listAddButtonEnabled: boolean;
   // Base UI font size in pixels; null uses the OS preferred size
   baseFontSize: number | null;
   startBoardByDay: Partial<Record<Weekday, string>>;
@@ -940,14 +1549,18 @@ type Settings = {
   walletConversionEnabled: boolean;
   walletPrimaryCurrency: "sat" | "usd";
   walletSentStateChecksEnabled: boolean;
+  walletNostrSyncEnabled: boolean;
   walletPaymentRequestsEnabled: boolean;
   walletPaymentRequestsBackgroundChecksEnabled: boolean;
   walletMintBackupEnabled: boolean;
+  walletContactsSyncEnabled: boolean;
+  fileStorageServer: string;
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
-  walletBountiesEnabled: boolean;
-  walletBountyList?: BountyListRef | null;
   cloudBackupsEnabled: boolean;
+  nostrBackupEnabled: boolean;
+  // Metadata sync is controlled by nostrBackupEnabled; kept for backwards compat
+  nostrBackupMetadataEnabled: boolean;
   pushNotifications: PushPreferences;
 };
 
@@ -1031,24 +1644,42 @@ function isSameLocalDate(aMs: number, bMs: number): boolean {
 const R_NONE: Recurrence = { type: "none" };
 const LS_TASKS = "taskify_tasks_v5";
 const LS_TASKS_LEGACY = ["taskify_tasks_v4"] as const;
+const LS_CALENDAR_EVENTS = "taskify_calendar_events_v1";
+const LS_EXTERNAL_CALENDAR_EVENTS = "taskify_calendar_external_events_v1";
+const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
 const LS_SETTINGS = "taskify_settings_v2";
 const LS_BOARDS = "taskify_boards_v2";
-const LS_TUTORIAL_DONE = "taskify_tutorial_done_v1";
+const LS_BOARD_SORT = "taskify_board_sort_v1";
+const LS_UPCOMING_FILTER = "taskify_upcoming_filter_v1";
+const LS_UPCOMING_US_HOLIDAYS_ENABLED = "taskify_upcoming_us_holidays_enabled_v1";
+const LS_UPCOMING_VIEW = "taskify_upcoming_view_v1";
+const LS_UPCOMING_SORT = "taskify_upcoming_sort_v1";
+const LS_UPCOMING_BOARD_GROUPING = "taskify_upcoming_board_grouping_v1";
+const LS_UPCOMING_FILTER_PRESETS = "taskify_upcoming_filter_presets_v1";
+const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
 const LS_BIBLE_TRACKER = "taskify_bible_tracker_v1";
+const LS_BIBLE_PRINT_PAPER = "taskify_bible_print_paper_v1";
+const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
 const LS_LAST_CLOUD_BACKUP = "taskify_cloud_backup_last_v1";
 const LS_LAST_MANUAL_CLOUD_BACKUP = "taskify_cloud_backup_manual_last_v1";
 const CLOUD_BACKUP_MIN_INTERVAL_MS = 60 * 60 * 1000;
 const MANUAL_CLOUD_BACKUP_INTERVAL_MS = 60 * 1000;
 const SATS_PER_BTC = 100_000_000;
+const HISTORY_MARK_SPENT_CUTOFF_MS = 5 * 24 * 60 * 60 * 1000;
+
+type WalletHistoryEntryKind = "bounty-attachment";
 
 type TaskifyBackupPayload = {
   tasks: unknown;
+  calendarEvents: unknown;
+  externalCalendarEvents?: unknown;
   boards: unknown;
   settings: unknown;
   scriptureMemory: unknown;
   bibleTracker: unknown;
   defaultRelays: unknown;
   contacts: unknown;
+  contactsSyncMeta?: unknown;
   nostrSk: string;
   cashu: {
     proofs: unknown;
@@ -1060,6 +1691,126 @@ type TaskifyBackupPayload = {
   };
 };
 
+function parseBackupJsonPayload(raw: string): Partial<TaskifyBackupPayload> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Invalid backup file.");
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid backup data");
+  }
+  return parsed as Partial<TaskifyBackupPayload>;
+}
+
+function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
+  if (!data || typeof data !== "object") {
+    throw new Error("Invalid backup data");
+  }
+  if ("tasks" in data && data.tasks !== undefined) {
+    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(data.tasks));
+  }
+  if ("calendarEvents" in data && data.calendarEvents !== undefined) {
+    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS, JSON.stringify(data.calendarEvents));
+  }
+  if ("externalCalendarEvents" in data && data.externalCalendarEvents !== undefined) {
+    idbKeyValue.setItem(
+      TASKIFY_STORE_TASKS,
+      LS_EXTERNAL_CALENDAR_EVENTS,
+      JSON.stringify(data.externalCalendarEvents),
+    );
+  }
+  if ("boards" in data && data.boards !== undefined) {
+    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARDS, JSON.stringify(data.boards));
+  }
+  if ("settings" in data && data.settings !== undefined) {
+    kvStorage.setItem(LS_SETTINGS, JSON.stringify(data.settings));
+  }
+  if ("scriptureMemory" in data && data.scriptureMemory !== undefined) {
+    kvStorage.setItem(LS_SCRIPTURE_MEMORY, JSON.stringify(data.scriptureMemory));
+  }
+  if ("bibleTracker" in data && data.bibleTracker !== undefined) {
+    kvStorage.setItem(LS_BIBLE_TRACKER, JSON.stringify(data.bibleTracker));
+  }
+  if ("defaultRelays" in data && data.defaultRelays !== undefined) {
+    kvStorage.setItem(LS_NOSTR_RELAYS, JSON.stringify(data.defaultRelays));
+  }
+  if ("contacts" in data && data.contacts !== undefined) {
+    idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_LIGHTNING_CONTACTS, JSON.stringify(data.contacts));
+  }
+  if ("contactsSyncMeta" in data && data.contactsSyncMeta !== undefined) {
+    idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META, JSON.stringify(data.contactsSyncMeta));
+  }
+  if (typeof data.nostrSk === "string" && data.nostrSk) {
+    kvStorage.setItem(LS_NOSTR_SK, data.nostrSk);
+  }
+  const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
+  if (cashuData && typeof cashuData === "object") {
+    if ("proofs" in cashuData && cashuData.proofs !== undefined) {
+      saveProofStore(cashuData.proofs);
+    }
+    if ("activeMint" in cashuData) {
+      setActiveMint(cashuData.activeMint || null);
+    }
+    if ("history" in cashuData) {
+      try {
+        const history = Array.isArray(cashuData.history) ? cashuData.history : [];
+        idbKeyValue.setItem(TASKIFY_STORE_WALLET, "cashuHistory", JSON.stringify(history));
+      } catch {
+        idbKeyValue.removeItem(TASKIFY_STORE_WALLET, "cashuHistory");
+      }
+    }
+    if ("trackedMints" in cashuData && cashuData.trackedMints !== undefined) {
+      replaceMintList(Array.isArray(cashuData.trackedMints) ? cashuData.trackedMints : []);
+    }
+    if ("pendingTokens" in cashuData && cashuData.pendingTokens !== undefined) {
+      const entries = Array.isArray(cashuData.pendingTokens)
+        ? (cashuData.pendingTokens as PendingTokenEntry[])
+        : [];
+      replacePendingTokens(entries);
+    }
+    if ("walletSeed" in cashuData && cashuData.walletSeed) {
+      restoreWalletSeedBackup(cashuData.walletSeed as WalletSeedBackupPayload);
+    }
+  }
+}
+
+type UpcomingFilterOption = {
+  id: string;
+  label: string;
+  boardId: string;
+  columnId?: string;
+};
+
+type UpcomingFilterGroup = {
+  id: string;
+  label: string;
+  boardId: string;
+  boardOption: UpcomingFilterOption;
+  listOptions: UpcomingFilterOption[];
+};
+
+type UpcomingFilterPreset = {
+  id: string;
+  name: string;
+  selection: string[];
+};
+
+type NostrBackupState = {
+  lastEventId: string | null;
+  lastTimestamp: number;
+  pubkey: string | null;
+};
+
+type NostrBackupSnapshot = {
+  boards: NostrAppBackupBoard[];
+  settings: Partial<Settings>;
+  walletSeed: WalletSeedBackupPayload;
+  defaultRelays: string[];
+};
+const NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS = 1500;
+
 type WalletHistoryLogEntry = {
   id?: string;
   summary: string;
@@ -1070,12 +1821,14 @@ type WalletHistoryLogEntry = {
   detailKind?: "token" | "invoice" | "note";
   mintUrl?: string;
   feeSat?: number;
+  entryKind?: WalletHistoryEntryKind;
+  relatedTaskTitle?: string;
 };
 
 function readWalletConversionsEnabled(fallback?: boolean): boolean {
   if (typeof fallback === "boolean") return fallback;
   try {
-    const raw = localStorage.getItem(LS_SETTINGS);
+    const raw = kvStorage.getItem(LS_SETTINGS);
     if (!raw) return true;
     const parsed = JSON.parse(raw);
     return parsed?.walletConversionEnabled !== false;
@@ -1086,7 +1839,7 @@ function readWalletConversionsEnabled(fallback?: boolean): boolean {
 
 function readCachedUsdPrice(): number | null {
   try {
-    const raw = localStorage.getItem(LS_BTC_USD_PRICE_CACHE);
+    const raw = kvStorage.getItem(LS_BTC_USD_PRICE_CACHE);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     const price = Number(parsed?.price);
@@ -1094,6 +1847,73 @@ function readCachedUsdPrice(): number | null {
   } catch {
     return null;
   }
+}
+
+function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
+  if (!value || typeof value !== "object") return null;
+  const id = typeof value.id === "string" ? value.id : "";
+  const boardId = typeof value.boardId === "string" ? value.boardId : "";
+  if (!id || !boardId) return null;
+  const tasks = Array.isArray(value.tasks)
+    ? value.tasks
+      .map((task: any) => {
+        if (!task || typeof task !== "object") return null;
+        const taskId = typeof task.id === "string" ? task.id : "";
+        const title = typeof task.title === "string" ? task.title : "";
+        if (!taskId || !title) return null;
+        const label = typeof task.label === "string" ? task.label : undefined;
+        return { id: taskId, title, ...(label ? { label } : {}) };
+      })
+      .filter(Boolean) as BoardPrintTask[]
+    : [];
+  const paperSize = isPrintPaperSize(value.paperSize) ? value.paperSize : "letter";
+  return {
+    id,
+    boardId,
+    boardName: typeof value.boardName === "string" ? value.boardName : "Board",
+    printedAtISO: typeof value.printedAtISO === "string" ? value.printedAtISO : new Date().toISOString(),
+    layoutVersion: typeof value.layoutVersion === "string" ? value.layoutVersion : "v1",
+    paperSize,
+    tasks,
+  };
+}
+
+function loadBoardPrintJob(boardId: string): BoardPrintJob | null {
+  if (!boardId) return null;
+  try {
+    const raw = kvStorage.getItem(LS_BOARD_PRINT_JOBS);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return normalizeBoardPrintJob((parsed as Record<string, BoardPrintJob>)[boardId]);
+  } catch {
+    return null;
+  }
+}
+
+function persistBoardPrintJob(job: BoardPrintJob): void {
+  try {
+    const raw = kvStorage.getItem(LS_BOARD_PRINT_JOBS);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const next = parsed && typeof parsed === "object" ? parsed : {};
+    (next as Record<string, BoardPrintJob>)[job.boardId] = job;
+    kvStorage.setItem(LS_BOARD_PRINT_JOBS, JSON.stringify(next));
+  } catch {}
+}
+
+function loadBiblePrintPaperSize(): PrintPaperSize {
+  try {
+    const raw = kvStorage.getItem(LS_BIBLE_PRINT_PAPER);
+    return isPrintPaperSize(raw) ? raw : "letter";
+  } catch {
+    return "letter";
+  }
+}
+
+function persistBiblePrintPaperSize(paperSize: PrintPaperSize): void {
+  try {
+    kvStorage.setItem(LS_BIBLE_PRINT_PAPER, paperSize);
+  } catch {}
 }
 
 function captureHistoryFiatValue(amountSat?: number | null, conversionsEnabled?: boolean): number | undefined {
@@ -1109,7 +1929,7 @@ function captureHistoryFiatValue(amountSat?: number | null, conversionsEnabled?:
 function appendWalletHistoryEntry(entry: WalletHistoryLogEntry, options?: { conversionsEnabled?: boolean }) {
   try {
     const conversionsEnabled = readWalletConversionsEnabled(options?.conversionsEnabled);
-    const raw = localStorage.getItem("cashuHistory");
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, "cashuHistory");
     const existing = raw ? JSON.parse(raw) : [];
     const createdAt = Date.now();
     const fiatValueUsd = captureHistoryFiatValue(entry.amountSat, conversionsEnabled);
@@ -1123,11 +1943,18 @@ function appendWalletHistoryEntry(entry: WalletHistoryLogEntry, options?: { conv
       detailKind: entry.detailKind,
       mintUrl: entry.mintUrl,
       feeSat: entry.feeSat,
+      entryKind: entry.entryKind,
+      relatedTaskTitle: entry.relatedTaskTitle,
       createdAt,
       fiatValueUsd,
     };
     const next = Array.isArray(existing) ? [normalized, ...existing] : [normalized];
-    localStorage.setItem("cashuHistory", JSON.stringify(next));
+    idbKeyValue.setItem(TASKIFY_STORE_WALLET, "cashuHistory", JSON.stringify(next));
+    try {
+      window.dispatchEvent(new Event("taskify:wallet-history-updated"));
+    } catch {
+      // ignore
+    }
   } catch (error) {
     console.warn("Failed to append wallet history entry", error);
   }
@@ -1148,34 +1975,6 @@ type NostrUnsignedEvent = Omit<NostrEvent, "id" | "sig" | "pubkey"> & {
   pubkey?: string;
 };
 
-type PendingNostrJob =
-  | {
-      id: string;
-      type: "task";
-      boardId: string;
-      boardTag: string;
-      task: Task;
-      nostrTimestamp: number; // seconds since epoch (when queued)
-      options?: { skipBoardMetadata?: boolean };
-    }
-  | {
-      id: string;
-      type: "delete";
-      boardId: string;
-      boardTag: string;
-      taskId: string;
-      taskSnapshot?: Task;
-      nostrTimestamp: number;
-    }
-  | {
-      id: string;
-      type: "delete-batch";
-      boardId: string;
-      boardTag: string;
-      taskIds: string[];
-      nostrTimestamp: number;
-    };
-
 declare global {
   interface Window {
     nostr?: {
@@ -1186,14 +1985,12 @@ declare global {
 }
 
 const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
-const NOSTR_PUBLISH_WINDOW_MS = 8000;
-const NOSTR_PUBLISH_BURST_LIMIT = 8;
-const NOSTR_BOARD_META_COOLDOWN_MS = 10000;
 const NOSTR_MIGRATION_BUFFER_MS = 15000;
+const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 3000;
 
 function loadDefaultRelays(): string[] {
   try {
-    const raw = localStorage.getItem(LS_NOSTR_RELAYS);
+    const raw = kvStorage.getItem(LS_NOSTR_RELAYS);
     if (raw) {
       const arr = JSON.parse(raw);
       if (Array.isArray(arr) && arr.every((x) => typeof x === "string")) return arr;
@@ -1203,24 +2000,35 @@ function loadDefaultRelays(): string[] {
 }
 
 function saveDefaultRelays(relays: string[]) {
-  localStorage.setItem(LS_NOSTR_RELAYS, JSON.stringify(relays));
+  kvStorage.setItem(LS_NOSTR_RELAYS, JSON.stringify(relays));
 }
 
-function loadPendingNostrQueue(): PendingNostrJob[] {
+function loadNostrBackupState(): NostrBackupState {
   try {
-    const raw = localStorage.getItem(LS_PENDING_NOSTR_QUEUE);
-    if (!raw) return [];
+    const raw = kvStorage.getItem(LS_NOSTR_BACKUP_STATE);
+    if (!raw) return { lastEventId: null, lastTimestamp: 0, pubkey: null };
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item) => item && typeof item.id === "string" && typeof item.type === "string");
+    const lastEventId = typeof parsed?.lastEventId === "string" ? parsed.lastEventId : null;
+    const lastTimestamp = Number(parsed?.lastTimestamp) || 0;
+    const pubkey = typeof parsed?.pubkey === "string" ? parsed.pubkey : null;
+    return { lastEventId, lastTimestamp, pubkey };
   } catch {
-    return [];
+    return { lastEventId: null, lastTimestamp: 0, pubkey: null };
   }
 }
-function persistPendingNostrQueue(queue: PendingNostrJob[]) {
+
+function loadNostrSyncState(storageKey: string): NostrBackupState {
   try {
-    localStorage.setItem(LS_PENDING_NOSTR_QUEUE, JSON.stringify(queue));
-  } catch {}
+    const raw = kvStorage.getItem(storageKey);
+    if (!raw) return { lastEventId: null, lastTimestamp: 0, pubkey: null };
+    const parsed = JSON.parse(raw);
+    const lastEventId = typeof parsed?.lastEventId === "string" ? parsed.lastEventId : null;
+    const lastTimestamp = Number(parsed?.lastTimestamp) || 0;
+    const pubkey = typeof parsed?.pubkey === "string" ? parsed.pubkey : null;
+    return { lastEventId, lastTimestamp, pubkey };
+  } catch {
+    return { lastEventId: null, lastTimestamp: 0, pubkey: null };
+  }
 }
 
 type NostrPool = {
@@ -1232,128 +2040,41 @@ type NostrPool = {
     onEvent: (ev: NostrEvent, from: string) => void,
     onEose?: (from: string) => void
   ) => () => void;
+  subscribeMany: (
+    relays: string[],
+    filter: any,
+    opts?: { onevent?: (ev: NostrEvent) => void; oneose?: (relay?: string) => void; closeOnEose?: boolean },
+  ) => { close: (...args: any[]) => void };
   publish: (relays: string[], event: NostrUnsignedEvent) => Promise<void>;
   publishEvent: (relays: string[], event: NostrEvent) => void;
+  list?: (relays: string[], filters: any[]) => Promise<NostrEvent[]>;
+  get?: (relays: string[], filter: any) => Promise<NostrEvent | null>;
 };
 
 function createNostrPool(): NostrPool {
-  type Relay = {
-    url: string;
-    ws: WebSocket | null;
-    status: "idle" | "opening" | "open" | "closed";
-    queue: any[]; // messages to send when open
-  };
-
-  const relays = new Map<string, Relay>();
-  const subs = new Map<
-    string,
-    {
-      relays: string[];
-      filters: any[];
-      onEvent: (ev: NostrEvent, from: string) => void;
-      onEose?: (from: string) => void;
-    }
-  >();
-
-  function getOrCreate(url: string): Relay {
-    let r = relays.get(url);
-    if (!r) {
-      r = { url, ws: null, status: "idle", queue: [] };
-      relays.set(url, r);
-    }
-    if (r.status === "idle" || r.status === "closed") {
-      try {
-        r.status = "opening";
-        r.ws = new WebSocket(url);
-        r.ws.onopen = () => {
-          r!.status = "open";
-          // flush queue
-          const q = r!.queue.slice();
-          r!.queue.length = 0;
-          for (const msg of q) r!.ws?.send(JSON.stringify(msg));
-          // re-subscribe existing subscriptions on reconnect
-          for (const [subId, sub] of subs) {
-            if (sub.relays.includes(url)) {
-              try { r!.ws?.send(JSON.stringify(["REQ", subId, ...sub.filters])); }
-              catch { r!.queue.push(["REQ", subId, ...sub.filters]); }
-            }
-          }
-        };
-        r.ws.onclose = () => {
-          r!.status = "closed";
-          // try to reopen after a delay
-          setTimeout(() => {
-            if (relays.has(url)) getOrCreate(url);
-          }, 2500);
-        };
-        r.ws.onmessage = (e) => {
-          try {
-            const data = JSON.parse(e.data);
-            if (!Array.isArray(data)) return;
-            const [type, ...rest] = data;
-            if (type === "EVENT") {
-              const [subId, ev] = rest as [string, NostrEvent];
-              const s = subs.get(subId);
-              if (s && ev && typeof ev.kind === "number") s.onEvent(ev, url);
-            } else if (type === "EOSE") {
-              const [subId] = rest as [string];
-              const s = subs.get(subId);
-              if (s?.onEose) s.onEose(url);
-            }
-          } catch {}
-        };
-      } catch {}
-    }
-    return r;
-  }
-
-  function send(url: string, msg: any, opts?: { ensureOpen?: boolean }) {
-    const ensureOpen = opts?.ensureOpen !== false;
-    const r = ensureOpen ? getOrCreate(url) : relays.get(url);
-    if (!r) return;
-    const payload = JSON.stringify(msg);
-    if (r.status === "open" && r.ws?.readyState === WebSocket.OPEN) {
-      try { r.ws.send(payload); } catch { r.queue.push(msg); }
-    } else {
-      r.queue.push(msg);
-    }
-  }
-
-  const api: NostrPool = {
-    ensureRelay(url: string) { getOrCreate(url); },
+  const pool = new SessionPool();
+  return {
+    ensureRelay(url: string) {
+      if (url) void NostrSession.init([url]);
+    },
     setRelays(urls: string[]) {
-      // open new
-      for (const u of urls) getOrCreate(u);
-      // close removed
-      for (const [u, r] of relays) {
-        if (!urls.includes(u)) {
-          try { r.ws?.close(); } catch {}
-          relays.delete(u);
-        }
-      }
+      if (Array.isArray(urls) && urls.length) void NostrSession.init(urls);
     },
     subscribe(relayUrls, filters, onEvent, onEose) {
-      const subId = `taskify-${Math.random().toString(36).slice(2, 10)}`;
-      subs.set(subId, { relays: relayUrls.slice(), filters, onEvent, onEose });
-      for (const u of relayUrls) {
-        send(u, ["REQ", subId, ...filters]);
-      }
-      return () => {
-        for (const u of relayUrls) send(u, ["CLOSE", subId], { ensureOpen: false });
-        subs.delete(subId);
-      };
+      return pool.subscribe(relayUrls, filters, onEvent, onEose);
     },
-    async publish(relayUrls, unsigned) {
-      // This method remains for backward compatibility if needed.
-      const now = Math.floor(Date.now() / 1000);
-      const toSend: any = { ...unsigned, created_at: unsigned.created_at || now };
-      for (const u of relayUrls) send(u, ["EVENT", toSend]);
+    subscribeMany(relayUrls, filter, opts) {
+      return pool.subscribeMany(relayUrls, filter, opts);
+    },
+    async publish(relayUrls, event) {
+      await pool.publish(relayUrls, event as unknown as NostrEvent);
     },
     publishEvent(relayUrls, event) {
-      for (const u of relayUrls) send(u, ["EVENT", event]);
-    }
+      void pool.publishEvent(relayUrls, event as unknown as NostrEvent);
+    },
+    list: pool.list.bind(pool),
+    get: pool.get.bind(pool),
   };
-  return api;
 }
 
 /* ================== Crypto helpers (AES-GCM via local Nostr key) ================== */
@@ -1388,7 +2109,7 @@ function b64decode(s: string): Uint8Array {
 }
 async function deriveAesKeyFromLocalSk(): Promise<CryptoKey> {
   // Derive a stable AES key from local Nostr SK: AES-GCM 256 with SHA-256(sk || label)
-  const skHex = localStorage.getItem(LS_NOSTR_SK) || "";
+  const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
   if (!skHex || !/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
   const label = new TextEncoder().encode("taskify-ecash-v1");
   const raw = concatBytes(hexToBytes(skHex), label);
@@ -1412,7 +2133,7 @@ export async function decryptEcashTokenForFunder(enc: {alg:"aes-gcm-256";iv:stri
 
 // NIP-04 encryption for recipient
 async function encryptEcashTokenForRecipient(recipientHex: string, plain: string): Promise<{ alg: "nip04"; data: string }> {
-  const skHex = localStorage.getItem(LS_NOSTR_SK) || "";
+  const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
   if (!/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
   if (!/^[0-9a-fA-F]{64}$/.test(recipientHex)) throw new Error("Invalid recipient pubkey");
   const data = await nip04.encrypt(skHex, recipientHex, plain);
@@ -1420,7 +2141,7 @@ async function encryptEcashTokenForRecipient(recipientHex: string, plain: string
 }
 
 async function decryptEcashTokenForRecipient(senderHex: string, enc: { alg: "nip04"; data: string }): Promise<string> {
-  const skHex = localStorage.getItem(LS_NOSTR_SK) || "";
+  const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
   if (!/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
   if (!/^[0-9a-fA-F]{64}$/.test(senderHex)) throw new Error("Invalid sender pubkey");
   return await nip04.decrypt(skHex, senderHex, enc.data);
@@ -1471,14 +2192,55 @@ function normalizeSecretKeyInput(raw: string): string | null {
   if (value.startsWith("nsec")) {
     try {
       const dec = nip19.decode(value);
-      if (dec.type !== "nsec" || typeof dec.data !== "string") return null;
-      value = dec.data;
+      if (dec.type !== "nsec") return null;
+      value = typeof dec.data === "string" ? dec.data : bytesToHex(dec.data);
     } catch {
       return null;
     }
   }
   if (!/^[0-9a-fA-F]{64}$/.test(value)) return null;
   return value.toLowerCase();
+}
+
+async function loadCloudBackupPayload(
+  workerBaseUrl: string,
+  secretKeyInput: string,
+): Promise<Partial<TaskifyBackupPayload>> {
+  if (!workerBaseUrl) {
+    throw new Error("Cloud backup service is unavailable.");
+  }
+  const normalized = normalizeSecretKeyInput(secretKeyInput);
+  if (!normalized) {
+    throw new Error("Enter a valid nsec or 64-hex private key.");
+  }
+  if (typeof crypto === "undefined" || !crypto.subtle) {
+    throw new Error("Browser crypto APIs are unavailable.");
+  }
+  const npub = deriveNpubFromSecretKeyHex(normalized);
+  if (!npub) {
+    throw new Error("Unable to derive npub from the provided key.");
+  }
+  const res = await fetch(`${workerBaseUrl}/api/backups?npub=${encodeURIComponent(npub)}`);
+  if (res.status === 404) {
+    throw new Error("No cloud backup found for that key.");
+  }
+  if (!res.ok) {
+    throw new Error(`Backup request failed (${res.status})`);
+  }
+  const body = await res.json();
+  const backup = body?.backup;
+  if (!backup || typeof backup !== "object" || typeof backup.ciphertext !== "string" || typeof backup.iv !== "string") {
+    throw new Error("Invalid backup payload received.");
+  }
+  const decrypted = await decryptBackupWithSecretKey(normalized, {
+    ciphertext: backup.ciphertext,
+    iv: backup.iv,
+  });
+  try {
+    return parseBackupJsonPayload(decrypted);
+  } catch {
+    throw new Error("Cloud backup could not be decoded.");
+  }
 }
 
 type BoardNostrKeyPair = {
@@ -1488,25 +2250,22 @@ type BoardNostrKeyPair = {
   npub: string;
   nsec: string;
 };
-const BOARD_KEY_LABEL = new TextEncoder().encode("taskify-board-nostr-key-v1");
-const boardNostrKeyCache = new Map<string, Promise<BoardNostrKeyPair>>();
+const boardKeyManager = new BoardKeyManager();
 async function deriveBoardNostrKeys(boardId: string): Promise<BoardNostrKeyPair> {
-  if (!boardId || typeof boardId !== "string") throw new Error("Board ID missing");
-  const existing = boardNostrKeyCache.get(boardId);
-  if (existing) return existing;
-  const promise = (async () => {
-    const material = concatBytes(BOARD_KEY_LABEL, new TextEncoder().encode(boardId));
-    const sk = await sha256(material);
-    const skHex = bytesToHex(sk);
-    const pk = getPublicKey(sk);
-    let npub = pk;
-    let nsec = skHex;
-    try { npub = typeof (nip19 as any)?.npubEncode === "function" ? (nip19 as any).npubEncode(pk) : pk; } catch {}
-    try { nsec = typeof (nip19 as any)?.nsecEncode === "function" ? (nip19 as any).nsecEncode(skHex) : skHex; } catch {}
-    return { sk, skHex, pk, npub, nsec };
-  })();
-  boardNostrKeyCache.set(boardId, promise);
-  return promise;
+  return boardKeyManager.getBoardKeys(boardId);
+}
+
+function toNsec(secret: string): string {
+  const trimmed = (secret || "").trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("nsec")) return trimmed;
+  if (!/^[0-9a-fA-F]{64}$/.test(trimmed)) return trimmed;
+  try {
+    const skBytes = hexToBytes(trimmed);
+    return typeof (nip19 as any)?.nsecEncode === "function" ? (nip19 as any).nsecEncode(skBytes) : trimmed;
+  } catch {
+    return trimmed;
+  }
 }
 
 async function fileToDataURL(file: File): Promise<string> {
@@ -1559,17 +2318,229 @@ function startOfDay(d: Date) {
   return nd;
 }
 
-function isoDatePart(iso: string): string {
-  if (typeof iso === 'string' && iso.length >= 10) return iso.slice(0, 10);
-  try { return new Date(iso).toISOString().slice(0, 10); } catch { return new Date().toISOString().slice(0, 10); }
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_ZONE_VALIDATION_CACHE = new Map<string, string | null>();
+const DATE_KEY_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
+const TIME_KEY_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
+const OFFSET_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
+
+function resolveSystemTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
 }
 
-function isoTimePart(iso: string): string {
+function normalizeTimeZone(value?: string | null): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (TIME_ZONE_VALIDATION_CACHE.has(trimmed)) return TIME_ZONE_VALIDATION_CACHE.get(trimmed) ?? null;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: trimmed }).format(new Date());
+    TIME_ZONE_VALIDATION_CACHE.set(trimmed, trimmed);
+    return trimmed;
+  } catch {
+    TIME_ZONE_VALIDATION_CACHE.set(trimmed, null);
+    return null;
+  }
+}
+
+function formatDateKeyFromParts(year: number, month: number, day: number): string {
+  const yyyy = String(year).padStart(4, "0");
+  const mm = String(month).padStart(2, "0");
+  const dd = String(day).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatDateKeyLocal(date: Date): string {
+  return formatDateKeyFromParts(date.getFullYear(), date.getMonth() + 1, date.getDate());
+}
+
+function parseDateKey(value: string): { year: number; month: number; day: number } | null {
+  if (!ISO_DATE_PATTERN.test(value)) return null;
+  const [yearRaw, monthRaw, dayRaw] = value.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  return { year, month, day };
+}
+
+function parseTimeValue(value: string): { hour: number; minute: number } | null {
+  if (typeof value !== "string" || !value.includes(":")) return null;
+  const [hourRaw, minuteRaw] = value.split(":");
+  const hour = Number.parseInt(hourRaw ?? "", 10);
+  const minute = Number.parseInt(minuteRaw ?? "", 10);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  return {
+    hour: Math.min(23, Math.max(0, hour)),
+    minute: Math.min(59, Math.max(0, minute)),
+  };
+}
+
+function getDateKeyFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = DATE_KEY_FORMATTER_CACHE.get(timeZone);
+  if (cached) return cached;
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  DATE_KEY_FORMATTER_CACHE.set(timeZone, formatter);
+  return formatter;
+}
+
+function getTimeKeyFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = TIME_KEY_FORMATTER_CACHE.get(timeZone);
+  if (cached) return cached;
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+  TIME_KEY_FORMATTER_CACHE.set(timeZone, formatter);
+  return formatter;
+}
+
+function getOffsetFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = OFFSET_FORMATTER_CACHE.get(timeZone);
+  if (cached) return cached;
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  OFFSET_FORMATTER_CACHE.set(timeZone, formatter);
+  return formatter;
+}
+
+function formatDateKeyInTimeZone(date: Date, timeZone: string): string {
+  const formatter = getDateKeyFormatter(timeZone);
+  const parts = formatter.formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  if (!year || !month || !day) return formatDateKeyLocal(date);
+  return `${year}-${month}-${day}`;
+}
+
+function formatTimeKeyInTimeZone(date: Date, timeZone: string): string {
+  const formatter = getTimeKeyFormatter(timeZone);
+  const parts = formatter.formatToParts(date);
+  const hour = parts.find((part) => part.type === "hour")?.value;
+  const minute = parts.find((part) => part.type === "minute")?.value;
+  if (!hour || !minute) return "";
+  return `${hour}:${minute}`;
+}
+
+function getTimeZoneOffset(date: Date, timeZone: string): number {
+  const formatter = getOffsetFormatter(timeZone);
+  const parts = formatter.formatToParts(date);
+  const year = Number(parts.find((part) => part.type === "year")?.value);
+  const month = Number(parts.find((part) => part.type === "month")?.value);
+  const day = Number(parts.find((part) => part.type === "day")?.value);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value);
+  const second = Number(parts.find((part) => part.type === "second")?.value);
+  if ([year, month, day, hour, minute, second].some((value) => !Number.isFinite(value))) return 0;
+  const asUTC = Date.UTC(year, month - 1, day, hour, minute, second);
+  return asUTC - date.getTime();
+}
+
+function formatOffsetLabel(offsetMinutes: number): string {
+  if (!Number.isFinite(offsetMinutes)) return "UTC";
+  if (offsetMinutes === 0) return "UTC";
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(abs / 60)).padStart(2, "0");
+  const minutes = String(abs % 60).padStart(2, "0");
+  return `UTC${sign}${hours}:${minutes}`;
+}
+
+function zonedTimeToUtc(dateStr: string, timeStr: string, timeZone: string): Date | null {
+  const parsedDate = parseDateKey(dateStr);
+  const parsedTime = parseTimeValue(timeStr);
+  if (!parsedDate || !parsedTime) return null;
+  const { year, month, day } = parsedDate;
+  const { hour, minute } = parsedTime;
+  const utcGuess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+  const offset = getTimeZoneOffset(utcGuess, timeZone);
+  let adjusted = new Date(utcGuess.getTime() - offset);
+  const offsetCheck = getTimeZoneOffset(adjusted, timeZone);
+  if (offsetCheck !== offset) {
+    adjusted = new Date(utcGuess.getTime() - offsetCheck);
+  }
+  return adjusted;
+}
+
+function isoDatePart(iso: string, timeZone?: string): string {
+  if (typeof iso === "string" && ISO_DATE_PATTERN.test(iso)) return iso;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return formatDateKeyLocal(new Date());
+  const safeZone = normalizeTimeZone(timeZone);
+  if (safeZone) return formatDateKeyInTimeZone(date, safeZone);
+  return formatDateKeyLocal(date);
+}
+
+function formatUpcomingDayLabel(dateKey: string): string {
+  const parsed = new Date(`${dateKey}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return dateKey;
+  const weekday = parsed.toLocaleDateString([], { weekday: "long" });
+  const monthDay = parsed.toLocaleDateString([], { month: "short", day: "numeric" });
+  return `${weekday} — ${monthDay}`;
+}
+
+function isoTimePart(iso: string, timeZone?: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const safeZone = normalizeTimeZone(timeZone);
+  if (safeZone) return formatTimeKeyInTimeZone(date, safeZone);
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
   return `${hours}:${minutes}`;
+}
+
+function isoTimePartUtc(iso: string): string {
+  if (typeof iso === 'string' && iso.length >= 16) return iso.slice(11, 16);
+  try { return new Date(iso).toISOString().slice(11, 16); } catch { return ""; }
+}
+
+function weekdayFromISO(iso: string, timeZone?: string): Weekday | null {
+  const dateKey = isoDatePart(iso, timeZone);
+  const parsed = parseDateKey(dateKey);
+  if (!parsed) return null;
+  const utc = Date.UTC(parsed.year, parsed.month - 1, parsed.day);
+  if (!Number.isFinite(utc)) return null;
+  return new Date(utc).getUTCDay() as Weekday;
+}
+
+function taskDateKey(task: Task): string {
+  return isoDatePart(task.dueISO, task.dueTimeZone);
+}
+
+function taskDisplayDateKey(task: Task): string {
+  return isoDatePart(task.dueISO);
+}
+
+function taskTimeValue(task: Task): number | null {
+  if (!task.dueTimeEnabled) return null;
+  const timePart = isoTimePart(task.dueISO);
+  const parsed = parseTimeValue(timePart);
+  if (!parsed) return null;
+  return parsed.hour * 60 + parsed.minute;
+}
+
+function taskWeekday(task: Task): Weekday | null {
+  return weekdayFromISO(task.dueISO);
 }
 
 function calendarAnchorFrom(dateStr?: string | null) {
@@ -1630,8 +2601,25 @@ function scheduleWheelSnap(
   }, 120);
 }
 
-function isoFromDateTime(dateStr: string, timeStr?: string): string {
+function nudgeHorizontalScroller(scroller: HTMLDivElement | null) {
+  if (!scroller) return;
+  const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+  if (maxScroll < 1) return;
+  const start = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
+  const bump = start < maxScroll ? start + 1 : start - 1;
+  if (Math.abs(bump - start) < 0.5) return;
+  scroller.scrollLeft = bump;
+  scroller.scrollLeft = start;
+}
+
+function isoFromDateTime(dateStr: string, timeStr?: string, timeZone?: string): string {
+  const safeZone = normalizeTimeZone(timeZone);
   if (dateStr) {
+    if (safeZone && ISO_DATE_PATTERN.test(dateStr)) {
+      const timeValue = timeStr || "00:00";
+      const zoned = zonedTimeToUtc(dateStr, timeValue, safeZone);
+      if (zoned && !Number.isNaN(zoned.getTime())) return zoned.toISOString();
+    }
     if (timeStr) {
       const withTime = new Date(`${dateStr}T${timeStr}`);
       if (!Number.isNaN(withTime.getTime())) return withTime.toISOString();
@@ -1644,10 +2632,459 @@ function isoFromDateTime(dateStr: string, timeStr?: string): string {
   return new Date().toISOString();
 }
 
-function formatTimeLabel(iso: string): string {
+function monthKeyFromYearMonth(year: number, monthIndex: number): string {
+  const mm = String(monthIndex + 1).padStart(2, "0");
+  return `${year}-${mm}`;
+}
+
+function daysInCalendarMonth(year: number, monthIndex: number): number {
+  const value = new Date(year, monthIndex + 1, 0).getDate();
+  return Number.isFinite(value) && value > 0 ? value : 30;
+}
+
+function nthWeekdayOfMonthDateKey(
+  year: number,
+  monthIndex: number,
+  weekday: Weekday,
+  occurrence: number,
+): string | null {
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || !Number.isFinite(occurrence)) return null;
+  if (occurrence < 1) return null;
+  const firstOfMonth = new Date(Date.UTC(year, monthIndex, 1));
+  if (Number.isNaN(firstOfMonth.getTime())) return null;
+  const firstWeekday = firstOfMonth.getUTCDay() as Weekday;
+  const offset = (weekday - firstWeekday + 7) % 7;
+  const day = 1 + offset + (occurrence - 1) * 7;
+  const maxDay = daysInCalendarMonth(year, monthIndex);
+  if (day < 1 || day > maxDay) return null;
+  return formatDateKeyFromParts(year, monthIndex + 1, day);
+}
+
+function lastWeekdayOfMonthDateKey(year: number, monthIndex: number, weekday: Weekday): string | null {
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex)) return null;
+  const maxDay = daysInCalendarMonth(year, monthIndex);
+  const lastOfMonth = new Date(Date.UTC(year, monthIndex, maxDay));
+  if (Number.isNaN(lastOfMonth.getTime())) return null;
+  const lastWeekday = lastOfMonth.getUTCDay() as Weekday;
+  const offset = (lastWeekday - weekday + 7) % 7;
+  const day = maxDay - offset;
+  if (day < 1 || day > maxDay) return null;
+  return formatDateKeyFromParts(year, monthIndex + 1, day);
+}
+
+function observedUsHolidayDateKey(dateKey: string): string | null {
+  const parsed = parseDateKey(dateKey);
+  if (!parsed) return null;
+  const date = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
+  if (Number.isNaN(date.getTime())) return null;
+  const weekday = date.getUTCDay() as Weekday;
+  if (weekday === 6) date.setUTCDate(date.getUTCDate() - 1);
+  else if (weekday === 0) date.setUTCDate(date.getUTCDate() + 1);
+  else return null;
+  return date.toISOString().slice(0, 10);
+}
+
+type UsHolidayDefinition = {
+  id: string;
+  title: string;
+  dateForYear: (year: number) => string | null;
+  includeObserved?: boolean;
+};
+
+function buildUsHolidayCalendarEvents(startYear: number, endYear: number): CalendarEvent[] {
+  const fromYear = Math.min(startYear, endYear);
+  const toYear = Math.max(startYear, endYear);
+  const definitions: UsHolidayDefinition[] = [
+    {
+      id: "new-years-day",
+      title: "New Year's Day",
+      includeObserved: true,
+      dateForYear: (year) => formatDateKeyFromParts(year, 1, 1),
+    },
+    {
+      id: "mlk-day",
+      title: "Martin Luther King Jr. Day",
+      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 0, 1, 3),
+    },
+    {
+      id: "presidents-day",
+      title: "Presidents Day",
+      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 1, 1, 3),
+    },
+    {
+      id: "memorial-day",
+      title: "Memorial Day",
+      dateForYear: (year) => lastWeekdayOfMonthDateKey(year, 4, 1),
+    },
+    {
+      id: "juneteenth",
+      title: "Juneteenth",
+      includeObserved: true,
+      dateForYear: (year) => formatDateKeyFromParts(year, 6, 19),
+    },
+    {
+      id: "independence-day",
+      title: "Independence Day",
+      includeObserved: true,
+      dateForYear: (year) => formatDateKeyFromParts(year, 7, 4),
+    },
+    {
+      id: "labor-day",
+      title: "Labor Day",
+      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 8, 1, 1),
+    },
+    {
+      id: "columbus-day",
+      title: "Columbus Day",
+      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 9, 1, 2),
+    },
+    {
+      id: "veterans-day",
+      title: "Veterans Day",
+      includeObserved: true,
+      dateForYear: (year) => formatDateKeyFromParts(year, 11, 11),
+    },
+    {
+      id: "thanksgiving-day",
+      title: "Thanksgiving Day",
+      dateForYear: (year) => nthWeekdayOfMonthDateKey(year, 10, 4, 4),
+    },
+    {
+      id: "christmas-day",
+      title: "Christmas Day",
+      includeObserved: true,
+      dateForYear: (year) => formatDateKeyFromParts(year, 12, 25),
+    },
+  ];
+
+  const events: CalendarEvent[] = [];
+  const seen = new Set<string>();
+  const addEvent = (id: string, title: string, dateKey: string, summary: string) => {
+    if (!ISO_DATE_PATTERN.test(dateKey)) return;
+    const dedupeKey = `${id}|${dateKey}`;
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+    events.push({
+      id,
+      kind: "date",
+      boardId: SPECIAL_CALENDAR_US_HOLIDAYS_ID,
+      title,
+      summary,
+      startDate: dateKey,
+      readOnly: true,
+    });
+  };
+
+  for (let year = fromYear; year <= toYear; year += 1) {
+    definitions.forEach((definition) => {
+      const dateKey = definition.dateForYear(year);
+      if (!dateKey) return;
+      addEvent(
+        `us-holiday:${definition.id}:${year}`,
+        definition.title,
+        dateKey,
+        "US federal holiday",
+      );
+
+      if (!definition.includeObserved) return;
+      const observedDateKey = observedUsHolidayDateKey(dateKey);
+      if (!observedDateKey) return;
+      addEvent(
+        `us-holiday:${definition.id}:${year}:observed`,
+        `${definition.title} (Observed)`,
+        observedDateKey,
+        "US federal holiday (observed date)",
+      );
+    });
+
+    const dstStart = nthWeekdayOfMonthDateKey(year, 2, 0, 2);
+    if (dstStart) {
+      addEvent(
+        `us-holiday:dst-start:${year}`,
+        "Daylight Saving Time Begins",
+        dstStart,
+        "Clocks move forward one hour in most US time zones",
+      );
+    }
+
+    const dstEnd = nthWeekdayOfMonthDateKey(year, 10, 0, 1);
+    if (dstEnd) {
+      addEvent(
+        `us-holiday:dst-end:${year}`,
+        "Daylight Saving Time Ends",
+        dstEnd,
+        "Clocks move back one hour in most US time zones",
+      );
+    }
+  }
+
+  events.sort((a, b) => {
+    if (a.kind !== "date" || b.kind !== "date") return a.id.localeCompare(b.id);
+    const dateDiff = a.startDate.localeCompare(b.startDate);
+    if (dateDiff !== 0) return dateDiff;
+    const titleDiff = a.title.localeCompare(b.title);
+    if (titleDiff !== 0) return titleDiff;
+    return a.id.localeCompare(b.id);
+  });
+
+  return events;
+}
+
+function isUsHolidayCalendarEvent(event: CalendarEvent): boolean {
+  return event.boardId === SPECIAL_CALENDAR_US_HOLIDAYS_ID;
+}
+
+function hashStringToUint32(input: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function mulberry32(seed: number): () => number {
+  let t = seed >>> 0;
+  return () => {
+    t = (t + 0x6D2B79F5) >>> 0;
+    let x = t;
+    x = Math.imul(x ^ (x >>> 15), x | 1);
+    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffleInPlace<T>(arr: T[], rng: () => number): void {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    if (j === i) continue;
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+}
+
+function fastingReminderDueTimesForMonth(
+  year: number,
+  monthIndex: number,
+  options: { mode: FastingRemindersMode; weekday: Weekday; perMonth: number; seed: string },
+): number[] {
+  const totalDays = daysInCalendarMonth(year, monthIndex);
+  const perMonth = Number.isFinite(options.perMonth) ? Math.max(1, Math.round(options.perMonth)) : 1;
+  if (options.mode === "weekday") {
+    const out: number[] = [];
+    for (let day = 1; day <= totalDays; day++) {
+      const date = new Date(year, monthIndex, day);
+      if ((date.getDay() as Weekday) !== options.weekday) continue;
+      const midnight = startOfDay(date);
+      if (!Number.isNaN(midnight.getTime())) out.push(midnight.getTime());
+    }
+    return out.slice(0, perMonth);
+  }
+
+  const candidates = Array.from({ length: totalDays }, (_, i) => i + 1);
+  const rng = mulberry32(hashStringToUint32(`${options.seed}|${monthKeyFromYearMonth(year, monthIndex)}`));
+  shuffleInPlace(candidates, rng);
+  return candidates
+    .slice(0, Math.min(perMonth, totalDays))
+    .sort((a, b) => a - b)
+    .map((day) => startOfDay(new Date(year, monthIndex, day)).getTime())
+    .filter((time) => Number.isFinite(time) && !Number.isNaN(time));
+}
+
+function formatTimeLabel(iso: string, timeZone?: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const safeZone = normalizeTimeZone(timeZone);
+  return date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+    ...(safeZone ? { timeZone: safeZone } : {}),
+  });
+}
+
+type TimeZoneOption = {
+  id: string;
+  label: string;
+  city: string;
+  region: string;
+  shortNames: string[];
+  longNames: string[];
+  offsetMinutes: number;
+  offsetLabel: string;
+  search: string;
+};
+
+const FALLBACK_TIME_ZONES = [
+  "UTC",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Phoenix",
+  "America/Anchorage",
+  "Pacific/Honolulu",
+  "Europe/London",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Moscow",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Asia/Bangkok",
+  "Asia/Singapore",
+  "Asia/Shanghai",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+];
+
+let cachedTimeZoneOptions: TimeZoneOption[] | null = null;
+let cachedTimeZoneOptionMap: Map<string, TimeZoneOption> | null = null;
+
+function getSupportedTimeZones(): string[] {
+  try {
+    const supported = typeof (Intl as any).supportedValuesOf === "function"
+      ? (Intl as any).supportedValuesOf("timeZone")
+      : null;
+    if (Array.isArray(supported) && supported.length > 0) {
+      return supported.includes("UTC") ? supported : ["UTC", ...supported];
+    }
+  } catch {}
+  return FALLBACK_TIME_ZONES;
+}
+
+function extractTimeZoneName(timeZone: string, date: Date, style: "short" | "long"): string {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: style });
+    const part = formatter.formatToParts(date).find((entry) => entry.type === "timeZoneName");
+    return part?.value?.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+function getTimeZoneLabelParts(timeZone: string): { label: string; city: string; region: string } {
+  const parts = timeZone.split("/");
+  const rawCity = parts[parts.length - 1] || timeZone;
+  const city = rawCity.replace(/_/g, " ");
+  const region = parts.slice(0, -1).join("/").replace(/_/g, " ");
+  return { label: city || timeZone, city, region };
+}
+
+function buildTimeZoneOption(timeZone: string, referenceDates: Date[]): TimeZoneOption | null {
+  const normalized = normalizeTimeZone(timeZone) ?? (timeZone === "UTC" ? "UTC" : null);
+  if (!normalized) return null;
+  const { label, city, region } = getTimeZoneLabelParts(normalized);
+  const shortNames = new Set<string>();
+  const longNames = new Set<string>();
+  referenceDates.forEach((date) => {
+    const shortName = extractTimeZoneName(normalized, date, "short");
+    const longName = extractTimeZoneName(normalized, date, "long");
+    if (shortName) shortNames.add(shortName);
+    if (longName) longNames.add(longName);
+  });
+  const offsetMinutes = Math.round(getTimeZoneOffset(new Date(), normalized) / 60000);
+  const offsetLabel = formatOffsetLabel(offsetMinutes);
+  const offsetAlias = offsetLabel.replace("UTC", "GMT");
+  const search = [
+    normalized,
+    label,
+    city,
+    region,
+    ...shortNames,
+    ...longNames,
+    offsetLabel,
+    offsetAlias,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return {
+    id: normalized,
+    label,
+    city,
+    region,
+    shortNames: Array.from(shortNames),
+    longNames: Array.from(longNames),
+    offsetMinutes,
+    offsetLabel,
+    search,
+  };
+}
+
+function getTimeZoneOptions(): { options: TimeZoneOption[]; map: Map<string, TimeZoneOption> } {
+  if (cachedTimeZoneOptions && cachedTimeZoneOptionMap) {
+    return { options: cachedTimeZoneOptions, map: cachedTimeZoneOptionMap };
+  }
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const referenceDates = [
+    now,
+    new Date(Date.UTC(year, 0, 1, 12, 0, 0)),
+    new Date(Date.UTC(year, 6, 1, 12, 0, 0)),
+  ];
+  const options: TimeZoneOption[] = [];
+  const map = new Map<string, TimeZoneOption>();
+  const seen = new Set<string>();
+  for (const zone of getSupportedTimeZones()) {
+    if (!zone || seen.has(zone)) continue;
+    seen.add(zone);
+    const option = buildTimeZoneOption(zone, referenceDates);
+    if (!option) continue;
+    options.push(option);
+    map.set(option.id, option);
+  }
+  options.sort((a, b) => {
+    if (a.offsetMinutes !== b.offsetMinutes) return a.offsetMinutes - b.offsetMinutes;
+    return a.label.localeCompare(b.label);
+  });
+  cachedTimeZoneOptions = options;
+  cachedTimeZoneOptionMap = map;
+  return { options, map };
+}
+
+function formatTimeZoneDisplay(timeZone: string, optionMap: Map<string, TimeZoneOption>): string {
+  const option = optionMap.get(timeZone);
+  if (!option) return timeZone;
+  const short = option.shortNames.find((name) => !!name) || "";
+  if (short && short !== option.label) return `${option.label} (${short})`;
+  return option.label;
+}
+
+function scoreTimeZoneOption(option: TimeZoneOption, query: string): number {
+  const normalized = query.toLowerCase();
+  const isAbbrev = /^[a-z]{2,6}$/.test(normalized);
+  const id = option.id.toLowerCase();
+  const label = option.label.toLowerCase();
+  const city = option.city.toLowerCase();
+  const region = option.region.toLowerCase();
+  const shortNames = option.shortNames.map((name) => name.toLowerCase());
+  const longNames = option.longNames.map((name) => name.toLowerCase());
+
+  if (
+    id === normalized ||
+    label === normalized ||
+    city === normalized ||
+    region === normalized ||
+    shortNames.includes(normalized) ||
+    longNames.includes(normalized)
+  ) {
+    return 0;
+  }
+
+  if (isAbbrev && shortNames.some((name) => name.startsWith(normalized))) return 1;
+
+  if (
+    id.startsWith(normalized) ||
+    label.startsWith(normalized) ||
+    city.startsWith(normalized) ||
+    region.startsWith(normalized) ||
+    shortNames.some((name) => name.startsWith(normalized)) ||
+    longNames.some((name) => name.startsWith(normalized))
+  ) {
+    return 2;
+  }
+
+  return 3;
 }
 
 function parseTimePickerValue(value?: string | null, fallback = "09:00") {
@@ -1846,8 +3283,7 @@ function DatePickerCalendar({
     if (!day) return;
     const next = new Date(calendarCells.year, calendarCells.month, day);
     if (Number.isNaN(next.getTime())) return;
-    const iso = next.toISOString().slice(0, 10);
-    onSelectDate(iso);
+    onSelectDate(formatDateKeyLocal(next));
   }
 
   return (
@@ -1990,8 +3426,76 @@ function isoForToday(base = new Date()): string {
 function nextOccurrence(
   currentISO: string,
   rule: Recurrence,
-  keepTime = false
+  keepTime = false,
+  timeZone?: string,
 ): string | null {
+  const safeZone = normalizeTimeZone(timeZone);
+  if (safeZone) {
+    const dateKey = isoDatePart(currentISO, safeZone);
+    const dateParts = parseDateKey(dateKey);
+    if (dateParts) {
+      const baseTime = keepTime ? isoTimePart(currentISO, safeZone) : "";
+      const applyDate = (parts: { year: number; month: number; day: number }): string => {
+        const nextDateKey = formatDateKeyFromParts(parts.year, parts.month, parts.day);
+        return isoFromDateTime(nextDateKey, baseTime || undefined, safeZone);
+      };
+      const addDays = (d: number) => {
+        const base = new Date(Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day));
+        base.setUTCDate(base.getUTCDate() + d);
+        return {
+          year: base.getUTCFullYear(),
+          month: base.getUTCMonth() + 1,
+          day: base.getUTCDate(),
+        };
+      };
+      const weekdayForParts = (parts: { year: number; month: number; day: number }) =>
+        new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay() as Weekday;
+      let next: string | null = null;
+      switch (rule.type) {
+        case "none":
+          next = null; break;
+        case "daily":
+          next = applyDate(addDays(1)); break;
+        case "weekly": {
+          if (!rule.days.length) return null;
+          for (let i = 1; i <= 28; i++) {
+            const cand = addDays(i);
+            const wd = weekdayForParts(cand);
+            if (rule.days.includes(wd)) { next = applyDate(cand); break; }
+          }
+          break;
+        }
+        case "every": {
+          if (rule.unit === "hour") {
+            const current = new Date(currentISO);
+            const n = new Date(current.getTime() + rule.n * 3600000);
+            next = n.toISOString();
+          } else {
+            const daysToAdd = rule.unit === "day" ? rule.n : rule.n * 7;
+            next = applyDate(addDays(daysToAdd));
+          }
+          break;
+        }
+        case "monthlyDay": {
+          const interval = Math.max(1, rule.interval ?? 1);
+          const base = new Date(Date.UTC(dateParts.year, dateParts.month - 1 + interval, 1));
+          const n = {
+            year: base.getUTCFullYear(),
+            month: base.getUTCMonth() + 1,
+            day: Math.min(rule.day, 28),
+          };
+          next = applyDate(n);
+          break;
+        }
+      }
+      if (next && rule.untilISO) {
+        const limitKey = isoDatePart(rule.untilISO, safeZone);
+        const nextKey = isoDatePart(next, safeZone);
+        if (nextKey > limitKey) return null;
+      }
+      return next;
+    }
+  }
   const currentDate = new Date(currentISO);
   const curDay = startOfDay(currentDate);
   const timeOffset = currentDate.getTime() - curDay.getTime();
@@ -2047,6 +3551,93 @@ function nextOccurrence(
     if (n > limit) return null;
   }
   return next;
+}
+
+function calendarEventDateKey(event: CalendarEvent): string | null {
+  if (event.kind === "date") {
+    return ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : null;
+  }
+  const key = isoDatePart(event.startISO, event.startTzid);
+  return ISO_DATE_PATTERN.test(key) ? key : null;
+}
+
+function calendarEventStartISOForRecurrence(event: CalendarEvent): string | null {
+  if (event.kind === "time") return event.startISO;
+  const dateKey = ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : null;
+  if (!dateKey) return null;
+  return isoFromDateTime(dateKey, "00:00", "UTC");
+}
+
+function calendarEventEndMs(event: CalendarEvent): number | null {
+  if (event.kind === "time") {
+    const start = Date.parse(event.startISO);
+    if (Number.isNaN(start)) return null;
+    if (event.endISO) {
+      const end = Date.parse(event.endISO);
+      if (!Number.isNaN(end) && end >= start) return end;
+    }
+    return start;
+  }
+  const startKey = ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : null;
+  if (!startKey) return null;
+  const endKey =
+    event.endDate && ISO_DATE_PATTERN.test(event.endDate) && event.endDate >= startKey
+      ? event.endDate
+      : startKey;
+  const parsed = parseDateKey(endKey);
+  if (!parsed) return null;
+  const endUtc = Date.UTC(parsed.year, parsed.month - 1, parsed.day);
+  if (!Number.isFinite(endUtc)) return null;
+  return endUtc + MS_PER_DAY;
+}
+
+function calendarWeekRangeKeys(weekStart: Weekday, base = new Date()): { startKey: string; endKey: string } {
+  const start = startOfWeek(base, weekStart);
+  const startKey = formatDateKeyLocal(start);
+  const end = new Date(start.getTime() + 6 * MS_PER_DAY);
+  const endKey = formatDateKeyLocal(end);
+  return { startKey, endKey };
+}
+
+function hiddenUntilForCalendarEvent(
+  event: CalendarEvent,
+  boardKind: Board["kind"],
+  weekStart: Weekday,
+): string | undefined {
+  if (boardKind !== "lists" && boardKind !== "compound") return undefined;
+  const dateKey = calendarEventDateKey(event);
+  if (!dateKey) return undefined;
+  const parsed = parseDateKey(dateKey);
+  if (!parsed) return undefined;
+  const eventDate = new Date(parsed.year, parsed.month - 1, parsed.day);
+  if (Number.isNaN(eventDate.getTime())) return undefined;
+  const eventWeekStart = startOfWeek(eventDate, weekStart);
+  const currentWeekStart = startOfWeek(new Date(), weekStart);
+  if (eventWeekStart.getTime() > currentWeekStart.getTime()) {
+    return eventWeekStart.toISOString();
+  }
+  return undefined;
+}
+
+function isCalendarEventVisibleOnListBoard(event: CalendarEvent, weekStart: Weekday, now = new Date()): boolean {
+  const dateKey = calendarEventDateKey(event);
+  if (!dateKey) return false;
+  const { startKey, endKey } = calendarWeekRangeKeys(weekStart, now);
+
+  if (event.kind === "date") {
+    const startKeyForEvent = ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : dateKey;
+    const endKeyForEvent =
+      event.endDate && ISO_DATE_PATTERN.test(event.endDate) && event.endDate >= startKeyForEvent
+        ? event.endDate
+        : startKeyForEvent;
+    if (endKeyForEvent < startKey) return false;
+    if (startKeyForEvent <= endKey && endKeyForEvent >= startKey) return true;
+    return !event.hiddenUntilISO;
+  }
+
+  if (dateKey < startKey) return false;
+  if (dateKey > endKey) return !event.hiddenUntilISO;
+  return true;
 }
 
 /* ============= Visibility helpers (hide until X) ============= */
@@ -2112,11 +3703,78 @@ function normalizeHiddenForRecurring(task: Task): Task {
   return task;
 }
 
+function recurrenceSeriesKey(task: Task): string | null {
+  if (!task.recurrence) return null;
+  if (task.seriesId) return `series:${task.boardId}:${task.seriesId}`;
+  const recurrence = JSON.stringify(task.recurrence);
+  return `sig:${task.boardId}::${task.title}::${task.note || ""}::${recurrence}`;
+}
+
+function recurringInstanceId(seriesId: string, dueISO: string, rule?: Recurrence, timeZone?: string): string {
+  const datePart = isoDatePart(dueISO, timeZone);
+  const timePart =
+    rule && rule.type === "every" && rule.unit === "hour"
+      ? isoTimePartUtc(dueISO)
+      : "";
+  const suffix = timePart ? `${datePart}T${timePart}` : datePart;
+  return `recurrence:${seriesId}:${suffix}`;
+}
+
+function recurringOccurrenceKey(task: Task): string | null {
+  if (!task.recurrence || !isFrequentRecurrence(task.recurrence)) return null;
+  const seriesKey = recurrenceSeriesKey(task);
+  if (!seriesKey) return null;
+  const datePart = isoDatePart(task.dueISO, task.dueTimeZone);
+  return `${seriesKey}::${datePart}`;
+}
+
+function pickRecurringDuplicate(a: Task, b: Task): Task {
+  const aCompleted = !!a.completed;
+  const bCompleted = !!b.completed;
+  if (aCompleted !== bCompleted) return aCompleted ? a : b;
+  const aCompletedAt = a.completedAt ? Date.parse(a.completedAt) : 0;
+  const bCompletedAt = b.completedAt ? Date.parse(b.completedAt) : 0;
+  if (aCompletedAt !== bCompletedAt) return aCompletedAt >= bCompletedAt ? a : b;
+  const aIsBase = !!(a.seriesId && a.id === a.seriesId);
+  const bIsBase = !!(b.seriesId && b.id === b.seriesId);
+  if (aIsBase !== bIsBase) return aIsBase ? a : b;
+  const aOrder = typeof a.order === "number" ? a.order : Number.POSITIVE_INFINITY;
+  const bOrder = typeof b.order === "number" ? b.order : Number.POSITIVE_INFINITY;
+  if (aOrder !== bOrder) return aOrder < bOrder ? a : b;
+  return a.id.localeCompare(b.id) <= 0 ? a : b;
+}
+
+function dedupeRecurringInstances(tasks: Task[]): Task[] {
+  const out: Task[] = [];
+  const indexByKey = new Map<string, number>();
+  let changed = false;
+  for (const task of tasks) {
+    const key = recurringOccurrenceKey(task);
+    if (!key) {
+      out.push(task);
+      continue;
+    }
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      indexByKey.set(key, out.length);
+      out.push(task);
+      continue;
+    }
+    const existing = out[existingIndex];
+    const winner = pickRecurringDuplicate(existing, task);
+    if (winner !== existing) {
+      out[existingIndex] = winner;
+    }
+    changed = true;
+  }
+  return changed ? out : tasks;
+}
+
 /* ================= Storage hooks ================= */
 function useSettings() {
   const [settings, setSettingsRaw] = useState<Settings>(() => {
     try {
-      const parsed = JSON.parse(localStorage.getItem(LS_SETTINGS) || "{}");
+      const parsed = JSON.parse(kvStorage.getItem(LS_SETTINGS) || "{}");
       const baseFontSize =
         typeof parsed.baseFontSize === "number" ? parsed.baseFontSize : null;
       const startBoardByDay: Partial<Record<Weekday, string>> = {};
@@ -2151,39 +3809,33 @@ function useSettings() {
       if (parsed?.accent === "green") accent = "green";
       else if (parsed?.accent === "background" && backgroundImage && backgroundAccent) accent = "background";
       const hideCompletedSubtasks = parsed?.hideCompletedSubtasks === true;
-      const listAddButtonEnabled = parsed?.listAddButtonEnabled === true;
       const startupView = parsed?.startupView === "wallet" ? "wallet" : "main";
       const walletConversionEnabled = parsed?.walletConversionEnabled !== false;
       const walletPrimaryCurrency = parsed?.walletPrimaryCurrency === "usd" ? "usd" : "sat";
       const walletSentStateChecksEnabled = parsed?.walletSentStateChecksEnabled !== false;
+      const walletNostrSyncEnabled = parsed?.walletNostrSyncEnabled !== false;
       const walletPaymentRequestsEnabled = parsed?.walletPaymentRequestsEnabled !== false;
       const walletPaymentRequestsBackgroundChecksEnabled =
         parsed?.walletPaymentRequestsBackgroundChecksEnabled !== false;
       let walletMintBackupEnabled = parsed?.walletMintBackupEnabled !== false;
       if (parsed?.walletMintBackupEnabled == null) {
         try {
-          walletMintBackupEnabled = localStorage.getItem(LS_MINT_BACKUP_ENABLED) !== "0";
+          walletMintBackupEnabled = kvStorage.getItem(LS_MINT_BACKUP_ENABLED) !== "0";
         } catch {
           walletMintBackupEnabled = true;
         }
       }
+      const walletContactsSyncEnabled = parsed?.walletContactsSyncEnabled !== false;
       const npubCashLightningAddressEnabled = parsed?.npubCashLightningAddressEnabled !== false;
       const npubCashAutoClaim = npubCashLightningAddressEnabled && parsed?.npubCashAutoClaim !== false;
-      const walletBountiesEnabled = parsed?.walletBountiesEnabled !== false;
-      let walletBountyList: BountyListRef | null = null;
-      if (parsed && typeof parsed.walletBountyList === "object" && parsed.walletBountyList) {
-        const listBoardId = typeof parsed.walletBountyList.boardId === "string" ? parsed.walletBountyList.boardId : "";
-        const rawColumn = parsed.walletBountyList.columnId;
-        const listColumnId =
-          typeof rawColumn === "string"
-            ? rawColumn
-            : rawColumn === null
-              ? null
-              : undefined;
-        if (listBoardId.trim()) {
-          walletBountyList = { boardId: listBoardId.trim(), columnId: listColumnId };
-        }
-      }
+      const fileStorageServer =
+        normalizeFileServerUrl(
+          typeof parsed?.fileStorageServer === "string" && parsed.fileStorageServer.trim()
+            ? parsed.fileStorageServer.trim()
+            : DEFAULT_FILE_STORAGE_SERVER,
+        ) || DEFAULT_FILE_STORAGE_SERVER;
+      const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
+      const nostrBackupMetadataEnabled = nostrBackupEnabled;
       const pushRaw = parsed?.pushNotifications;
       const inferredPlatform = detectPushPlatformFromNavigator();
       const storedPlatform = pushRaw?.platform === "android"
@@ -2217,11 +3869,30 @@ function useSettings() {
         ? parsed.scriptureMemoryBoardId
         : null;
       const scriptureMemoryEnabled = parsed?.scriptureMemoryEnabled === true;
+      const fastingRemindersEnabled = parsed?.fastingRemindersEnabled === true;
+      const fastingRemindersMode: FastingRemindersMode = parsed?.fastingRemindersMode === "random" ? "random" : "weekday";
+      const fastingRemindersPerMonthRaw = Number(parsed?.fastingRemindersPerMonth);
+      const fastingRemindersPerMonthMax = fastingRemindersMode === "random" ? 31 : 5;
+      const fastingRemindersPerMonth =
+        Number.isFinite(fastingRemindersPerMonthRaw) && fastingRemindersPerMonthRaw > 0
+          ? Math.min(fastingRemindersPerMonthMax, Math.max(1, Math.round(fastingRemindersPerMonthRaw)))
+          : 4;
+      const fastingRemindersWeekdayRaw = Number(parsed?.fastingRemindersWeekday);
+      const fastingRemindersWeekday: Weekday =
+        Number.isInteger(fastingRemindersWeekdayRaw) && fastingRemindersWeekdayRaw >= 0 && fastingRemindersWeekdayRaw <= 6
+          ? (fastingRemindersWeekdayRaw as Weekday)
+          : 1;
+      const fastingRemindersRandomSeed =
+        typeof parsed?.fastingRemindersRandomSeed === "string" && parsed.fastingRemindersRandomSeed.trim()
+          ? parsed.fastingRemindersRandomSeed.trim()
+          : crypto.randomUUID();
       if (parsed && typeof parsed === "object") {
         delete (parsed as Record<string, unknown>).theme;
         delete (parsed as Record<string, unknown>).backgroundAccents;
         delete (parsed as Record<string, unknown>).backgroundAccentIndex;
         delete (parsed as Record<string, unknown>).walletPaymentRequestsAutoClaim;
+        delete (parsed as Record<string, unknown>).walletBountiesEnabled;
+        delete (parsed as Record<string, unknown>).walletBountyList;
       }
       return {
         weekStart: 0,
@@ -2235,8 +3906,12 @@ function useSettings() {
         scriptureMemoryBoardId,
         scriptureMemoryFrequency,
         scriptureMemorySort,
+        fastingRemindersEnabled,
+        fastingRemindersMode,
+        fastingRemindersPerMonth,
+        fastingRemindersWeekday,
+        fastingRemindersRandomSeed,
         hideCompletedSubtasks,
-        listAddButtonEnabled,
         baseFontSize,
         startBoardByDay,
         accent,
@@ -2253,12 +3928,15 @@ function useSettings() {
         walletPaymentRequestsBackgroundChecksEnabled: walletPaymentRequestsEnabled
           ? walletPaymentRequestsBackgroundChecksEnabled
           : false,
+        walletNostrSyncEnabled,
+        walletContactsSyncEnabled,
+        fileStorageServer,
         walletMintBackupEnabled,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
-        walletBountiesEnabled,
-        walletBountyList: walletBountyList ? { ...walletBountyList } : { ...DEFAULT_BOUNTY_LIST },
         cloudBackupsEnabled: parsed?.cloudBackupsEnabled === true,
+        nostrBackupEnabled,
+        nostrBackupMetadataEnabled,
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES, ...pushPreferences },
       };
     } catch {
@@ -2269,7 +3947,6 @@ function useSettings() {
         completedTab: true,
         bibleTrackerEnabled: false,
         showFullWeekRecurring: false,
-        listAddButtonEnabled: false,
         baseFontSize: null,
         startBoardByDay: {},
         accent: "blue",
@@ -2283,18 +3960,26 @@ function useSettings() {
         walletConversionEnabled: true,
         walletPrimaryCurrency: "sat",
         walletMintBackupEnabled: true,
-        walletBountiesEnabled: true,
-        walletBountyList: { ...DEFAULT_BOUNTY_LIST },
         walletSentStateChecksEnabled: true,
+        walletNostrSyncEnabled: true,
         walletPaymentRequestsEnabled: true,
         walletPaymentRequestsBackgroundChecksEnabled: true,
+        walletContactsSyncEnabled: true,
+        fileStorageServer: DEFAULT_FILE_STORAGE_SERVER,
         npubCashLightningAddressEnabled: true,
         npubCashAutoClaim: true,
         cloudBackupsEnabled: false,
+        nostrBackupEnabled: true,
+        nostrBackupMetadataEnabled: true,
         scriptureMemoryEnabled: false,
         scriptureMemoryBoardId: null,
         scriptureMemoryFrequency: "daily",
         scriptureMemorySort: "needsReview",
+        fastingRemindersEnabled: false,
+        fastingRemindersMode: "weekday",
+        fastingRemindersPerMonth: 4,
+        fastingRemindersWeekday: 1,
+        fastingRemindersRandomSeed: crypto.randomUUID(),
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES },
       };
     }
@@ -2308,6 +3993,19 @@ function useSettings() {
         next.pushNotifications.platform = next.pushNotifications.platform === 'android'
           ? 'android'
           : detectedPlatform;
+      }
+      if (Object.prototype.hasOwnProperty.call(s, "fileStorageServer")) {
+        const rawServer = (s as any).fileStorageServer;
+        const normalizedServer =
+          typeof rawServer === "string" && rawServer.trim()
+            ? normalizeFileServerUrl(rawServer) || DEFAULT_FILE_STORAGE_SERVER
+            : DEFAULT_FILE_STORAGE_SERVER;
+        next.fileStorageServer = normalizedServer;
+      } else if (!next.fileStorageServer) {
+        next.fileStorageServer = DEFAULT_FILE_STORAGE_SERVER;
+      } else {
+        next.fileStorageServer =
+          normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
       }
       if (!next.backgroundImage) {
         next.backgroundImage = null;
@@ -2335,6 +4033,8 @@ function useSettings() {
       if (!next.walletPaymentRequestsEnabled) {
         next.walletPaymentRequestsBackgroundChecksEnabled = false;
       }
+      next.walletNostrSyncEnabled = next.walletNostrSyncEnabled !== false;
+      next.walletContactsSyncEnabled = next.walletContactsSyncEnabled !== false;
       if (next.backgroundBlur !== "sharp" && next.backgroundBlur !== "blurred") {
         next.backgroundBlur = "sharp";
       }
@@ -2352,34 +4052,11 @@ function useSettings() {
       } else if (next.npubCashAutoClaim !== true && next.npubCashAutoClaim !== false) {
         next.npubCashAutoClaim = true;
       }
-      if (!next.walletBountiesEnabled) {
-        next.walletBountiesEnabled = false;
-      } else {
-        next.walletBountiesEnabled = true;
-      }
-      if (Object.prototype.hasOwnProperty.call(s, "walletBountyList")) {
-        const raw = s.walletBountyList;
-        if (raw && typeof raw === "object") {
-          const listBoardId = typeof raw.boardId === "string" ? raw.boardId.trim() : "";
-          const rawColumn = raw.columnId;
-          const listColumnId =
-            typeof rawColumn === "string"
-              ? rawColumn
-              : rawColumn === null
-                ? null
-                : undefined;
-          next.walletBountyList = listBoardId
-            ? { boardId: listBoardId, columnId: listColumnId }
-            : { ...DEFAULT_BOUNTY_LIST };
-        } else {
-          next.walletBountyList = { ...DEFAULT_BOUNTY_LIST };
-        }
-      } else if (!next.walletBountyList) {
-        next.walletBountyList = { ...DEFAULT_BOUNTY_LIST };
-      }
       if (next.cloudBackupsEnabled !== true) {
         next.cloudBackupsEnabled = false;
       }
+      next.nostrBackupEnabled = next.nostrBackupEnabled !== false;
+      next.nostrBackupMetadataEnabled = next.nostrBackupEnabled;
       if (!next.bibleTrackerEnabled) {
         next.bibleTrackerEnabled = false;
         next.scriptureMemoryEnabled = false;
@@ -2401,14 +4078,35 @@ function useSettings() {
       if (typeof next.scriptureMemoryBoardId === 'undefined') {
         next.scriptureMemoryBoardId = null;
       }
-      if (next.listAddButtonEnabled !== true) {
-        next.listAddButtonEnabled = false;
+      if (next.fastingRemindersEnabled !== true) {
+        next.fastingRemindersEnabled = false;
+      }
+      next.fastingRemindersMode = next.fastingRemindersMode === "random" ? "random" : "weekday";
+      const fastingPerMonthRaw = Number(next.fastingRemindersPerMonth);
+      const fastingPerMonthMax = next.fastingRemindersMode === "random" ? 31 : 5;
+      if (!Number.isFinite(fastingPerMonthRaw) || fastingPerMonthRaw <= 0) {
+        next.fastingRemindersPerMonth = 4;
+      } else {
+        next.fastingRemindersPerMonth = Math.min(
+          fastingPerMonthMax,
+          Math.max(1, Math.round(fastingPerMonthRaw)),
+        );
+      }
+      const fastingWeekdayRaw = Number(next.fastingRemindersWeekday);
+      next.fastingRemindersWeekday =
+        Number.isInteger(fastingWeekdayRaw) && fastingWeekdayRaw >= 0 && fastingWeekdayRaw <= 6
+          ? (fastingWeekdayRaw as Weekday)
+          : 1;
+      if (typeof next.fastingRemindersRandomSeed !== "string" || !next.fastingRemindersRandomSeed.trim()) {
+        next.fastingRemindersRandomSeed = crypto.randomUUID();
+      } else {
+        next.fastingRemindersRandomSeed = next.fastingRemindersRandomSeed.trim();
       }
       return next;
     });
   }, []);
   useEffect(() => {
-    localStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
+    kvStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
   }, [settings]);
   return [settings, setSettings] as const;
 }
@@ -2536,7 +4234,7 @@ function migrateBoards(stored: any): Board[] | null {
 
 function useBoards() {
   const [boards, setBoards] = useState<Board[]>(() => {
-    const raw = localStorage.getItem(LS_BOARDS);
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS);
     if (raw) {
       const migrated = migrateBoards(JSON.parse(raw));
       if (migrated && migrated.length) return migrated;
@@ -2545,7 +4243,7 @@ function useBoards() {
     return [{ id: "week-default", name: "Week", kind: "week", archived: false, hidden: false, clearCompletedDisabled: false }];
   });
   useEffect(() => {
-    localStorage.setItem(LS_BOARDS, JSON.stringify(boards));
+    idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARDS, JSON.stringify(boards));
   }, [boards]);
   return [boards, setBoards] as const;
 }
@@ -2554,7 +4252,7 @@ function useTasks() {
   const [tasks, setTasks] = useState<Task[]>(() => {
     const loadStored = (): any[] => {
       try {
-        const current = localStorage.getItem(LS_TASKS);
+        const current = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASKS);
         if (current) {
           const parsed = JSON.parse(current);
           if (Array.isArray(parsed)) return parsed;
@@ -2562,7 +4260,7 @@ function useTasks() {
       } catch {}
       for (const legacy of LS_TASKS_LEGACY) {
         try {
-          const raw = localStorage.getItem(legacy);
+          const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, legacy);
           if (!raw) continue;
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed)) return parsed;
@@ -2573,8 +4271,9 @@ function useTasks() {
 
     const rawTasks = loadStored();
     const orderMap = new Map<string, number>();
-    return rawTasks
-      .map((entry) => {
+    const createdAtFallback = Date.now();
+    const normalized = rawTasks
+      .map((entry, index) => {
         if (!entry || typeof entry !== 'object') return null;
         const fallbackBoard = typeof (entry as any).boardId === 'string' ? (entry as any).boardId : 'week-default';
         const boardId = fallbackBoard;
@@ -2582,8 +4281,16 @@ function useTasks() {
         const explicitOrder = typeof (entry as any).order === 'number' ? (entry as any).order : next;
         orderMap.set(boardId, explicitOrder + 1);
         const dueISO = typeof (entry as any).dueISO === 'string' ? (entry as any).dueISO : new Date().toISOString();
+        const dueDateEnabled = typeof (entry as any).dueDateEnabled === 'boolean'
+          ? (entry as any).dueDateEnabled
+          : undefined;
         const dueTimeEnabled = typeof (entry as any).dueTimeEnabled === 'boolean' ? (entry as any).dueTimeEnabled : undefined;
+        const dueTimeZoneRaw = typeof (entry as any).dueTimeZone === "string" ? (entry as any).dueTimeZone : undefined;
+        const dueTimeZone = normalizeTimeZone(dueTimeZoneRaw) ?? undefined;
+        const priority = normalizeTaskPriority((entry as any).priority);
+        const createdAt = normalizeTaskCreatedAt((entry as any).createdAt) ?? (createdAtFallback + index);
         const reminders = sanitizeReminderList((entry as any).reminders);
+        const reminderTime = normalizeReminderTime((entry as any).reminderTime);
         const id = typeof (entry as any).id === 'string' ? (entry as any).id : crypto.randomUUID();
         const scriptureMemoryId = typeof (entry as any).scriptureMemoryId === 'string'
           ? (entry as any).scriptureMemoryId
@@ -2609,8 +4316,13 @@ function useTasks() {
           boardId,
           order: explicitOrder,
           dueISO,
+          priority,
+          createdAt,
+          ...(typeof dueDateEnabled === 'boolean' ? { dueDateEnabled } : {}),
           ...(typeof dueTimeEnabled === 'boolean' ? { dueTimeEnabled } : {}),
+          ...(dueTimeZone ? { dueTimeZone } : {}),
           ...(reminders !== undefined ? { reminders } : {}),
+          ...(reminderTime ? { reminderTime } : {}),
           ...(scriptureMemoryId ? { scriptureMemoryId } : {}),
           ...(scriptureMemoryStage !== undefined ? { scriptureMemoryStage } : {}),
           ...(scriptureMemoryPrevReviewISO !== undefined ? { scriptureMemoryPrevReviewISO } : {}),
@@ -2623,35 +4335,36 @@ function useTasks() {
         }
 
         const rawBountyLists = (entry as any).bountyLists;
+        const bountyListSet = new Set<string>();
         if (Array.isArray(rawBountyLists)) {
           const normalizedLists = rawBountyLists
             .map((value) => (typeof value === "string" ? value.trim() : ""))
             .filter((value): value is string => value.length > 0);
           const unique = Array.from(new Set(normalizedLists));
           if (unique.length > 0) {
-            task.bountyLists = unique;
+            unique.forEach((value) => bountyListSet.add(value));
+            // Legacy bounties list choices map to the unified pinned list.
+            bountyListSet.add(PINNED_BOUNTY_LIST_KEY);
           }
         }
-        const inferredBountyKey = task.column === "bounties"
-          ? bountyListKey({ boardId: task.boardId, columnId: "bounties" })
-          : null;
-        if (inferredBountyKey && task.column === "bounties") {
-          const existing = new Set(task.bountyLists || []);
-          if (!existing.has(inferredBountyKey)) {
-            existing.add(inferredBountyKey);
-            task.bountyLists = Array.from(existing);
-          }
+        if ((entry as any).column === "bounties") {
+          task.column = "day";
+          bountyListSet.add(PINNED_BOUNTY_LIST_KEY);
+        }
+        if (bountyListSet.size > 0) {
+          task.bountyLists = Array.from(bountyListSet);
         }
 
         return normalizeTaskBounty(normalizeHiddenForRecurring(task));
       })
       .filter((t): t is Task => !!t);
+    return dedupeRecurringInstances(normalized);
   });
   useEffect(() => {
     try {
-      localStorage.setItem(LS_TASKS, JSON.stringify(tasks));
+      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(tasks));
       for (const legacy of LS_TASKS_LEGACY) {
-        try { localStorage.removeItem(legacy); } catch {}
+        try { idbKeyValue.removeItem(TASKIFY_STORE_TASKS, legacy); } catch {}
       }
     } catch (err) {
       console.error('Failed to save tasks', err);
@@ -2660,10 +4373,282 @@ function useTasks() {
   return [tasks, setTasks] as const;
 }
 
+function useCalendarEvents() {
+  const [events, setEvents] = useState<CalendarEvent[]>(() => {
+    const normalizeStringArray = (value: unknown): string[] | undefined => {
+      if (!Array.isArray(value)) return undefined;
+      const out = value
+        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+        .filter(Boolean);
+      return out.length ? out : undefined;
+    };
+
+    const normalizeParticipants = (value: unknown): CalendarEventParticipant[] | undefined => {
+      if (!Array.isArray(value)) return undefined;
+      const out: CalendarEventParticipant[] = [];
+      for (const entry of value) {
+        if (!entry || typeof entry !== "object") continue;
+        const pubkey = typeof (entry as any).pubkey === "string" ? (entry as any).pubkey.trim() : "";
+        if (!pubkey) continue;
+        const relay = typeof (entry as any).relay === "string" ? (entry as any).relay.trim() : "";
+        const role = typeof (entry as any).role === "string" ? (entry as any).role.trim() : "";
+        out.push({ pubkey, relay: relay || undefined, role: role || undefined });
+      }
+      return out.length ? out : undefined;
+    };
+
+    const normalizeInviteTokens = (value: unknown): Record<string, string> | undefined => {
+      if (!value || typeof value !== "object") return undefined;
+      const out: Record<string, string> = {};
+      for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+        if (typeof raw !== "string") continue;
+        const trimmed = raw.trim();
+        if (!trimmed) continue;
+        out[key] = trimmed;
+      }
+      return Object.keys(out).length ? out : undefined;
+    };
+
+    const normalizeRsvpStatus = (value: unknown): CalendarRsvpStatus | undefined => {
+      if (value === "accepted" || value === "declined" || value === "tentative") return value;
+      return undefined;
+    };
+
+    const normalizeRsvpFb = (value: unknown): CalendarRsvpFb | undefined => {
+      if (value === "free" || value === "busy") return value;
+      return undefined;
+    };
+
+    const isDateKey = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+
+    const loadStored = (key: string): any[] => {
+      try {
+        const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, key);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const rawEvents = loadStored(LS_CALENDAR_EVENTS);
+    const rawExternalEvents = loadStored(LS_EXTERNAL_CALENDAR_EVENTS);
+    const orderMap = new Map<string, number>();
+    const todayKey = (() => {
+      const now = new Date();
+      const yyyy = String(now.getFullYear()).padStart(4, "0");
+      const mm = String(now.getMonth() + 1).padStart(2, "0");
+      const dd = String(now.getDate()).padStart(2, "0");
+      return `${yyyy}-${mm}-${dd}`;
+    })();
+
+    const normalizeEntry = (
+      entry: any,
+      options?: { external?: boolean },
+    ): CalendarEvent | null => {
+      if (!entry || typeof entry !== "object") return null;
+
+      const external = options?.external === true;
+      const fallbackBoard = typeof (entry as any).boardId === "string" ? (entry as any).boardId : "week-default";
+      const boardId = fallbackBoard;
+      const nextOrder = orderMap.get(boardId) ?? 0;
+      const explicitOrder = typeof (entry as any).order === "number" ? (entry as any).order : nextOrder;
+      orderMap.set(boardId, explicitOrder + 1);
+
+      const idRaw = typeof (entry as any).id === "string" ? (entry as any).id.trim() : "";
+      const legacyId = typeof (entry as any).eventId === "string" ? (entry as any).eventId.trim() : "";
+      const id = idRaw || legacyId || crypto.randomUUID();
+      const title = typeof (entry as any).title === "string" ? (entry as any).title : "";
+      const summary = typeof (entry as any).summary === "string" ? (entry as any).summary : undefined;
+      const description = typeof (entry as any).description === "string" ? (entry as any).description : undefined;
+      const documents = normalizeDocumentList((entry as any).documents);
+      const image = typeof (entry as any).image === "string" ? (entry as any).image : undefined;
+      const geohash = typeof (entry as any).geohash === "string" ? (entry as any).geohash : undefined;
+      const columnId = typeof (entry as any).columnId === "string" ? (entry as any).columnId : undefined;
+      const reminders = sanitizeReminderList((entry as any).reminders);
+      const reminderTime = normalizeReminderTime((entry as any).reminderTime);
+      const readOnlyRaw = typeof (entry as any).readOnly === "boolean" ? (entry as any).readOnly : undefined;
+      const readOnly = external ? true : readOnlyRaw;
+      const originBoardId = typeof (entry as any).originBoardId === "string" ? (entry as any).originBoardId : undefined;
+      const hiddenUntilISO = normalizeIsoTimestamp((entry as any).hiddenUntilISO);
+
+      const locations = normalizeStringArray((entry as any).locations);
+      const hashtags = normalizeStringArray((entry as any).hashtags);
+      const references = normalizeStringArray((entry as any).references);
+      const participants = normalizeParticipants((entry as any).participants);
+
+      const recurrence =
+        (entry as any).recurrence && typeof (entry as any).recurrence === "object" && typeof (entry as any).recurrence.type === "string"
+          ? ((entry as any).recurrence as Recurrence)
+          : undefined;
+      const seriesId = typeof (entry as any).seriesId === "string" ? (entry as any).seriesId : undefined;
+
+      const eventKey = typeof (entry as any).eventKey === "string" ? (entry as any).eventKey.trim() : "";
+      const inviteTokens = normalizeInviteTokens((entry as any).inviteTokens);
+      const canonicalAddress =
+        typeof (entry as any).canonicalAddress === "string" ? (entry as any).canonicalAddress.trim() : "";
+      const viewAddress =
+        typeof (entry as any).viewAddress === "string" ? (entry as any).viewAddress.trim() : "";
+      const inviteToken = typeof (entry as any).inviteToken === "string" ? (entry as any).inviteToken.trim() : "";
+      const inviteRelays = normalizeStringArray((entry as any).inviteRelays);
+
+      const parsedCanonical = canonicalAddress ? parseCalendarAddress(canonicalAddress) : null;
+      const boardPubkeyRaw = typeof (entry as any).boardPubkey === "string" ? (entry as any).boardPubkey.trim() : "";
+      const boardPubkey =
+        normalizeNostrPubkeyHex(boardPubkeyRaw)
+        ?? normalizeNostrPubkeyHex(parsedCanonical?.pubkey || "")
+        ?? undefined;
+
+      const rsvpStatus = normalizeRsvpStatus((entry as any).rsvpStatus);
+      const rsvpCreatedAtRaw = (entry as any).rsvpCreatedAt;
+      const rsvpCreatedAt = typeof rsvpCreatedAtRaw === "number" && Number.isFinite(rsvpCreatedAtRaw)
+        ? rsvpCreatedAtRaw
+        : undefined;
+      const rsvpFb = normalizeRsvpFb((entry as any).rsvpFb);
+
+      if (external) {
+        if (!canonicalAddress || !viewAddress || !eventKey || !boardPubkey) return null;
+      }
+
+      const base: CalendarEventBase = {
+        id,
+        boardId,
+        columnId,
+        order: explicitOrder,
+        title,
+        summary,
+        description,
+        documents: documents ? documents.map(ensureDocumentPreview) : undefined,
+        image,
+        locations,
+        geohash,
+        participants,
+        hashtags,
+        references,
+        reminders,
+        ...(reminderTime ? { reminderTime } : {}),
+        recurrence,
+        seriesId,
+        ...(hiddenUntilISO ? { hiddenUntilISO } : {}),
+        ...(readOnly ? { readOnly: true } : {}),
+        ...(external ? { external: true } : {}),
+        ...(originBoardId ? { originBoardId } : {}),
+        ...(eventKey ? { eventKey } : {}),
+        ...(inviteTokens ? { inviteTokens } : {}),
+        ...(canonicalAddress ? { canonicalAddress } : {}),
+        ...(viewAddress ? { viewAddress } : {}),
+        ...(inviteToken ? { inviteToken } : {}),
+        ...(inviteRelays ? { inviteRelays } : {}),
+        ...(boardPubkey ? { boardPubkey } : {}),
+        ...(rsvpStatus ? { rsvpStatus } : {}),
+        ...(rsvpCreatedAt ? { rsvpCreatedAt } : {}),
+        ...(rsvpFb ? { rsvpFb } : {}),
+      };
+
+      const inferredKind =
+        (entry as any).kind === "time" || (entry as any).kind === "date"
+          ? (entry as any).kind
+          : typeof (entry as any).startISO === "string"
+            ? "time"
+            : "date";
+
+      if (inferredKind === "time") {
+        const startISO = typeof (entry as any).startISO === "string" ? (entry as any).startISO : new Date().toISOString();
+        if (Number.isNaN(Date.parse(startISO))) return null;
+        const endISO = typeof (entry as any).endISO === "string" ? (entry as any).endISO : undefined;
+        const normalizedEndISO = endISO && !Number.isNaN(Date.parse(endISO)) ? endISO : undefined;
+        const startTzid = typeof (entry as any).startTzid === "string" ? (entry as any).startTzid : undefined;
+        const endTzid = typeof (entry as any).endTzid === "string" ? (entry as any).endTzid : undefined;
+        const event: TimeCalendarEvent = {
+          ...base,
+          kind: "time",
+          startISO,
+          endISO: normalizedEndISO,
+          startTzid,
+          endTzid,
+        };
+        return event;
+      }
+
+      const startDate =
+        typeof (entry as any).startDate === "string" && isDateKey((entry as any).startDate)
+          ? (entry as any).startDate
+          : todayKey;
+      const endDate =
+        typeof (entry as any).endDate === "string" && isDateKey((entry as any).endDate)
+          ? (entry as any).endDate
+          : undefined;
+      const event: DateCalendarEvent = {
+        ...base,
+        kind: "date",
+        startDate,
+        endDate,
+      };
+      return event;
+    };
+
+    const boardEvents: CalendarEvent[] = [];
+    const migratedExternal: CalendarEvent[] = [];
+    rawEvents.forEach((entry) => {
+      const event = normalizeEntry(entry, { external: false });
+      if (!event) return;
+      const shouldMigrateExternal =
+        (entry as any)?.external === true
+        || (!!event.readOnly && !event.originBoardId && !!event.eventKey && !!event.viewAddress && !!event.canonicalAddress);
+      if (shouldMigrateExternal) {
+        const externalEvent = normalizeEntry(entry, { external: true });
+        if (externalEvent) {
+          migratedExternal.push(externalEvent);
+          return;
+        }
+      }
+      boardEvents.push(event);
+    });
+
+    const externalEvents: CalendarEvent[] = [];
+    rawExternalEvents.forEach((entry) => {
+      const event = normalizeEntry(entry, { external: true });
+      if (event) externalEvents.push(event);
+    });
+
+    const mergedExternalMap = new Map<string, CalendarEvent>();
+    [...migratedExternal, ...externalEvents].forEach((event) => {
+      if (!event.external) return;
+      const key = `${event.id}::${event.viewAddress || ""}`;
+      const existing = mergedExternalMap.get(key);
+      if (!existing) {
+        mergedExternalMap.set(key, event);
+        return;
+      }
+      const nextCreated = event.rsvpCreatedAt ?? 0;
+      const prevCreated = existing.rsvpCreatedAt ?? 0;
+      if (nextCreated >= prevCreated) {
+        mergedExternalMap.set(key, event);
+      }
+    });
+
+    return [...boardEvents, ...Array.from(mergedExternalMap.values())];
+  });
+
+  useEffect(() => {
+    try {
+      const boardEvents = events.filter((event) => !event.external);
+      const externalEvents = events.filter((event) => event.external);
+      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS, JSON.stringify(boardEvents));
+      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_EXTERNAL_CALENDAR_EVENTS, JSON.stringify(externalEvents));
+    } catch (err) {
+      console.error("Failed to save calendar events", err);
+    }
+  }, [events]);
+
+  return [events, setEvents] as const;
+}
+
 function useBibleTracker(): [BibleTrackerState, React.Dispatch<React.SetStateAction<BibleTrackerState>>] {
   const [state, setState] = useState<BibleTrackerState>(() => {
     try {
-      const raw = localStorage.getItem(LS_BIBLE_TRACKER);
+      const raw = kvStorage.getItem(LS_BIBLE_TRACKER);
       if (raw) {
         return sanitizeBibleTrackerState(JSON.parse(raw));
       }
@@ -2672,7 +4657,7 @@ function useBibleTracker(): [BibleTrackerState, React.Dispatch<React.SetStateAct
   });
   useEffect(() => {
     try {
-      localStorage.setItem(LS_BIBLE_TRACKER, JSON.stringify(state));
+      kvStorage.setItem(LS_BIBLE_TRACKER, JSON.stringify(state));
     } catch {}
   }, [state]);
   return [state, setState];
@@ -2681,7 +4666,7 @@ function useBibleTracker(): [BibleTrackerState, React.Dispatch<React.SetStateAct
 function useScriptureMemory(): [ScriptureMemoryState, React.Dispatch<React.SetStateAction<ScriptureMemoryState>>] {
   const [state, setState] = useState<ScriptureMemoryState>(() => {
     try {
-      const raw = localStorage.getItem(LS_SCRIPTURE_MEMORY);
+      const raw = kvStorage.getItem(LS_SCRIPTURE_MEMORY);
       if (raw) {
         return sanitizeScriptureMemoryState(JSON.parse(raw));
       }
@@ -2690,7 +4675,7 @@ function useScriptureMemory(): [ScriptureMemoryState, React.Dispatch<React.SetSt
   });
   useEffect(() => {
     try {
-      localStorage.setItem(LS_SCRIPTURE_MEMORY, JSON.stringify(state));
+      kvStorage.setItem(LS_SCRIPTURE_MEMORY, JSON.stringify(state));
     } catch {}
   }, [state]);
   return [state, setState];
@@ -2699,37 +4684,251 @@ function useScriptureMemory(): [ScriptureMemoryState, React.Dispatch<React.SetSt
 /* ================= App ================= */
 export default function App() {
   const { show: showToast } = useToast();
+  const [storageMigrationProgress, setStorageMigrationProgress] = useState<StorageMigrationProgress | null>(null);
+  const [storageMigrationMarkerState, setStorageMigrationMarkerState] = useState<StorageMigrationState>(
+    STARTUP_ENGINE_MIGRATION_STATE,
+  );
+  const storageMigrationStateRef = useRef<StorageMigrationState>(STARTUP_ENGINE_MIGRATION_STATE);
+  const [storageMigrationStartBusy, setStorageMigrationStartBusy] = useState(false);
+  const [migrationGateState, setMigrationGateState] = useState<MigrationGateState>(STARTUP_MIGRATION_GATE_STATE);
+  const [migrationGateDismissed, setMigrationGateDismissed] = useState(STARTUP_MIGRATION_GATE_STATE === "completed");
+  const [migrationGateResuming, setMigrationGateResuming] = useState(STARTUP_MIGRATION_GATE_STATE === "in_progress");
+  const migrationStartedRef = useRef(false);
+  const migrationReloadOnCompleteRef = useRef(false);
+  const migrationReloadScheduledRef = useRef(false);
+  const [legacyCleanupDone, setLegacyCleanupDone] = useState(STARTUP_LEGACY_CLEANUP_DONE);
+  const [legacyCleanupDismissed, setLegacyCleanupDismissed] = useState(false);
+  const [legacyCleanupBusy, setLegacyCleanupBusy] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      markBootOk();
+    }, 10000);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    return subscribeMigrationProgress((progress) => {
+      setStorageMigrationProgress(progress);
+    });
+  }, []);
+
+  useEffect(() => {
+    const nextState = storageMigrationProgress?.state;
+    if (!nextState) return;
+    if (migrationGateState === "completed" && nextState !== "migration_complete") return;
+    if (nextState === "migration_not_started" && migrationGateState !== "not_started") return;
+    storageMigrationStateRef.current = nextState;
+    setStorageMigrationMarkerState(nextState);
+    try {
+      kvStorage.setItem(STORAGE_MIGRATION_MARKER_KEY, nextState);
+    } catch {
+      // ignore persistence issues
+    }
+    const nextGateState = mapEngineStateToGateState(nextState);
+    setMigrationGateState(nextGateState);
+    try {
+      kvStorage.setItem(MIGRATION_STATE_KEY, nextGateState);
+      if (nextGateState === "in_progress" || nextGateState === "completed") {
+        kvStorage.setBoolean(MIGRATION_DEFERRED_KEY, false);
+      }
+      if (nextGateState === "completed") {
+        const completedAt = storageMigrationProgress?.completedAt ?? Date.now();
+        kvStorage.setNumber(MIGRATION_COMPLETED_AT_KEY, completedAt);
+      }
+    } catch {
+      // ignore persistence issues
+    }
+  }, [migrationGateState, storageMigrationProgress?.state, storageMigrationProgress?.completedAt]);
+
+  const storageMigrationState = storageMigrationProgress?.state ?? storageMigrationMarkerState;
+  const storageMigrationBlocking =
+    migrationGateState === "in_progress" || storageMigrationState === "migration_in_progress";
+  const legacyCleanupEligible = useMemo(() => {
+    if (migrationGateState !== "completed") return false;
+    return hasMigratedLegacyLocalStorageKeys();
+  }, [migrationGateState]);
+  const shouldShowLegacyCleanupPrompt =
+    migrationGateState === "completed" && !legacyCleanupDone && !legacyCleanupDismissed && legacyCleanupEligible;
+
+  useEffect(() => {
+    setStorageWritesBlocked(storageMigrationBlocking);
+  }, [storageMigrationBlocking]);
+
+  useEffect(() => {
+    const state = storageMigrationProgress?.state;
+    if (!state) return;
+    if (state === "migration_in_progress") {
+      migrationReloadOnCompleteRef.current = true;
+      return;
+    }
+    if (state !== "migration_complete") return;
+    if (!migrationReloadOnCompleteRef.current || migrationReloadScheduledRef.current) return;
+    const now = Date.now();
+    if (shouldSkipMigrationReload(now)) {
+      migrationReloadScheduledRef.current = true;
+      console.warn("[storage] Skipping migration reload to avoid a loop.");
+      return;
+    }
+    migrationReloadScheduledRef.current = true;
+    recordMigrationReload(now);
+    setTimeout(() => {
+      window.location.reload();
+    }, 150);
+  }, [storageMigrationProgress?.state]);
+
+  useEffect(() => {
+    if (migrationGateState === "in_progress") {
+      setMigrationGateDismissed(false);
+      if (!migrationStartedRef.current) {
+        setMigrationGateResuming(true);
+      }
+      return;
+    }
+    if (migrationGateState === "completed") {
+      setMigrationGateDismissed(true);
+    }
+    setMigrationGateResuming(false);
+  }, [migrationGateState]);
+
+  const handleStartStorageMigration = useCallback(async () => {
+    if (storageMigrationStartBusy) return;
+    if (migrationGateState !== "not_started") return;
+    if (storageMigrationState === "migration_in_progress" || storageMigrationState === "migration_complete") return;
+
+    migrationStartedRef.current = true;
+    setStorageMigrationStartBusy(true);
+    setMigrationGateDismissed(false);
+    setMigrationGateResuming(false);
+    setMigrationGateState("in_progress");
+    setStorageMigrationMarkerState("migration_in_progress");
+    storageMigrationStateRef.current = "migration_in_progress";
+    try {
+      kvStorage.setItem(MIGRATION_STATE_KEY, "in_progress");
+      kvStorage.setBoolean(MIGRATION_DEFERRED_KEY, false);
+      kvStorage.setItem(STORAGE_MIGRATION_MARKER_KEY, "migration_in_progress");
+    } catch {}
+    setStorageWritesBlocked(true);
+
+    try {
+      await startMigration();
+      showToast("Storage update complete", 3000);
+    } catch (error: any) {
+      const message = error?.message || "Storage update failed.";
+      showToast(message, 4000);
+      if (storageMigrationStateRef.current !== "migration_in_progress") {
+        setStorageWritesBlocked(false);
+      }
+    } finally {
+      setStorageMigrationStartBusy(false);
+    }
+  }, [migrationGateState, showToast, storageMigrationStartBusy, storageMigrationState]);
+
+  const handleDeferStorageMigration = useCallback(() => {
+    if (storageMigrationStartBusy) return;
+    if (migrationGateState !== "not_started") return;
+    setMigrationGateDismissed(true);
+    setMigrationGateState("not_started");
+    try {
+      kvStorage.setItem(MIGRATION_STATE_KEY, "not_started");
+      kvStorage.setBoolean(MIGRATION_DEFERRED_KEY, true);
+    } catch {}
+  }, [migrationGateState, storageMigrationStartBusy]);
+
+  const handleLegacyCleanupLater = useCallback(() => {
+    if (legacyCleanupBusy) return;
+    setLegacyCleanupDismissed(true);
+  }, [legacyCleanupBusy]);
+
+  const handleLegacyCleanup = useCallback(() => {
+    if (legacyCleanupBusy || legacyCleanupDone) return;
+    setLegacyCleanupBusy(true);
+    try {
+      cleanupLegacyStorage();
+      kvStorage.setBoolean(LEGACY_CLEANUP_DONE_KEY, true);
+      setLegacyCleanupDone(true);
+    } catch (err) {
+      console.warn("Legacy storage cleanup failed", err);
+      showToast("Cleanup failed. You can try again later.", 4000);
+    } finally {
+      setLegacyCleanupBusy(false);
+      setLegacyCleanupDismissed(true);
+    }
+  }, [legacyCleanupBusy, legacyCleanupDone, showToast]);
+
   const [workerBaseUrl, setWorkerBaseUrl] = useState<string>(FALLBACK_WORKER_BASE_URL);
   const [vapidPublicKey, setVapidPublicKey] = useState<string>(FALLBACK_VAPID_PUBLIC_KEY);
+  const runtimeConfigPromiseRef = useRef<Promise<void> | null>(null);
   if (typeof window !== "undefined") {
     (window as any).__TASKIFY_WORKER_BASE_URL__ = workerBaseUrl;
   }
   useEffect(() => {
     let cancelled = false;
-    async function loadRuntimeConfig() {
-      try {
-        const response = await fetch("/api/config", { method: "GET" });
-        if (!response.ok) throw new Error(`Unexpected status ${response.status}`);
-        const data = await response.json();
-        if (cancelled || !data || typeof data !== "object") return;
-        if (typeof data.workerBaseUrl === "string" && data.workerBaseUrl.trim()) {
-          setWorkerBaseUrl(data.workerBaseUrl.trim().replace(/\/$/, ""));
+    if (!runtimeConfigPromiseRef.current) {
+      runtimeConfigPromiseRef.current = (async () => {
+        try {
+          const response = await fetch("/api/config", { method: "GET" });
+          if (!response.ok) return null;
+          const contentType = response.headers.get("content-type") || "";
+
+          let data: any = null;
+          try {
+            if (/json/i.test(contentType)) {
+              data = await response.json();
+            } else {
+              // Some dev setups may serve plain text; attempt to parse but ignore errors.
+              const text = await response.text();
+              try {
+                data = JSON.parse(text);
+              } catch {
+                return null;
+              }
+            }
+          } catch {
+            return null;
+          }
+
+          if (!data || typeof data !== "object") return null;
+          return {
+            workerBaseUrl:
+              typeof data.workerBaseUrl === "string" && data.workerBaseUrl.trim()
+                ? data.workerBaseUrl.trim().replace(/\/$/, "")
+                : null,
+            vapidPublicKey:
+              typeof data.vapidPublicKey === "string" && data.vapidPublicKey.trim()
+                ? data.vapidPublicKey.trim()
+                : null,
+          };
+        } catch (err) {
+          console.warn("Failed to load runtime config", err);
+          return null;
+        }
+      })();
+    }
+
+    runtimeConfigPromiseRef.current
+      ?.then((data) => {
+        if (cancelled) return;
+        if (data?.workerBaseUrl) {
+          setWorkerBaseUrl(data.workerBaseUrl);
         } else if (!FALLBACK_WORKER_BASE_URL && typeof window !== "undefined") {
           setWorkerBaseUrl(window.location.origin);
         }
-        if (typeof data.vapidPublicKey === "string" && data.vapidPublicKey.trim()) {
-          setVapidPublicKey(data.vapidPublicKey.trim());
+        if (data?.vapidPublicKey) {
+          setVapidPublicKey(data.vapidPublicKey);
         }
-      } catch (err) {
-        if (!cancelled) {
-          console.warn("Failed to load runtime config", err);
-          if (!FALLBACK_WORKER_BASE_URL && typeof window !== "undefined") {
-            setWorkerBaseUrl(window.location.origin);
-          }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        if (!FALLBACK_WORKER_BASE_URL && typeof window !== "undefined") {
+          setWorkerBaseUrl(window.location.origin);
         }
-      }
-    }
-    loadRuntimeConfig();
+      })
+      .finally(() => {
+        runtimeConfigPromiseRef.current = null;
+      });
     return () => { cancelled = true; };
   }, []);
   useEffect(() => {
@@ -2770,11 +4969,23 @@ export default function App() {
     try { clip.writeText = patched; } catch {}
     return () => { try { clip.writeText = original; } catch {} };
   }, [showToast]);
+  const [messagesBoardId] = useState<string>(() => {
+    if (typeof window === "undefined") return crypto.randomUUID();
+    try {
+      const existing = kvStorage.getItem(LS_MESSAGES_BOARD_ID);
+      if (existing && existing.trim()) return existing.trim();
+    } catch {}
+    const id = crypto.randomUUID();
+    try {
+      kvStorage.setItem(LS_MESSAGES_BOARD_ID, id);
+    } catch {}
+    return id;
+  });
   const [boards, setBoards] = useBoards();
   const [settings, setSettings] = useSettings();
   useEffect(() => {
     try {
-      localStorage.setItem(LS_MINT_BACKUP_ENABLED, settings.walletMintBackupEnabled ? "1" : "0");
+      kvStorage.setItem(LS_MINT_BACKUP_ENABLED, settings.walletMintBackupEnabled ? "1" : "0");
     } catch {
       // ignore persistence issues
     }
@@ -2874,73 +5085,305 @@ export default function App() {
   }, [boards, currentBoardId, settings.startBoardByDay]);
 
   const [tasks, setTasks] = useTasks();
+  const [calendarEvents, setCalendarEvents] = useCalendarEvents();
+  const [calendarInvites, setCalendarInvites] = useState<CalendarInvite[]>(() => {
+    try {
+      const raw = kvStorage.getItem(LS_CALENDAR_INVITES);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((entry) => {
+          if (!entry || typeof entry !== "object") return null;
+          const eventId = typeof (entry as any).eventId === "string" ? (entry as any).eventId.trim() : "";
+          const canonical = typeof (entry as any).canonical === "string" ? (entry as any).canonical.trim() : "";
+          const view = typeof (entry as any).view === "string" ? (entry as any).view.trim() : "";
+          const eventKey = typeof (entry as any).eventKey === "string" ? (entry as any).eventKey.trim() : "";
+          const inviteToken =
+            typeof (entry as any).inviteToken === "string" ? (entry as any).inviteToken.trim() : "";
+          if (!eventId || !canonical || !view || !eventKey || !inviteToken) return null;
+          const canonicalParsed = parseCalendarAddress(canonical);
+          const viewParsed = parseCalendarAddress(view);
+          if (!canonicalParsed || !viewParsed) return null;
+          if (canonicalParsed.kind !== TASKIFY_CALENDAR_EVENT_KIND || viewParsed.kind !== TASKIFY_CALENDAR_VIEW_KIND) return null;
+          if (canonicalParsed.d !== eventId || viewParsed.d !== eventId) return null;
+          if (canonicalParsed.pubkey !== viewParsed.pubkey) return null;
+          const id = typeof (entry as any).id === "string" ? (entry as any).id.trim() : canonical;
+          if (!id) return null;
+          const source = (entry as any).source === "nostr" ? "nostr" : "dm";
+          const statusRaw = typeof (entry as any).status === "string" ? (entry as any).status : "pending";
+          const status: CalendarInviteStatus =
+            statusRaw === "accepted" || statusRaw === "declined" || statusRaw === "tentative"
+              ? statusRaw
+              : statusRaw === "dismissed"
+                ? "dismissed"
+                : "pending";
+          const receivedAt = typeof (entry as any).receivedAt === "string" ? (entry as any).receivedAt : "";
+          const receivedISO = receivedAt.trim() ? receivedAt : new Date().toISOString();
+          const senderObj = (entry as any).sender;
+          const sender: InboxSender | undefined =
+            senderObj && typeof senderObj === "object" && typeof senderObj.pubkey === "string" && senderObj.pubkey.trim()
+              ? {
+                  pubkey: senderObj.pubkey.trim(),
+                  name: typeof senderObj.name === "string" && senderObj.name.trim() ? senderObj.name.trim() : undefined,
+                  npub: typeof senderObj.npub === "string" && senderObj.npub.trim() ? senderObj.npub.trim() : undefined,
+                }
+              : undefined;
+          const relays = Array.isArray((entry as any).relays)
+            ? (entry as any).relays
+                .map((relay: unknown) => (typeof relay === "string" ? relay.trim() : ""))
+                .filter(Boolean)
+            : undefined;
+          return {
+            id,
+            source,
+            eventId,
+            canonical,
+            view,
+            eventKey,
+            inviteToken,
+            title:
+              typeof (entry as any).title === "string" && (entry as any).title.trim()
+                ? (entry as any).title.trim()
+                : undefined,
+            start:
+              typeof (entry as any).start === "string" && (entry as any).start.trim()
+                ? (entry as any).start.trim()
+                : undefined,
+            end:
+              typeof (entry as any).end === "string" && (entry as any).end.trim()
+                ? (entry as any).end.trim()
+                : undefined,
+            relays: relays?.length ? relays : undefined,
+            sender,
+            receivedAt: receivedISO,
+            status,
+          } satisfies CalendarInvite;
+        })
+        .filter((entry): entry is CalendarInvite => !!entry);
+    } catch {
+      return [];
+    }
+  });
+  const calendarInvitesRef = useRef<CalendarInvite[]>(calendarInvites);
+  useEffect(() => {
+    calendarInvitesRef.current = calendarInvites;
+    try {
+      kvStorage.setItem(LS_CALENDAR_INVITES, JSON.stringify(calendarInvites));
+    } catch {}
+  }, [calendarInvites]);
+  const [editing, setEditing] = useState<EditingState | null>(null);
+  const [activeEventRsvpCoord, setActiveEventRsvpCoord] = useState<string | null>(null);
+  const [activeEventRsvpRelays, setActiveEventRsvpRelays] = useState<string[]>([]);
+  const [activeEventRsvps, setActiveEventRsvps] = useState<CalendarRsvpEnvelope[]>([]);
+  const activeEventRsvpMapRef = useRef<Map<string, CalendarRsvpEnvelope>>(new Map());
+  const activeEventInviteTokensRef = useRef<Record<string, string> | null>(null);
+  const activeEventInviteTokensVersionRef = useRef<string>("");
+  const activeEventRsvpContextRef = useRef<{ eventId: string; boardNostrId: string; boardSkHex: string } | null>(null);
+  const activeEventRsvpSubCloserRef = useRef<null | (() => void)>(null);
+  const externalEventRsvpSubCloserRef = useRef<null | (() => void)>(null);
+  const calendarViewSubCloserRef = useRef<null | (() => void)>(null);
+  const calendarViewClockRef = useRef<Map<string, number>>(new Map());
+  const [shareBoardModalOpen, setShareBoardModalOpen] = useState(false);
+  const [shareBoardTargetId, setShareBoardTargetId] = useState<string | null>(null);
+  const shareBoardTarget = useMemo(
+    () => (shareBoardTargetId ? boards.find((board) => board.id === shareBoardTargetId) || null : null),
+    [boards, shareBoardTargetId],
+  );
+  const [shareBoardMode, setShareBoardMode] = useState<"board" | "template">("board");
+  const [shareModeInfoOpen, setShareModeInfoOpen] = useState(false);
+  const shareModeInfoRef = useRef<HTMLDivElement | null>(null);
+  const shareModeInfoButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [shareTemplateShare, setShareTemplateShare] = useState<{
+    id: string;
+    relays: string[];
+    boardId: string;
+  } | null>(null);
+  const [shareTemplateStatus, setShareTemplateStatus] = useState<string | null>(null);
+  const [shareTemplateBusy, setShareTemplateBusy] = useState(false);
+  const [shareContactPickerOpen, setShareContactPickerOpen] = useState(false);
+  const [shareContactStatus, setShareContactStatus] = useState<string | null>(null);
+  const [shareContactBusy, setShareContactBusy] = useState(false);
+  const [shareContacts, setShareContacts] = useState<Contact[]>(() => loadContactsFromStorage());
+  const shareableContacts = useMemo(
+    () => shareContacts.filter((contact) => contactHasNpub(contact)),
+    [shareContacts],
+  );
+  const shareBoardTargetIdRef = useRef<string | null>(null);
+  const shareBoardModalOpenRef = useRef(false);
+  useEffect(() => {
+    shareBoardTargetIdRef.current = shareBoardTargetId;
+  }, [shareBoardTargetId]);
+  useEffect(() => {
+    shareBoardModalOpenRef.current = shareBoardModalOpen;
+  }, [shareBoardModalOpen]);
+  useEffect(() => {
+    if (!shareModeInfoOpen || typeof document === "undefined") return;
+    const handlePointer = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (shareModeInfoRef.current?.contains(target)) return;
+      if (shareModeInfoButtonRef.current?.contains(target)) return;
+      setShareModeInfoOpen(false);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShareModeInfoOpen(false);
+    };
+    document.addEventListener("mousedown", handlePointer);
+    document.addEventListener("touchstart", handlePointer);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handlePointer);
+      document.removeEventListener("touchstart", handlePointer);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [shareModeInfoOpen]);
+  useEffect(() => {
+    const refreshContacts = () => setShareContacts(loadContactsFromStorage());
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === LS_LIGHTNING_CONTACTS) {
+        refreshContacts();
+      }
+    };
+    window.addEventListener("taskify:contacts-updated", refreshContacts);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener("taskify:contacts-updated", refreshContacts);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
   const boardMap = useMemo(() => {
     const map = new Map<string, Board>();
     boards.forEach((board) => map.set(board.id, board));
     return map;
   }, [boards]);
-  const resolvedBountyList = useMemo<BountyListRef>(() => {
-    const candidate = settings.walletBountyList || DEFAULT_BOUNTY_LIST;
-    const board = boardMap.get(candidate.boardId);
-    if (!board) {
-      return { ...DEFAULT_BOUNTY_LIST };
-    }
-    if (board.kind === "week") {
-      return { boardId: board.id, columnId: DEFAULT_BOUNTY_COLUMN_ID };
-    }
-    if (isListLikeBoard(board)) {
-      const columns = board.kind === "lists" ? board.columns : [];
-      const columnMatch = columns.find((col) => col.id === candidate.columnId);
-      const fallbackColumnId = columns[0]?.id;
-      const columnId = columnMatch?.id || fallbackColumnId;
-      if (columnId) {
-        return { boardId: board.id, columnId };
-      }
-    }
-    return { ...DEFAULT_BOUNTY_LIST };
-  }, [boardMap, settings.walletBountyList]);
-  const activeBountyListKey = useMemo(() => bountyListKey(resolvedBountyList), [resolvedBountyList]);
-  const activeBountyListLabel = useMemo(() => {
-    const board = boardMap.get(resolvedBountyList.boardId);
-    if (!board) return "Bounties";
-    if (board.kind === "week") {
-      return `${board.name} • Bounties`;
-    }
-    if (board.kind === "lists") {
-      const column = board.columns.find((col) => col.id === resolvedBountyList.columnId);
-      if (column) {
-        return `${board.name} • ${column.name}`;
-      }
-    }
-    return "Bounties";
-  }, [boardMap, resolvedBountyList]);
-  const bountyListEnabled = settings.walletBountiesEnabled && !!activeBountyListKey;
-  const bountyListOptions = useMemo(() => {
-    const options: { key: string; label: string; ref: BountyListRef }[] = [];
-    const seen = new Set<string>();
-    const pushOption = (ref: BountyListRef, label: string) => {
-      const key = bountyListKey(ref);
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      options.push({ key, label, ref });
+  const messagesUnreadCount = useMemo(
+    () =>
+      tasks.filter(
+        (t) =>
+          t.boardId === messagesBoardId &&
+          !t.completed &&
+          t.inboxItem &&
+          t.inboxItem.status !== "accepted" &&
+          t.inboxItem.status !== "deleted" &&
+          t.inboxItem.status !== "read",
+      ).length,
+    [messagesBoardId, tasks],
+  );
+  const walletMessageItems = useMemo<WalletMessageItem[]>(
+    () =>
+      tasks
+        .filter((t) => t.boardId === messagesBoardId)
+        .map((t) => ({
+          id: t.id,
+          title: t.title,
+          note: t.note,
+          completed: !!t.completed,
+          type: t.inboxItem?.type,
+          status: t.inboxItem?.status,
+          dmEventId: t.inboxItem?.dmEventId,
+          boardId: t.inboxItem?.type === "board" ? t.inboxItem.boardId : undefined,
+          boardName: t.inboxItem?.type === "board" ? t.inboxItem.boardName : undefined,
+          contact: t.inboxItem?.type === "contact" ? t.inboxItem.contact : undefined,
+          task: t.inboxItem?.type === "task" ? t.inboxItem.task : undefined,
+          sender: t.inboxItem?.sender,
+          receivedAt: t.inboxItem?.receivedAt ?? t.dueISO,
+        })),
+    [messagesBoardId, tasks],
+  );
+  const inboxPendingItems = useMemo(
+    () =>
+      walletMessageItems.filter(
+        (item) =>
+          !item.completed &&
+          item.status !== "accepted" &&
+          item.status !== "deleted",
+      ),
+    [walletMessageItems],
+  );
+  const pendingCalendarInvites = useMemo(
+    () => calendarInvites.filter((invite) => invite.status === "pending"),
+    [calendarInvites],
+  );
+  const formatCalendarInviteWhen = useCallback((invite: CalendarInvite): string => {
+    const startRaw = invite.start?.trim() || "";
+    const endRaw = invite.end?.trim() || "";
+    if (!startRaw) return "";
+
+    const formatDateLabel = (dateKey: string): string => {
+      const parsed = new Date(`${dateKey}T00:00:00`);
+      if (Number.isNaN(parsed.getTime())) return dateKey;
+      return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
     };
-    const defaultBoard = boardMap.get(DEFAULT_BOUNTY_BOARD_ID);
-    pushOption(DEFAULT_BOUNTY_LIST, `${defaultBoard?.name || "Week"} • Bounties`);
-    boards.forEach((board) => {
-      if (board.kind === "week") {
-        pushOption({ boardId: board.id, columnId: "bounties" }, `${board.name} • Bounties`);
-      } else if (board.kind === "lists") {
-        board.columns.forEach((col) => {
-          pushOption({ boardId: board.id, columnId: col.id }, `${board.name} • ${col.name}`);
-        });
-      }
-    });
-    return options;
-  }, [boardMap, boards]);
+
+    const formatTimeLabel = (date: Date): string => date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+    if (ISO_DATE_PATTERN.test(startRaw)) {
+      const startLabel = formatDateLabel(startRaw);
+      if (!endRaw || !ISO_DATE_PATTERN.test(endRaw)) return startLabel;
+      const endLabel = formatDateLabel(endRaw);
+      return `${startLabel} – ${endLabel}`;
+    }
+
+    const startDate = new Date(startRaw);
+    if (Number.isNaN(startDate.getTime())) return startRaw;
+    const dateLabel = startDate.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+    const startTimeLabel = formatTimeLabel(startDate);
+
+    if (!endRaw) return `${dateLabel} • ${startTimeLabel}`;
+    const endDate = new Date(endRaw);
+    if (Number.isNaN(endDate.getTime())) return `${dateLabel} • ${startTimeLabel}`;
+
+    const endDateLabel = endDate.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+    const endTimeLabel = formatTimeLabel(endDate);
+    if (endDateLabel === dateLabel) return `${dateLabel} • ${startTimeLabel} – ${endTimeLabel}`;
+    return `${dateLabel} • ${startTimeLabel} – ${endDateLabel} ${endTimeLabel}`;
+  }, []);
+  const inboxPendingCount = inboxPendingItems.length + pendingCalendarInvites.length;
+  const activeBountyListKey = PINNED_BOUNTY_LIST_KEY;
+  const bountyListEnabled = true;
   const [bibleTracker, setBibleTracker] = useBibleTracker();
+  const bibleTrackerRef = useRef<BibleTrackerState>(bibleTracker);
+  useEffect(() => { bibleTrackerRef.current = bibleTracker; }, [bibleTracker]);
+  const [biblePrintPaperSize, setBiblePrintPaperSize] = useState<PrintPaperSize>(() => loadBiblePrintPaperSize());
+  const [biblePrintOpen, setBiblePrintOpen] = useState(false);
+  const [biblePrintMeta, setBiblePrintMeta] = useState<BiblePrintMeta | null>(null);
+  const [biblePrintPdfBusy, setBiblePrintPdfBusy] = useState(false);
+  const [bibleScanOpen, setBibleScanOpen] = useState(false);
+  const [biblePrintPortal, setBiblePrintPortal] = useState<HTMLDivElement | null>(null);
+  const [boardPrintOpen, setBoardPrintOpen] = useState(false);
+  const [boardScanOpen, setBoardScanOpen] = useState(false);
+  const [boardPrintJob, setBoardPrintJob] = useState<BoardPrintJob | null>(null);
+  const [boardPrintPdfBusy, setBoardPrintPdfBusy] = useState(false);
+  const [boardPrintPortal, setBoardPrintPortal] = useState<HTMLDivElement | null>(null);
   const [scriptureMemory, setScriptureMemory] = useScriptureMemory();
   const [defaultRelays, setDefaultRelays] = useState<string[]>(() => loadDefaultRelays());
   useEffect(() => { saveDefaultRelays(defaultRelays); }, [defaultRelays]);
+  useEffect(() => {
+    persistBiblePrintPaperSize(biblePrintPaperSize);
+  }, [biblePrintPaperSize]);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const node = document.createElement("div");
+    node.className = "bible-print-portal";
+    document.body.appendChild(node);
+    setBiblePrintPortal(node);
+    return () => {
+      node.remove();
+      setBiblePrintPortal(null);
+    };
+  }, []);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const node = document.createElement("div");
+    node.className = "board-print-portal";
+    document.body.appendChild(node);
+    setBoardPrintPortal(node);
+    return () => {
+      node.remove();
+      setBoardPrintPortal(null);
+    };
+  }, []);
   const handleAddScriptureMemory = useCallback((payload: AddScripturePayload) => {
     setScriptureMemory((prev) => {
       const entries = prev.entries ? [...prev.entries] : [];
@@ -3029,6 +5472,10 @@ export default function App() {
     settings.scriptureMemorySort,
   ]);
   const maybePublishTaskRef = useRef<PublishTaskFn | null>(null);
+  const maybePublishCalendarEventRef = useRef<PublishCalendarEventFn | null>(null);
+  const publishBoardMetadataRef = useRef<((board: Board) => Promise<void>) | null>(null);
+  const publishBoardMetadataSnapshotRef = useRef<((board: Board, boardId: string, relays: string[]) => Promise<void>) | null>(null);
+  const publishCalendarEventDeletedRef = useRef<((event: CalendarEvent) => Promise<void>) | null>(null);
   const completeTaskRef = useRef<CompleteTaskFn | null>(null);
   const scriptureLastReviewRef = useRef<string | null>(null);
   const handleReviewScriptureMemory = useCallback(
@@ -3181,6 +5628,7 @@ export default function App() {
         id: crypto.randomUUID(),
         boardId: targetBoard.id,
         title: `Review ${formatScriptureReference(selection.entry)}`,
+        createdAt: Date.now(),
         dueISO,
         completed: false,
         order,
@@ -3217,6 +5665,153 @@ export default function App() {
     setTasks,
     maybePublishTaskRef,
     setScriptureMemory,
+  ]);
+
+  useEffect(() => {
+    const targetBoard =
+      boards.find((b) => b.id === "week-default" && b.kind === "week")
+      || boards.find((b) => b.kind === "week" && !b.archived && !b.hidden)
+      || boards.find((b) => b.kind === "week")
+      || null;
+
+    if (!settings.fastingRemindersEnabled) {
+      setTasks((prev) => {
+        const next = prev.filter((task) => !(task.seriesId === FASTING_REMINDER_SERIES_ID && !task.completed));
+        return next.length === prev.length ? prev : next;
+      });
+      return;
+    }
+    if (!targetBoard) return;
+
+    const now = new Date();
+    const months = Array.from({ length: 2 }, (_, i) => {
+      const anchor = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      const year = anchor.getFullYear();
+      const monthIndex = anchor.getMonth();
+      return { year, monthIndex, key: monthKeyFromYearMonth(year, monthIndex) };
+    });
+    const windowMonthKeys = new Set(months.map((m) => m.key));
+    const desiredDueTimes = new Set<number>();
+    months.forEach((m) => {
+      const times = fastingReminderDueTimesForMonth(m.year, m.monthIndex, {
+        mode: settings.fastingRemindersMode,
+        weekday: settings.fastingRemindersWeekday,
+        perMonth: settings.fastingRemindersPerMonth,
+        seed: settings.fastingRemindersRandomSeed,
+      });
+      times.forEach((time) => desiredDueTimes.add(time));
+    });
+
+    const createdTasks: Task[] = [];
+    setTasks((prev) => {
+      const todayMidnight = startOfDay(new Date()).getTime();
+      let changed = false;
+      const nextTasks: Task[] = [];
+      const existingDueTimes = new Set<number>();
+
+      for (const task of prev) {
+        if (task.seriesId !== FASTING_REMINDER_SERIES_ID) {
+          nextTasks.push(task);
+          continue;
+        }
+        if (task.completed) {
+          nextTasks.push(task);
+          continue;
+        }
+
+        const dueDate = new Date(task.dueISO);
+        const dueMidnight = startOfDay(dueDate);
+        const dueTime = dueMidnight.getTime();
+        if (!Number.isFinite(dueTime) || Number.isNaN(dueTime)) {
+          nextTasks.push(task);
+          continue;
+        }
+
+        const dueMonthKey = monthKeyFromYearMonth(dueDate.getFullYear(), dueDate.getMonth());
+        const managedMonth = windowMonthKeys.has(dueMonthKey);
+        const isInFuture = dueTime >= todayMidnight;
+        const isDesired = desiredDueTimes.has(dueTime);
+
+        if (managedMonth && isInFuture && !isDesired) {
+          changed = true;
+          continue;
+        }
+
+        if (isInFuture && isDesired) {
+          existingDueTimes.add(dueTime);
+        }
+
+        let updated = task;
+        if (updated.boardId !== targetBoard.id) {
+          updated = { ...updated, boardId: targetBoard.id };
+          changed = true;
+        }
+        if (targetBoard.kind === "week") {
+          if (updated.column !== "day") {
+            updated = { ...updated, column: "day" };
+            changed = true;
+          }
+        } else if (targetBoard.kind === "lists") {
+          const firstColumn = targetBoard.columns?.[0];
+          if (firstColumn && updated.columnId !== firstColumn.id) {
+            updated = { ...updated, columnId: firstColumn.id };
+            changed = true;
+          }
+        }
+
+        nextTasks.push(updated);
+      }
+
+      const toCreate = Array.from(desiredDueTimes)
+        .filter((time) => time >= todayMidnight && !existingDueTimes.has(time))
+        .sort((a, b) => a - b);
+      for (const dueTime of toCreate) {
+        const dueISO = new Date(dueTime).toISOString();
+        const order = nextOrderForBoard(targetBoard.id, nextTasks, settings.newTaskPosition);
+        const newTask: Task = {
+          id: crypto.randomUUID(),
+          boardId: targetBoard.id,
+          title: "Fasting",
+          note: "Fasting reminder",
+          createdAt: Date.now(),
+          dueISO,
+          completed: false,
+          order,
+          seriesId: FASTING_REMINDER_SERIES_ID,
+        };
+        if (targetBoard.kind === "week") {
+          newTask.column = "day";
+        } else if (targetBoard.kind === "lists") {
+          const firstColumn = targetBoard.columns?.[0];
+          if (!firstColumn) continue;
+          newTask.columnId = firstColumn.id;
+        }
+        applyHiddenForFuture(newTask, settings.weekStart, targetBoard.kind);
+        createdTasks.push(newTask);
+        nextTasks.push(newTask);
+        changed = true;
+      }
+
+      return changed ? nextTasks : prev;
+    });
+
+    if (createdTasks.length) {
+      createdTasks.forEach((task) => {
+        const publishPromise = maybePublishTaskRef.current?.(task, targetBoard);
+        publishPromise?.catch(() => {});
+      });
+    }
+  }, [
+    boards,
+    settings.fastingRemindersEnabled,
+    settings.fastingRemindersMode,
+    settings.fastingRemindersPerMonth,
+    settings.fastingRemindersRandomSeed,
+    settings.fastingRemindersWeekday,
+    settings.newTaskPosition,
+    settings.weekStart,
+    setTasks,
+    maybePublishTaskRef,
   ]);
 
   useEffect(() => {
@@ -3266,10 +5861,24 @@ export default function App() {
       const root = document.documentElement;
       root.classList.remove("light");
       if (!root.classList.contains("dark")) root.classList.add("dark");
-      const meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.setAttribute("content", "#0a0a0a");
     } catch {}
   }, []);
+
+  useEffect(() => {
+    try {
+      const root = document.documentElement;
+      const rootStyle = getComputedStyle(root);
+      let color = rootStyle.getPropertyValue("--surface-base").trim() || "#050508";
+      if (settings.backgroundImage && settings.backgroundAccent) {
+        color = settings.backgroundAccent.fill || settings.backgroundAccent.active || color;
+      } else if (settings.accent === "background" && settings.backgroundAccent) {
+        color = settings.backgroundAccent.fill || settings.backgroundAccent.active || color;
+      }
+      root.style.setProperty("--status-bar-color", color);
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute("content", color);
+    } catch {}
+  }, [settings.accent, settings.backgroundAccent, settings.backgroundImage]);
 
   useEffect(() => {
     try {
@@ -3299,6 +5908,7 @@ export default function App() {
       const root = document.documentElement;
       const style = root.style;
       if (settings.backgroundImage) {
+        root.setAttribute("data-background-image", "true");
         style.setProperty("--background-image", `url("${settings.backgroundImage}")`);
         style.setProperty("--background-image-opacity", "1");
         const blurMode = settings.backgroundBlur;
@@ -3307,6 +5917,7 @@ export default function App() {
         style.setProperty("--background-image-filter", blurMode === "sharp" ? "none" : "blur(36px)");
         style.setProperty("--background-image-scale", blurMode === "sharp" ? "1.02" : "1.08");
       } else {
+        root.removeAttribute("data-background-image");
         style.removeProperty("--background-image");
         style.removeProperty("--background-image-opacity");
         style.removeProperty("--background-overlay-opacity");
@@ -3320,66 +5931,159 @@ export default function App() {
 
   // Nostr pool + merge indexes
   const pool = useMemo(() => createNostrPool(), []);
+  const initialStoredNostrSecretHex = useMemo(() => {
+    try {
+      const existing = kvStorage.getItem(LS_NOSTR_SK);
+      if (existing && /^[0-9a-fA-F]{64}$/.test(existing)) {
+        return existing.toLowerCase();
+      }
+    } catch {}
+    return null;
+  }, []);
   // In-app Nostr key (secp256k1/Schnorr) for signing
   const [nostrSK, setNostrSK] = useState<Uint8Array>(() => {
-    try {
-      const existing = localStorage.getItem(LS_NOSTR_SK);
-      if (existing && /^[0-9a-fA-F]{64}$/.test(existing)) return hexToBytes(existing);
-    } catch {}
-    const sk = generateSecretKey();
-    try { localStorage.setItem(LS_NOSTR_SK, bytesToHex(sk)); } catch {}
-    return sk;
+    if (initialStoredNostrSecretHex) {
+      return hexToBytes(initialStoredNostrSecretHex);
+    }
+    return generateSecretKey();
   });
   const [nostrPK, setNostrPK] = useState<string>(() => {
-    try { return getPublicKey(nostrSK); } catch { return ""; }
+    if (!initialStoredNostrSecretHex) return "";
+    try {
+      return getPublicKey(hexToBytes(initialStoredNostrSecretHex));
+    } catch {
+      return "";
+    }
   });
   useEffect(() => { (window as any).nostrPK = nostrPK; }, [nostrPK]);
+  useEffect(() => {
+    const relays = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
+    NostrSession.init(relays).catch((err) => {
+      console.warn("Failed to initialize Nostr session", err);
+    });
+  }, [defaultRelays]);
+  const [nostrBackupState, setNostrBackupState] = useState<NostrBackupState>(() => loadNostrBackupState());
+  const nostrBackupStateRef = useRef<NostrBackupState>(nostrBackupState);
+  useEffect(() => { nostrBackupStateRef.current = nostrBackupState; }, [nostrBackupState]);
+  useEffect(() => {
+    try { kvStorage.setItem(LS_NOSTR_BACKUP_STATE, JSON.stringify(nostrBackupState)); } catch {}
+  }, [nostrBackupState]);
+  useEffect(() => {
+    setNostrBackupState((prev) => {
+      if (prev.pubkey === nostrPK) return prev;
+      nostrBackupInitialPublishRef.current = false;
+      nostrBackupPullFinishedRef.current = false;
+      return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
+    });
+  }, [nostrPK]);
+  const nostrBackupBaselineRef = useRef<string | null>(null);
+  const nostrBackupSettingsDirtyRef = useRef(false);
+  const nostrBackupPullFinishedRef = useRef(false);
+  const nostrBackupInitialPublishRef = useRef(false);
+  const nostrBackupPublishRef = useRef<Promise<void> | null>(null);
+  const [nostrBackupHold, setNostrBackupHold] = useState(false);
+  const nostrBackupHoldRef = useRef(nostrBackupHold);
+  useEffect(() => { nostrBackupHoldRef.current = nostrBackupHold; }, [nostrBackupHold]);
+
+  const [nostrBibleTrackerState, setNostrBibleTrackerState] = useState<NostrBackupState>(() =>
+    loadNostrSyncState(LS_NOSTR_BIBLE_TRACKER_SYNC_STATE),
+  );
+  const nostrBibleTrackerStateRef = useRef<NostrBackupState>(nostrBibleTrackerState);
+  useEffect(() => { nostrBibleTrackerStateRef.current = nostrBibleTrackerState; }, [nostrBibleTrackerState]);
+  useEffect(() => {
+    try { kvStorage.setItem(LS_NOSTR_BIBLE_TRACKER_SYNC_STATE, JSON.stringify(nostrBibleTrackerState)); } catch {}
+  }, [nostrBibleTrackerState]);
+  const nostrBibleTrackerPublishedSnapshotRef = useRef<string | null>(null);
+  const nostrBibleTrackerPullFinishedRef = useRef(false);
+  const nostrBibleTrackerInitialPublishRef = useRef(false);
+  const nostrBibleTrackerPublishRef = useRef<Promise<void> | null>(null);
+  const nostrBibleTrackerQueuedPublishRef = useRef(false);
+  const nostrBibleTrackerDebounceTimerRef = useRef<number | null>(null);
+  const nostrBibleTrackerErrorToastAtRef = useRef(0);
+  useEffect(() => {
+    setNostrBibleTrackerState((prev) => {
+      if (prev.pubkey === nostrPK) return prev;
+      nostrBibleTrackerInitialPublishRef.current = false;
+      nostrBibleTrackerPullFinishedRef.current = false;
+      nostrBibleTrackerPublishedSnapshotRef.current = null;
+      nostrBibleTrackerQueuedPublishRef.current = false;
+      return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
+    });
+  }, [nostrPK]);
+
+  const [nostrScriptureMemoryState, setNostrScriptureMemoryState] = useState<NostrBackupState>(() =>
+    loadNostrSyncState(LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE),
+  );
+  const nostrScriptureMemoryStateRef = useRef<NostrBackupState>(nostrScriptureMemoryState);
+  useEffect(() => { nostrScriptureMemoryStateRef.current = nostrScriptureMemoryState; }, [nostrScriptureMemoryState]);
+  useEffect(() => {
+    try { kvStorage.setItem(LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE, JSON.stringify(nostrScriptureMemoryState)); } catch {}
+  }, [nostrScriptureMemoryState]);
+  const nostrScriptureMemoryPublishedSnapshotRef = useRef<string | null>(null);
+  const nostrScriptureMemoryPullFinishedRef = useRef(false);
+  const nostrScriptureMemoryInitialPublishRef = useRef(false);
+  const nostrScriptureMemoryPublishRef = useRef<Promise<void> | null>(null);
+  const nostrScriptureMemoryDebounceTimerRef = useRef<number | null>(null);
+  const nostrScriptureMemoryErrorToastAtRef = useRef(0);
+  useEffect(() => {
+    setNostrScriptureMemoryState((prev) => {
+      if (prev.pubkey === nostrPK) return prev;
+      nostrScriptureMemoryInitialPublishRef.current = false;
+      nostrScriptureMemoryPullFinishedRef.current = false;
+      nostrScriptureMemoryPublishedSnapshotRef.current = null;
+      return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
+    });
+  }, [nostrPK]);
   // allow manual key rotation later if needed
-  const rotateNostrKey = () => {
+  const rotateNostrKey = useCallback(() => {
     const sk = generateSecretKey();
+    const skHex = bytesToHex(sk);
     setNostrSK(sk);
     const pk = getPublicKey(sk);
     setNostrPK(pk);
-    try { localStorage.setItem(LS_NOSTR_SK, bytesToHex(sk)); } catch {}
-  };
+    try { kvStorage.setItem(LS_NOSTR_SK, skHex); } catch {}
+    return toNsec(skHex);
+  }, []);
 
-  const setCustomNostrKey = (key: string) => {
+  const applyCustomNostrKey = useCallback((key: string, options?: { silent?: boolean }): boolean => {
     try {
-      let hex = key.trim();
-      if (hex.startsWith("nsec")) {
-        const dec = nip19.decode(hex);
-        if (typeof dec.data !== "string") throw new Error();
-        hex = dec.data;
-      }
-      if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error();
-      const sk = hexToBytes(hex);
+      const normalized = normalizeSecretKeyInput(key);
+      if (!normalized) throw new Error("invalid");
+      const sk = hexToBytes(normalized);
       setNostrSK(sk);
       const pk = getPublicKey(sk);
       setNostrPK(pk);
-      try { localStorage.setItem(LS_NOSTR_SK, hex); } catch {}
+      try { kvStorage.setItem(LS_NOSTR_SK, normalized); } catch {}
+      return true;
     } catch {
-      alert("Invalid private key");
+      if (!options?.silent) {
+        alert("Invalid private key");
+      }
+      return false;
     }
-  };
+  }, []);
+
+  const setCustomNostrKey = useCallback((key: string) => {
+    applyCustomNostrKey(key);
+  }, [applyCustomNostrKey]);
 
   const lastNostrCreated = useRef<Map<string, number>>(new Map());
-  const nostrPublishQueue = useRef<Promise<void>>(Promise.resolve());
+  const nostrPublishQueue = useRef<Promise<unknown>>(Promise.resolve());
   const lastNostrSentMs = useRef(0);
-  const nostrPublishHistory = useRef<number[]>([]);
-  const lastBoardMetadataPublishMs = useRef<Map<string, number>>(new Map());
-  async function nostrPublish(relays: string[], template: EventTemplate, options?: { sk?: Uint8Array | string }) {
+  async function nostrPublish(relays: string[], template: EventTemplate, options?: { sk?: Uint8Array | string }): Promise<number>;
+  async function nostrPublish(
+    relays: string[],
+    template: EventTemplate,
+    options: { sk?: Uint8Array | string; returnEvent: true },
+  ): Promise<{ createdAt: number; event: NostrEvent }>;
+  async function nostrPublish(
+    relays: string[],
+    template: EventTemplate,
+    options?: { sk?: Uint8Array | string; returnEvent?: boolean },
+  ) {
     const run = async () => {
-      // Apply a leaky-bucket style limit so bursty actions (clear all, rapid add/delete) do not trip relay rate limits.
       const nowMs = Date.now();
-      const cutoff = nowMs - NOSTR_PUBLISH_WINDOW_MS;
-      const history = nostrPublishHistory.current;
-      while (history.length && history[0] < cutoff) history.shift();
-      if (history.length >= NOSTR_PUBLISH_BURST_LIMIT) {
-        const waitMs = history[0] + NOSTR_PUBLISH_WINDOW_MS - nowMs;
-        if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
-      }
-      const afterWindowMs = Date.now();
-      const elapsed = afterWindowMs - lastNostrSentMs.current;
+      const elapsed = nowMs - lastNostrSentMs.current;
       if (elapsed < NOSTR_MIN_EVENT_INTERVAL_MS) {
         await new Promise((resolve) => setTimeout(resolve, NOSTR_MIN_EVENT_INTERVAL_MS - elapsed));
       }
@@ -3394,180 +6098,696 @@ export default function App() {
       lastNostrCreated.current.set(signerKey, createdAt);
       const ev = finalizeEvent({ ...template, created_at: createdAt }, signer);
       pool.publishEvent(relays, ev as unknown as NostrEvent);
-      const sentAt = Date.now();
-      lastNostrSentMs.current = sentAt;
-      history.push(sentAt);
-      return createdAt;
+      lastNostrSentMs.current = Date.now();
+      return options?.returnEvent ? { createdAt, event: ev as unknown as NostrEvent } : createdAt;
     };
     const next = nostrPublishQueue.current.catch(() => {}).then(run);
     nostrPublishQueue.current = next.then(() => {}, () => {});
     return next;
   }
+  const nostrPublishRef = useRef(nostrPublish);
+  nostrPublishRef.current = nostrPublish;
   type NostrIndex = {
     boardMeta: Map<string, number>; // nostrBoardId -> created_at
     taskClock: Map<string, Map<string, number>>; // nostrBoardId -> (taskId -> created_at)
+    calendarClock: Map<string, Map<string, number>>; // nostrBoardId -> (calendarEventId -> created_at)
   };
   type BoardMigrationState = {
     dedicatedSeen: boolean;
     legacySeen: boolean;
     migrationAttempted: boolean;
   };
-  const nostrIdxRef = useRef<NostrIndex>({ boardMeta: new Map(), taskClock: new Map() });
+  const nostrIdxRef = useRef<NostrIndex>({ boardMeta: new Map(), taskClock: new Map(), calendarClock: new Map() });
   const boardMigrationRef = useRef<Map<string, BoardMigrationState>>(new Map());
   const pendingNostrTasksRef = useRef<Set<string>>(new Set());
-  const [pendingNostrVersion, setPendingNostrVersion] = useState(0);
-  const pendingNostrQueueRef = useRef<PendingNostrJob[]>(loadPendingNostrQueue());
-  const pendingNostrProcessingRef = useRef(false);
-  const pendingNostrRetryRef = useRef<number | null>(null);
+  const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
+  const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
+  const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
+  const markNostrBoardInitialSyncComplete = useCallback((bTag: string) => {
+    if (!bTag) return;
+    completedNostrInitialSyncRef.current.add(bTag);
+    setPendingNostrInitialSyncByBoardTag((prev) => {
+      if (!prev[bTag]) return prev;
+      const next = { ...prev };
+      delete next[bTag];
+      return next;
+    });
+  }, []);
   const boardsRef = useRef<Board[]>(boards);
   useEffect(() => { boardsRef.current = boards; }, [boards]);
   const tasksRef = useRef<Task[]>(tasks);
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
-  const bumpPendingNostrVersion = useCallback(() => {
-    setPendingNostrVersion((v) => (v === Number.MAX_SAFE_INTEGER ? 0 : v + 1));
-  }, []);
-  const setPendingTaskClock = useCallback((bTag: string, taskId: string) => {
-    if (!nostrIdxRef.current.taskClock.has(bTag)) {
-      nostrIdxRef.current.taskClock.set(bTag, new Map());
+  const calendarEventsRef = useRef<CalendarEvent[]>(calendarEvents);
+  useEffect(() => { calendarEventsRef.current = calendarEvents; }, [calendarEvents]);
+  const [inboxProcessedSeed] = useState<string[]>(() => {
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_INBOX_PROCESSED);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return parsed
+            .filter((entry): entry is string => typeof entry === "string" && !!entry.trim())
+            .slice(-400);
+        }
+      }
+    } catch {}
+    return [];
+  });
+  const inboxProcessedRef = useRef<Set<string>>(new Set(inboxProcessedSeed));
+  const persistInboxProcessed = useCallback(() => {
+    try {
+      const trimmed = Array.from(inboxProcessedRef.current).slice(-400);
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_INBOX_PROCESSED, JSON.stringify(trimmed));
+    } catch {
+      // ignore persistence errors
     }
-    const now = Math.floor(Date.now() / 1000);
-    const m = nostrIdxRef.current.taskClock.get(bTag)!;
-    const last = m.get(taskId) || 0;
-    m.set(taskId, Math.max(last, now));
   }, []);
-  const updatePendingTasksForJob = useCallback((job: PendingNostrJob, action: "add" | "remove") => {
-    if (!job.boardTag) return;
-    const touch = (taskId: string) => {
-      const key = `${job.boardTag}::${taskId}`;
-      if (action === "add") pendingNostrTasksRef.current.add(key);
-      else pendingNostrTasksRef.current.delete(key);
-    };
-    if (job.type === "task") touch(job.task.id);
-    else if (job.type === "delete") touch(job.taskId);
-    else if (job.type === "delete-batch") job.taskIds.forEach(touch);
-    bumpPendingNostrVersion();
-  }, [bumpPendingNostrVersion]);
-  const rebuildPendingTasksFromQueue = useCallback(() => {
-    const next = new Set<string>();
-    for (const job of pendingNostrQueueRef.current) {
-      if (!job.boardTag) continue;
-      if (job.type === "task") next.add(`${job.boardTag}::${job.task.id}`);
-      else if (job.type === "delete") next.add(`${job.boardTag}::${job.taskId}`);
-      else if (job.type === "delete-batch") job.taskIds.forEach((id) => next.add(`${job.boardTag}::${id}`));
+  const inboxPoolRef = useRef<SessionPool | null>(null);
+  const inboxSubCloserRef = useRef<(() => void) | null>(null);
+  const nostrSkHex = useMemo(() => bytesToHex(nostrSK), [nostrSK]);
+  const inboxRelays = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS))
+            .map((r) => r.trim())
+            .filter(Boolean),
+        ),
+      ),
+    [defaultRelays],
+  );
+  const ensureInboxPool = useCallback((): SessionPool => {
+    if (inboxPoolRef.current) return inboxPoolRef.current;
+    inboxPoolRef.current = new SessionPool();
+    return inboxPoolRef.current;
+  }, []);
+  const toNpub = useCallback((value: string): string => {
+    const raw = compressedToRawHex(normalizeNostrPubkey(value) || value);
+    try {
+      if (typeof (nip19 as any)?.npubEncode === "function") {
+        return (nip19 as any).npubEncode(raw);
+      }
+    } catch {
+      // fall through
     }
-    pendingNostrTasksRef.current = next;
-    bumpPendingNostrVersion();
-  }, [bumpPendingNostrVersion]);
-  const findBoardTag = useCallback((boardId: string): string | null => {
-    const board = boardsRef.current.find((b) => b.id === boardId || b.nostr?.boardId === boardId);
-    if (board?.nostr?.boardId) return boardTag(board.nostr.boardId);
-    return null;
+    return raw;
   }, []);
-  const isTaskPendingPublish = useCallback((task: Task): boolean => {
-    const board = boardsRef.current.find((b) => b.id === task.boardId && b.nostr?.boardId);
-    if (!board?.nostr?.boardId) return false;
-    const key = `${boardTag(board.nostr.boardId)}::${task.id}`;
-    return pendingNostrTasksRef.current.has(key);
-  }, [pendingNostrVersion]);
-  const persistPendingQueue = useCallback(() => {
-    persistPendingNostrQueue(pendingNostrQueueRef.current);
+  const shortenNpub = useCallback((value: string): string => {
+    if (!value) return "";
+    return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value;
   }, []);
-  const schedulePendingProcessing = useCallback((delayMs = 0) => {
-    if (pendingNostrRetryRef.current) {
-      clearTimeout(pendingNostrRetryRef.current);
-      pendingNostrRetryRef.current = null;
-    }
-    pendingNostrRetryRef.current = window.setTimeout(() => {
-      pendingNostrRetryRef.current = null;
-      processPendingNostrQueue();
-    }, delayMs);
-  }, []);
-  const enqueuePendingJob = useCallback((job: PendingNostrJob) => {
-    const tag = job.boardTag || findBoardTag(job.boardId);
-    if (!tag) return;
-    const nextJob = { ...job, boardTag: tag };
-    pendingNostrQueueRef.current.push(nextJob);
-    updatePendingTasksForJob(nextJob, "add");
-    persistPendingQueue();
-    schedulePendingProcessing();
-  }, [findBoardTag, persistPendingQueue, schedulePendingProcessing, updatePendingTasksForJob]);
-  const removePendingJobById = useCallback((id: string) => {
-    const idx = pendingNostrQueueRef.current.findIndex((j) => j.id === id);
-    if (idx === -1) return;
-    const [job] = pendingNostrQueueRef.current.splice(idx, 1);
-    updatePendingTasksForJob(job, "remove");
-    persistPendingQueue();
-  }, [persistPendingQueue, updatePendingTasksForJob]);
-  const dropStalePendingForTask = useCallback((bTag: string, taskId: string, newerCreatedAt: number) => {
-    const remaining: PendingNostrJob[] = [];
-    let didChange = false;
-    for (const job of pendingNostrQueueRef.current) {
-      const matches =
-        job.boardTag === bTag &&
-        ((job.type === "task" && job.task.id === taskId) ||
-          (job.type === "delete" && job.taskId === taskId) ||
-          (job.type === "delete-batch" && job.taskIds.includes(taskId)));
-      if (matches && job.nostrTimestamp < newerCreatedAt) {
-        if (job.type === "delete-batch") {
-          const nextIds = job.taskIds.filter((id) => id !== taskId);
-          updatePendingTasksForJob({ ...job, taskIds: [taskId] } as PendingNostrJob, "remove");
-          if (nextIds.length) {
-            remaining.push({ ...job, taskIds: nextIds });
+  const fetchProfileMetadata = useCallback(
+    async (
+      pubkey: string,
+    ): Promise<{ name?: string; displayName?: string; username?: string; nip05?: string } | null> => {
+      const hex = normalizeNostrPubkey(pubkey);
+      if (!hex) return null;
+      const relays = inboxRelays.length ? inboxRelays : Array.from(DEFAULT_NOSTR_RELAYS);
+      try {
+        const pool = ensureInboxPool();
+        const ev = await pool.get(relays, { kinds: [0], authors: [hex] });
+        if (ev?.content) {
+          try {
+            const parsed = JSON.parse(ev.content);
+            if (parsed && typeof parsed === "object") {
+              return {
+                name: typeof parsed.name === "string" ? parsed.name : undefined,
+                displayName: typeof parsed.display_name === "string" ? parsed.display_name : undefined,
+                username: typeof parsed.username === "string" ? parsed.username : undefined,
+                nip05: typeof parsed.nip05 === "string" ? parsed.nip05 : undefined,
+              };
+            }
+          } catch {
+            // ignore parse errors
           }
-        } else {
-          updatePendingTasksForJob(job, "remove");
         }
-        didChange = true;
-      } else {
-        remaining.push(job);
+      } catch (err) {
+        console.warn("Failed to fetch profile metadata", err);
       }
-    }
-    if (didChange) {
-      pendingNostrQueueRef.current = remaining;
-      persistPendingQueue();
-      if (pendingNostrQueueRef.current.length) schedulePendingProcessing();
-    }
-  }, [persistPendingQueue, schedulePendingProcessing, updatePendingTasksForJob]);
-  const pendingTimestampForTask = useCallback((bTag: string, taskId: string): number => {
-    let ts = 0;
-    for (const job of pendingNostrQueueRef.current) {
-      if (job.boardTag !== bTag) continue;
-      if (job.type === "task" && job.task.id === taskId) ts = Math.max(ts, job.nostrTimestamp);
-      else if (job.type === "delete" && job.taskId === taskId) ts = Math.max(ts, job.nostrTimestamp);
-      else if (job.type === "delete-batch" && job.taskIds.includes(taskId)) ts = Math.max(ts, job.nostrTimestamp);
-    }
-    return ts;
+      return null;
+    },
+    [ensureInboxPool, inboxRelays],
+  );
+  const extractPTagPubkeys = useCallback((tags: string[][] | undefined): string[] => {
+    if (!Array.isArray(tags)) return [];
+    return tags
+      .filter((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
+      .map((tag) => tag[1]!.trim())
+      .map((value) => normalizeNostrPubkey(value) || value)
+      .filter((value) => value.length > 0)
+      .map((value) => value.toLowerCase());
   }, []);
+  const decryptShareMessage = useCallback(
+    async (
+      event: NostrEvent,
+    ): Promise<{ content: string; senderPubkey: string; recipientPubkeys: string[] } | null> => {
+      if (!nostrSkHex) return null;
+      try {
+        if (event.kind === 4) {
+          const content = await nip04.decrypt(nostrSkHex, event.pubkey, event.content);
+          return {
+            content,
+            senderPubkey: event.pubkey,
+            recipientPubkeys: extractPTagPubkeys(event.tags),
+          };
+        }
+        if (event.kind === 1059 && nip44?.v2) {
+          const wrapKey = nip44.v2.utils.getConversationKey(nostrSkHex, event.pubkey);
+          const sealJson = await nip44.v2.decrypt(event.content, wrapKey);
+          const sealEvent = JSON.parse(sealJson) as NostrEvent;
+          if (!sealEvent || sealEvent.kind !== 13 || typeof sealEvent.content !== "string") {
+            return null;
+          }
+          if (typeof sealEvent.pubkey !== "string") return null;
+          const dmKey = nip44.v2.utils.getConversationKey(nostrSkHex, sealEvent.pubkey);
+          const dmJson = await nip44.v2.decrypt(sealEvent.content, dmKey);
+          const rumor = JSON.parse(dmJson) as NostrEvent;
+          if (!rumor || rumor.kind !== 14 || typeof rumor.content !== "string") {
+            return null;
+          }
+          return {
+            content: rumor.content,
+            senderPubkey: rumor.pubkey,
+            recipientPubkeys: extractPTagPubkeys(rumor.tags),
+          };
+        }
+      } catch (err) {
+        console.warn("Failed to decrypt shared inbox message", err);
+      }
+      return null;
+    },
+    [extractPTagPubkeys, nostrSkHex],
+  );
+  const formatSenderLabel = useCallback(
+    (sender: InboxSender): string => {
+      const contacts = loadContactsFromStorage();
+      const normalized = normalizeNostrPubkey(sender.pubkey);
+      if (normalized) {
+        const match = contacts.find(
+          (contact) => normalizeNostrPubkey(contact.npub || "") === normalized,
+        );
+        if (match) return contactPrimaryName(match);
+      }
+      if (sender.name?.trim()) return sender.name.trim();
+      const senderNpub = sender.npub || (normalized ? toNpub(normalized) : "");
+      if (senderNpub) return shortenNpub(senderNpub);
+      if (normalized) return shortenNpub(normalized);
+      return shortenNpub(sender.pubkey);
+    },
+    [shortenNpub, toNpub],
+  );
+  const sendInboxDeletion = useCallback(
+    async (eventId: string) => {
+      if (!eventId || !nostrSkHex) return;
+      if (!inboxRelays.length) return;
+      try {
+        const pool = ensureInboxPool();
+        const deletion: EventTemplate = {
+          kind: 5,
+          content: "Handled shared item",
+          tags: [["e", eventId]],
+          created_at: Math.floor(Date.now() / 1000),
+        };
+        const signed = finalizeEvent(deletion, hexToBytes(nostrSkHex));
+        await Promise.resolve(pool.publish(inboxRelays, signed));
+      } catch (err) {
+        console.warn("Failed to delete shared inbox DM", err);
+      }
+    },
+    [ensureInboxPool, inboxRelays, nostrSkHex],
+  );
+  const addInboxTask = useCallback(
+    (item: ShareEnvelope["item"], sender: InboxSender, dmEventId: string) => {
+      const existing = tasksRef.current.find((task) => task.inboxItem?.dmEventId === dmEventId);
+      if (existing) return;
+      const senderLabel = formatSenderLabel(sender);
+      const lines: string[] = [`From ${senderLabel}`];
+      let contactPayload: SharedContactPayload | null = null;
+      let taskPayload: SharedTaskPayload | null = null;
+      if (item.type === "board") {
+        lines.push(`Board ID: ${item.boardId}`);
+        if (item.relays?.length) {
+          lines.push(`Relays: ${item.relays.join(", ")}`);
+        }
+      } else if (item.type === "contact") {
+        contactPayload = (item as any).contact ?? (item as any);
+        const contactNpub = contactPayload?.npub;
+        if (!contactNpub) return;
+        lines.push(`npub: ${shortenNpub(toNpub(contactNpub))}`);
+        if (contactPayload.nip05) lines.push(`NIP-05: ${contactPayload.nip05}`);
+        if (contactPayload.lud16) lines.push(`Lightning: ${contactPayload.lud16}`);
+      } else if (item.type === "task") {
+        taskPayload = item as SharedTaskPayload;
+        const title = taskPayload.title?.trim();
+        if (!title) return;
+        if (taskPayload.dueISO && taskPayload.dueDateEnabled !== false) {
+          const dateKey = isoDatePart(taskPayload.dueISO, taskPayload.dueTimeZone);
+          const dueDate = new Date(`${dateKey}T00:00:00`);
+          if (!Number.isNaN(dueDate.getTime())) {
+            const dateLabel = dueDate.toLocaleDateString([], { month: "short", day: "numeric" });
+            const timeLabel = taskPayload.dueTimeEnabled
+              ? formatTimeLabel(taskPayload.dueISO, taskPayload.dueTimeZone)
+              : "";
+            lines.push(`Due: ${dateLabel}${timeLabel ? ` at ${timeLabel}` : ""}`);
+          }
+        }
+        const subtaskTitles = (taskPayload.subtasks || [])
+          .map((subtask) => subtask.title?.trim())
+          .filter(Boolean) as string[];
+        if (subtaskTitles.length) {
+          lines.push(`Subtasks: ${subtaskTitles.join(", ")}`);
+        }
+        if (taskPayload.note?.trim()) {
+          lines.push("", taskPayload.note.trim());
+        }
+      }
+      const note = lines.join("\n");
+      const nowISO = new Date().toISOString();
+      const order = nextOrderForBoard(messagesBoardId, tasksRef.current, settings.newTaskPosition);
+      const inboxItem: InboxItem =
+        item.type === "board"
+          ? {
+              type: "board",
+              boardId: item.boardId,
+              boardName: item.boardName,
+              relays: item.relays,
+              sender,
+              receivedAt: nowISO,
+              status: "pending",
+              dmEventId,
+            }
+          : item.type === "contact"
+            ? {
+                type: "contact",
+                contact: contactPayload || { type: "contact", npub: "" },
+                sender,
+                receivedAt: nowISO,
+                status: "pending",
+                dmEventId,
+              }
+            : {
+                type: "task",
+                task: taskPayload || { type: "task", title: "Shared task" },
+                sender,
+                receivedAt: nowISO,
+                status: "pending",
+                dmEventId,
+              };
+      const task: Task = {
+        id: crypto.randomUUID(),
+        boardId: messagesBoardId,
+        columnId: MESSAGES_COLUMN_ID,
+        title:
+          item.type === "board"
+            ? item.boardName?.trim() || "Shared board"
+            : item.type === "contact"
+              ? contactPayload.name?.trim() ||
+                contactPayload.displayName?.trim() ||
+                shortenNpub(toNpub(contactPayload.npub)) ||
+                "Shared contact"
+              : taskPayload?.title?.trim() || "Shared task",
+        note,
+        createdAt: Date.now(),
+        dueISO: nowISO,
+        completed: false,
+        order,
+        createdBy: sender.pubkey,
+        inboxItem,
+      };
+      setTasks((prev) => [...prev, task]);
+      maybePublishTaskRef.current?.(task).catch(() => {});
+      const toastLabel =
+        item.type === "board"
+          ? `New board from ${senderLabel}`
+          : item.type === "contact"
+            ? `New contact from ${senderLabel}`
+            : `New task from ${senderLabel}`;
+      showToast(toastLabel);
+    },
+    [
+      formatSenderLabel,
+      maybePublishTaskRef,
+      messagesBoardId,
+      setTasks,
+      settings.newTaskPosition,
+      shortenNpub,
+      showToast,
+      toNpub,
+    ],
+  );
+
+  const upsertCalendarInvite = useCallback((invite: CalendarInvite) => {
+    setCalendarInvites((prev) => {
+      const idx = prev.findIndex((existing) => existing.canonical === invite.canonical);
+      if (idx < 0) return [...prev, invite];
+      const existing = prev[idx];
+      const merged: CalendarInvite = {
+        ...existing,
+        ...invite,
+        id: existing.id || invite.id,
+        status: existing.status,
+        sender: existing.sender ?? invite.sender,
+        relays: existing.relays?.length ? existing.relays : invite.relays,
+        receivedAt: existing.receivedAt || invite.receivedAt,
+        source: existing.source || invite.source,
+      };
+      const copy = prev.slice();
+      copy[idx] = merged;
+      return copy;
+    });
+  }, [setCalendarInvites]);
+
+  const addInboxCalendarInvite = useCallback((item: SharedCalendarEventInvitePayload, sender: InboxSender) => {
+    const nowISO = new Date().toISOString();
+    upsertCalendarInvite({
+      id: item.canonical,
+      source: "dm",
+      eventId: item.eventId,
+      canonical: item.canonical,
+      view: item.view,
+      eventKey: item.eventKey,
+      inviteToken: item.inviteToken,
+      title: item.title?.trim() || undefined,
+      start: item.start?.trim() || undefined,
+      end: item.end?.trim() || undefined,
+      relays: item.relays?.length ? item.relays : undefined,
+      sender,
+      receivedAt: nowISO,
+      status: "pending",
+    });
+  }, [upsertCalendarInvite]);
+
+  const handleIncomingShareEvent = useCallback(
+    async (event: NostrEvent) => {
+      if (!event?.id || inboxProcessedRef.current.has(event.id)) return;
+      if (event.kind !== 4 && event.kind !== 1059) return;
+      const decrypted = await decryptShareMessage(event);
+      if (!decrypted) return;
+      const { content, senderPubkey, recipientPubkeys } = decrypted;
+      const normalizedViewer = normalizeNostrPubkey(nostrPK || "") || (nostrPK || "").toLowerCase();
+      if (recipientPubkeys.length && normalizedViewer && !recipientPubkeys.includes(normalizedViewer)) {
+        return;
+      }
+      let envelope = parseShareEnvelope(content);
+      if (!envelope) {
+        // Fallback: try to parse arbitrary JSON with an npub field
+        try {
+          const parsed = JSON.parse(content);
+          if (parsed && typeof parsed === "object") {
+            const npubField =
+              typeof (parsed as any).npub === "string"
+                ? (parsed as any).npub
+                : typeof (parsed as any).pubkey === "string"
+                  ? (parsed as any).pubkey
+                  : undefined;
+            const npubGuess =
+              npubField && (normalizeNostrPubkey(npubField) || (npubField.trim().startsWith("npub") ? npubField.trim() : null));
+            if (npubGuess) {
+              envelope = {
+                v: 1,
+                kind: "taskify-share",
+                item: { type: "contact", npub: npubGuess },
+              };
+            }
+          }
+        } catch {
+          // ignore parse errors
+        }
+      }
+      if (!envelope) {
+        // Fallback: allow raw npub/hex strings to be treated as contact shares.
+        const npubGuess =
+          normalizeNostrPubkey(content) || (content.trim().startsWith("npub") ? content.trim() : null);
+        if (npubGuess) {
+          envelope = {
+            v: 1,
+            kind: "taskify-share",
+            item: {
+              type: "contact",
+              npub: npubGuess,
+            } as any,
+          };
+        }
+      }
+      if (!envelope) return;
+      inboxProcessedRef.current.add(event.id);
+      persistInboxProcessed();
+      let senderName = envelope.sender?.name;
+      if (!senderName) {
+        const senderProfile = await fetchProfileMetadata(senderPubkey);
+        senderName =
+          senderProfile?.displayName ||
+          senderProfile?.name ||
+          senderProfile?.username ||
+          senderProfile?.nip05;
+      }
+      const sender: InboxSender = {
+        pubkey: senderPubkey,
+        name: senderName || envelope.sender?.name,
+        npub: envelope.sender?.npub,
+      };
+      if (envelope.item.type === "event") {
+        addInboxCalendarInvite(envelope.item as SharedCalendarEventInvitePayload, sender);
+        void sendInboxDeletion(event.id);
+        return;
+      }
+      let itemToAdd: ShareEnvelope["item"] = envelope.item;
+      if (envelope.item.type === "contact") {
+        const baseContact: SharedContactPayload = (envelope.item as any).contact ?? (envelope.item as any);
+        let enrichedContact = { ...baseContact };
+        if (
+          !enrichedContact.name &&
+          !enrichedContact.displayName &&
+          !enrichedContact.username &&
+          !enrichedContact.nip05
+        ) {
+          const profile = await fetchProfileMetadata(baseContact.npub);
+          if (profile) {
+            enrichedContact = {
+              ...enrichedContact,
+              name: profile.displayName || profile.name || undefined,
+              displayName: profile.displayName,
+              username: profile.username,
+              nip05: profile.nip05,
+            };
+          }
+        }
+        itemToAdd = { type: "contact", contact: enrichedContact } as any;
+      }
+      addInboxTask(itemToAdd, sender, event.id);
+      void sendInboxDeletion(event.id);
+    },
+    [addInboxCalendarInvite, addInboxTask, decryptShareMessage, fetchProfileMetadata, nostrPK, persistInboxProcessed, sendInboxDeletion],
+  );
   useEffect(() => {
-    let changed = false;
-    for (const job of pendingNostrQueueRef.current) {
-      if (!job.boardTag) {
-        const tag = findBoardTag(job.boardId);
-        if (tag) {
-          job.boardTag = tag;
-          changed = true;
+    if (!nostrPK || !nostrSkHex) return;
+    if (!inboxRelays.length) return;
+    const pool = ensureInboxPool();
+    const since = Math.max(0, Math.floor(Date.now() / 1000) - SHARE_DM_LOOKBACK_SECONDS);
+    let cancelled = false;
+    const subscription = pool.subscribeMany(
+      inboxRelays,
+      { kinds: [4, 1059], "#p": [nostrPK], since },
+      {
+        onevent: (ev) => {
+          if (cancelled) return;
+          void handleIncomingShareEvent(ev as NostrEvent);
+        },
+      },
+    );
+    inboxSubCloserRef.current = () => {
+      try {
+        subscription.close("taskify-shares");
+      } catch {}
+    };
+    (async () => {
+      try {
+        if (typeof (pool as any).list === "function") {
+          const events = await (pool as any).list(inboxRelays, [
+            { kinds: [4, 1059], "#p": [nostrPK], since },
+          ]);
+          if (!cancelled && Array.isArray(events)) {
+            events.forEach((ev: any) => {
+              void handleIncomingShareEvent(ev as NostrEvent);
+            });
+          }
         }
+      } catch (err) {
+        console.warn("Shared inbox fetch failed", err);
       }
-      if (job.boardTag) {
-        if (!nostrIdxRef.current.taskClock.has(job.boardTag)) {
-          nostrIdxRef.current.taskClock.set(job.boardTag, new Map());
-        }
-        const clock = nostrIdxRef.current.taskClock.get(job.boardTag)!;
-        const ts = job.nostrTimestamp;
-        if (job.type === "task") clock.set(job.task.id, Math.max(clock.get(job.task.id) || 0, ts));
-        else if (job.type === "delete") clock.set(job.taskId, Math.max(clock.get(job.taskId) || 0, ts));
-        else if (job.type === "delete-batch") job.taskIds.forEach((id) => clock.set(id, Math.max(clock.get(id) || 0, ts)));
+    })();
+    return () => {
+      cancelled = true;
+      if (inboxSubCloserRef.current) {
+        try {
+          inboxSubCloserRef.current();
+        } catch {}
+        inboxSubCloserRef.current = null;
       }
+    };
+  }, [ensureInboxPool, handleIncomingShareEvent, inboxRelays, nostrPK, nostrSkHex]);
+
+  const tagValue = useCallback((ev: NostrEvent, name: string): string | undefined => {
+    const t = ev.tags.find((x) => x[0] === name);
+    return t ? t[1] : undefined;
+  }, []);
+
+  useEffect(() => {
+    if (calendarViewSubCloserRef.current) {
+      try {
+        calendarViewSubCloserRef.current();
+      } catch {}
+      calendarViewSubCloserRef.current = null;
     }
-    if (changed) persistPendingQueue();
-    rebuildPendingTasksFromQueue();
-    schedulePendingProcessing();
-  }, [findBoardTag, persistPendingQueue, rebuildPendingTasksFromQueue, schedulePendingProcessing]);
-  useEffect(() => {
-    const onOnline = () => schedulePendingProcessing();
-    window.addEventListener("online", onOnline);
-    return () => window.removeEventListener("online", onOnline);
-  }, [schedulePendingProcessing]);
+    const targets = calendarEvents.filter(
+      (event) => !!event.readOnly && !!event.viewAddress && !!event.eventKey,
+    );
+    if (!targets.length) return;
+
+    const viewLookup = new Map<string, { eventId: string; eventKey: string }>();
+    const authors = new Set<string>();
+    const dTags = new Set<string>();
+    const relaySet = new Set<string>();
+    targets.forEach((event) => {
+      const addr = parseCalendarAddress(event.viewAddress || "");
+      if (!addr || addr.kind !== TASKIFY_CALENDAR_VIEW_KIND) return;
+      const viewAddress = calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, addr.pubkey, addr.d);
+      viewLookup.set(viewAddress, { eventId: event.id, eventKey: event.eventKey! });
+      authors.add(addr.pubkey);
+      dTags.add(addr.d);
+      (event.inviteRelays ?? []).forEach((relay) => relaySet.add(relay));
+    });
+    if (!viewLookup.size || !authors.size || !dTags.size) return;
+
+    const relayCandidates = [
+      ...Array.from(relaySet),
+      ...defaultRelays,
+      ...inboxRelays,
+      ...Array.from(DEFAULT_NOSTR_RELAYS),
+    ];
+    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+    if (!relays.length) return;
+
+    let cancelled = false;
+    const applyViewEvent = async (ev: NostrEvent) => {
+      if (cancelled || ev.kind !== TASKIFY_CALENDAR_VIEW_KIND) return;
+      const dTag = tagValue(ev, "d");
+      if (!dTag) return;
+      const viewAddress = calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, ev.pubkey, dTag);
+      const target = viewLookup.get(viewAddress);
+      if (!target) return;
+      const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
+      const last = calendarViewClockRef.current.get(viewAddress) || 0;
+      if (createdAt < last) return;
+      calendarViewClockRef.current.set(viewAddress, createdAt);
+      let payload: ReturnType<typeof parseCalendarViewPayload> | null = null;
+      try {
+        const raw = await decryptCalendarPayloadWithEventKey(ev.content, target.eventKey);
+        payload = parseCalendarViewPayload(raw);
+      } catch (err) {
+        console.warn("Failed to decrypt event view", err);
+        return;
+      }
+      if (!payload || payload.eventId !== target.eventId) return;
+      if (payload.deleted) {
+        setCalendarEvents((prev) =>
+          prev.filter((event) => !(event.id === target.eventId && event.viewAddress === viewAddress)),
+        );
+        return;
+      }
+      setCalendarEvents((prev) => {
+        const idx = prev.findIndex((event) => event.viewAddress === viewAddress);
+        if (idx < 0) return prev;
+        const existing = prev[idx];
+        let updated: CalendarEvent | null = null;
+        if (payload.kind === "date") {
+          if (!payload.startDate || !isDateKey(payload.startDate)) return prev;
+          const endDate =
+            payload.endDate && isDateKey(payload.endDate) && payload.endDate >= payload.startDate
+              ? payload.endDate
+              : undefined;
+          updated = {
+            ...existing,
+            kind: "date",
+            startDate: payload.startDate,
+            ...(endDate ? { endDate } : { endDate: undefined }),
+          } as CalendarEvent;
+        } else if (payload.kind === "time") {
+          const startISO = payload.startISO || "";
+          const startMs = Date.parse(startISO);
+          if (!startISO || Number.isNaN(startMs)) return prev;
+          const endISO = payload.endISO && Date.parse(payload.endISO) > startMs ? payload.endISO : undefined;
+          const startTzid = normalizeTimeZone(payload.startTzid) ?? undefined;
+          const endTzid = normalizeTimeZone(payload.endTzid) ?? undefined;
+          updated = {
+            ...existing,
+            kind: "time",
+            startISO,
+            ...(endISO ? { endISO } : { endISO: undefined }),
+            ...(startTzid ? { startTzid } : { startTzid: undefined }),
+            ...(endTzid ? { endTzid } : { endTzid: undefined }),
+          } as CalendarEvent;
+        } else {
+          return prev;
+        }
+        updated = {
+          ...updated,
+          title: payload.title || "Untitled",
+          summary: payload.summary,
+          description: payload.description || "",
+          image: payload.image,
+          locations: payload.locations?.length ? payload.locations : undefined,
+          geohash: payload.geohash,
+          hashtags: payload.hashtags?.length ? payload.hashtags : undefined,
+          references: payload.references?.length ? payload.references : undefined,
+        } as CalendarEvent;
+        const copy = prev.slice();
+        copy[idx] = updated;
+        return copy;
+      });
+    };
+
+    const subscription = pool.subscribeMany(
+      relays,
+      { kinds: [TASKIFY_CALENDAR_VIEW_KIND], authors: Array.from(authors), "#d": Array.from(dTags) },
+      {
+        onevent: (ev) => {
+          if (cancelled) return;
+          void applyViewEvent(ev as NostrEvent);
+        },
+      },
+    );
+    calendarViewSubCloserRef.current = () => {
+      try {
+        subscription.close("taskify-calendar-views");
+      } catch {}
+    };
+    (async () => {
+      try {
+        if (typeof (pool as any).list === "function") {
+          const events = await (pool as any).list(relays, [
+            { kinds: [TASKIFY_CALENDAR_VIEW_KIND], authors: Array.from(authors), "#d": Array.from(dTags) },
+          ]);
+          if (!cancelled && Array.isArray(events)) {
+            events.forEach((evt: any) => void applyViewEvent(evt as NostrEvent));
+          }
+        }
+      } catch (err) {
+        console.warn("Event view fetch failed", err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (calendarViewSubCloserRef.current) {
+        try {
+          calendarViewSubCloserRef.current();
+        } catch {}
+        calendarViewSubCloserRef.current = null;
+      }
+    };
+  }, [calendarEvents, defaultRelays, inboxRelays, pool, setCalendarEvents, tagValue]);
+
   const nostrApplyQueue = useRef<Promise<void>>(Promise.resolve());
   const enqueueNostrApply = useCallback((fn: () => Promise<void>) => {
     const next = nostrApplyQueue.current.catch(() => {}).then(() => fn());
@@ -3575,30 +6795,826 @@ export default function App() {
     return next;
   }, []);
   const [nostrRefresh, setNostrRefresh] = useState(0);
+  const normalizeRelayList = useCallback((relays: string[] | null | undefined) => {
+    const normalized = Array.isArray(relays)
+      ? relays.map((r) => (typeof r === "string" ? r.trim() : "")).filter(Boolean)
+      : [];
+    const unique = Array.from(new Set(normalized));
+    unique.sort();
+    return unique;
+  }, []);
+
+  const sanitizeSettingsForBackup = useCallback(
+    (raw: Settings | Record<string, unknown>): Partial<Settings> =>
+      sanitizeSettingsForNostrBackup(raw, DEFAULT_PUSH_PREFERENCES),
+    [],
+  );
+
+  const buildNostrBackupSnapshot = useCallback(
+    (): NostrBackupSnapshot =>
+      buildNostrBackupSnapshotDomain({
+        boards,
+        settings,
+        includeMetadata: settings.nostrBackupEnabled,
+        defaultRelays,
+        fallbackRelays: Array.from(DEFAULT_NOSTR_RELAYS),
+        normalizeRelayList,
+        sanitizeSettingsForBackup,
+        walletSeed: getWalletSeedBackup(),
+      }),
+    [boards, defaultRelays, normalizeRelayList, sanitizeSettingsForBackup, settings],
+  );
+
+  const serializeNostrBackupSnapshot = useCallback(
+    () => JSON.stringify(buildNostrBackupSnapshot()),
+    [buildNostrBackupSnapshot],
+  );
+  const serializeNostrBackupSnapshotRef = useRef(serializeNostrBackupSnapshot);
+  serializeNostrBackupSnapshotRef.current = serializeNostrBackupSnapshot;
+
+  const applyNostrBibleTrackerSyncEvent = useCallback(async (ev: NostrEvent) => {
+    if (!settings.nostrBackupEnabled) return;
+    if (!ev || ev.kind !== NOSTR_APP_STATE_KIND) return;
+    const dTag = tagValue(ev, "d");
+    if (dTag !== NOSTR_BIBLE_TRACKER_D_TAG) return;
+    if (!nostrPK) return;
+    const skHex = bytesToHex(nostrSK);
+    let parsed: any;
+    try {
+      parsed = await decryptNostrSyncPayload(ev.content, skHex, nostrPK);
+    } catch (error) {
+      console.warn("Failed to decrypt Bible tracker sync payload", error);
+      return;
+    }
+    if (!parsed || typeof parsed !== "object") return;
+    if (parsed.version !== 1) return;
+    const payloadTs = Math.max(Number(parsed.timestamp) || 0, ev.created_at || 0);
+    const lastTs = nostrBibleTrackerStateRef.current.lastTimestamp || 0;
+    if (payloadTs <= lastTs) {
+      if (!nostrBibleTrackerStateRef.current.lastEventId && ev.id) {
+        setNostrBibleTrackerState((prev) => ({ ...prev, lastEventId: ev.id }));
+      }
+      return;
+    }
+    const incoming = sanitizeBibleTrackerState(parsed.bibleTracker);
+    setBibleTracker(incoming);
+    nostrBibleTrackerPublishedSnapshotRef.current = JSON.stringify(incoming);
+    nostrBibleTrackerQueuedPublishRef.current = false;
+    const nextState = { lastEventId: ev.id || null, lastTimestamp: payloadTs, pubkey: nostrPK || null };
+    nostrBibleTrackerStateRef.current = nextState;
+    setNostrBibleTrackerState(nextState);
+  }, [nostrPK, nostrSK, setBibleTracker, setNostrBibleTrackerState, settings.nostrBackupEnabled, tagValue]);
+
+  const applyNostrScriptureMemorySyncEvent = useCallback(async (ev: NostrEvent) => {
+    if (!settings.nostrBackupEnabled) return;
+    if (!ev || ev.kind !== NOSTR_APP_STATE_KIND) return;
+    const dTag = tagValue(ev, "d");
+    if (dTag !== NOSTR_SCRIPTURE_MEMORY_D_TAG) return;
+    if (!nostrPK) return;
+    const skHex = bytesToHex(nostrSK);
+    let parsed: any;
+    try {
+      parsed = await decryptNostrSyncPayload(ev.content, skHex, nostrPK);
+    } catch (error) {
+      console.warn("Failed to decrypt scripture memory sync payload", error);
+      return;
+    }
+    if (!parsed || typeof parsed !== "object") return;
+    if (parsed.version !== 1) return;
+    const payloadTs = Math.max(Number(parsed.timestamp) || 0, ev.created_at || 0);
+    const lastTs = nostrScriptureMemoryStateRef.current.lastTimestamp || 0;
+    if (payloadTs <= lastTs) {
+      if (!nostrScriptureMemoryStateRef.current.lastEventId && ev.id) {
+        setNostrScriptureMemoryState((prev) => ({ ...prev, lastEventId: ev.id }));
+      }
+      return;
+    }
+    const incoming = sanitizeScriptureMemoryState(parsed.scriptureMemory);
+    setScriptureMemory(incoming);
+    nostrScriptureMemoryPublishedSnapshotRef.current = JSON.stringify(incoming);
+    const nextState = { lastEventId: ev.id || null, lastTimestamp: payloadTs, pubkey: nostrPK || null };
+    nostrScriptureMemoryStateRef.current = nextState;
+    setNostrScriptureMemoryState(nextState);
+  }, [nostrPK, nostrSK, setNostrScriptureMemoryState, setScriptureMemory, settings.nostrBackupEnabled, tagValue]);
+
+  const nostrList = useCallback(
+    async (relays: string[], filters: any[]): Promise<NostrEvent[]> => {
+      const relayList = normalizeRelayList(relays);
+      const session = await NostrSession.init(relayList);
+      return session.fetchEvents(filters as any, relayList);
+    },
+    [normalizeRelayList],
+  );
+
+  const applyNostrBackupPayload = useCallback(
+    async (payload: NostrAppBackupPayload, source: "remote" | "local" = "remote") => {
+      if (!payload || typeof payload !== "object") return;
+      const includeMetadata = settings.nostrBackupEnabled;
+      const baseRelays = normalizeRelayList(
+        payload.defaultRelays && payload.defaultRelays.length
+          ? payload.defaultRelays
+          : defaultRelays.length
+            ? defaultRelays
+            : Array.from(DEFAULT_NOSTR_RELAYS),
+      );
+      if (includeMetadata && payload.settings && typeof payload.settings === "object") {
+        const incoming = sanitizeSettingsForBackup(payload.settings as Record<string, unknown>);
+        setSettings(incoming);
+      }
+      if (includeMetadata && Array.isArray(payload.defaultRelays) && payload.defaultRelays.some((r) => typeof r === "string" && r.trim())) {
+        setDefaultRelays(normalizeRelayList(payload.defaultRelays));
+      }
+      if (payload.walletSeed) {
+        try {
+          restoreWalletSeedBackup(payload.walletSeed);
+        } catch (error) {
+          console.warn("Failed to restore wallet seed from Nostr backup", error);
+        }
+      }
+      if (includeMetadata && Array.isArray(payload.boards)) {
+        setBoards((prev) =>
+          mergeBackupBoards({
+            currentBoards: prev,
+            incomingBoards: payload.boards,
+            baseRelays,
+            normalizeRelayList,
+            createId: () => crypto.randomUUID(),
+          }),
+        );
+      }
+      if (source === "remote") {
+        const message = includeMetadata ? "Synced boards and settings from Nostr" : "Synced wallet backup from Nostr";
+        showToast(message, 2600);
+      }
+    },
+    [defaultRelays, normalizeRelayList, sanitizeSettingsForBackup, setBoards, setDefaultRelays, setSettings, settings.nostrBackupEnabled, showToast],
+  );
+
+  const handleIncomingNostrBackupEvent = useCallback(
+    async (ev: NostrEvent) => {
+      if (!settings.nostrBackupEnabled) return;
+      if (nostrBackupHoldRef.current) return;
+      if (!ev || ev.kind !== NOSTR_APP_BACKUP_KIND) return;
+      const dTag = tagValue(ev, "d");
+      if (dTag !== NOSTR_APP_BACKUP_D_TAG) return;
+      if (!nostrPK) return;
+      const skHex = bytesToHex(nostrSK);
+      let payload: NostrAppBackupPayload;
+      try {
+        payload = await decryptNostrBackupPayload(ev.content, skHex, nostrPK);
+      } catch (error) {
+        console.warn("Failed to decrypt Nostr backup payload", error);
+        return;
+      }
+      if (!payload || payload.version !== 1) return;
+      const payloadTs = Math.max(Number(payload.timestamp) || 0, ev.created_at || 0);
+      const lastTs = nostrBackupStateRef.current.lastTimestamp || 0;
+      if (payloadTs <= lastTs) {
+        if (!nostrBackupStateRef.current.lastEventId && ev.id) {
+          setNostrBackupState((prev) => ({ ...prev, lastEventId: ev.id }));
+        }
+        return;
+      }
+      await applyNostrBackupPayload(payload, "remote");
+      nostrBackupPublishedSnapshotRef.current = serializeNostrBackupSnapshotRef.current();
+      setNostrBackupState({
+        lastEventId: ev.id || null,
+        lastTimestamp: payloadTs,
+        pubkey: nostrPK || null,
+      });
+    },
+    [applyNostrBackupPayload, nostrPK, nostrSK, setNostrBackupState, settings.nostrBackupEnabled, tagValue],
+  );
+
+  const pullNostrBackupOnce = useCallback(async (): Promise<boolean> => {
+    if (!settings.nostrBackupEnabled) return false;
+    if (!nostrPK) return false;
+    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
+    if (!relays.length) return false;
+    try {
+      const events = await nostrList(relays, [
+        { kinds: [NOSTR_APP_BACKUP_KIND], authors: [nostrPK], "#d": [NOSTR_APP_BACKUP_D_TAG], limit: 5 },
+      ]);
+      const latest = events.reduce<null | (typeof events)[number]>((current, event) => {
+        if (!event) return current;
+        if (!current || (event.created_at || 0) > (current.created_at || 0)) return event;
+        return current;
+      }, null);
+      if (latest) {
+        await handleIncomingNostrBackupEvent(latest as unknown as NostrEvent);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.warn("Failed to fetch Nostr backup", error);
+      return false;
+    }
+  }, [defaultRelays, handleIncomingNostrBackupEvent, normalizeRelayList, nostrList, nostrPK, settings.nostrBackupEnabled]);
+
+  const pullNostrBibleTrackerOnce = useCallback(async (): Promise<boolean> => {
+    if (!settings.nostrBackupEnabled) return false;
+    if (!nostrPK) return false;
+    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
+    if (!relays.length) return false;
+    try {
+      const events = await nostrList(relays, [
+        { kinds: [NOSTR_APP_STATE_KIND], authors: [nostrPK], "#d": [NOSTR_BIBLE_TRACKER_D_TAG], limit: 5 },
+      ]);
+      const latest = events.reduce<null | (typeof events)[number]>((current, event) => {
+        if (!event) return current;
+        if (!current || (event.created_at || 0) > (current.created_at || 0)) return event;
+        return current;
+      }, null);
+      if (latest) {
+        await enqueueNostrApply(() => applyNostrBibleTrackerSyncEvent(latest as unknown as NostrEvent));
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.warn("Failed to fetch Bible tracker sync from Nostr", error);
+      return false;
+    }
+  }, [
+    applyNostrBibleTrackerSyncEvent,
+    defaultRelays,
+    enqueueNostrApply,
+    normalizeRelayList,
+    nostrList,
+    nostrPK,
+    settings.nostrBackupEnabled,
+  ]);
+
+  const pullNostrScriptureMemoryOnce = useCallback(async (): Promise<boolean> => {
+    if (!settings.nostrBackupEnabled) return false;
+    if (!nostrPK) return false;
+    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
+    if (!relays.length) return false;
+    try {
+      const events = await nostrList(relays, [
+        { kinds: [NOSTR_APP_STATE_KIND], authors: [nostrPK], "#d": [NOSTR_SCRIPTURE_MEMORY_D_TAG], limit: 5 },
+      ]);
+      const latest = events.reduce<null | (typeof events)[number]>((current, event) => {
+        if (!event) return current;
+        if (!current || (event.created_at || 0) > (current.created_at || 0)) return event;
+        return current;
+      }, null);
+      if (latest) {
+        await enqueueNostrApply(() => applyNostrScriptureMemorySyncEvent(latest as unknown as NostrEvent));
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.warn("Failed to fetch scripture memory sync from Nostr", error);
+      return false;
+    }
+  }, [
+    applyNostrScriptureMemorySyncEvent,
+    defaultRelays,
+    enqueueNostrApply,
+    normalizeRelayList,
+    nostrList,
+    nostrPK,
+    settings.nostrBackupEnabled,
+  ]);
+
+  const publishNostrBibleTracker = useCallback(async () => {
+    if (!settings.nostrBackupEnabled) return;
+    if (!nostrPK) return;
+    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
+    if (!relays.length) return;
+    const tracker = bibleTrackerRef.current;
+    const snapshotString = JSON.stringify(tracker);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const timestamp = Math.max(nowSeconds, (nostrBibleTrackerStateRef.current.lastTimestamp || 0) + 1);
+    const payload = { version: 1, timestamp, bibleTracker: tracker } as const;
+    const skHex = bytesToHex(nostrSK);
+    const content = await encryptNostrSyncPayload(payload, skHex, nostrPK);
+    const result = await nostrPublishRef.current(
+      relays,
+      {
+        kind: NOSTR_APP_STATE_KIND,
+        content,
+        tags: [
+          ["d", NOSTR_BIBLE_TRACKER_D_TAG],
+          ["client", NOSTR_APP_STATE_CLIENT_TAG],
+        ],
+        created_at: timestamp,
+      },
+      { sk: nostrSK, returnEvent: true },
+    );
+    const eventId = (result as any)?.event?.id || null;
+    const publishedTs = (result as any)?.createdAt ?? timestamp;
+    const nextState = {
+      lastEventId: eventId || null,
+      lastTimestamp: publishedTs,
+      pubkey: nostrPK || null,
+    };
+    nostrBibleTrackerStateRef.current = nextState;
+    setNostrBibleTrackerState(nextState);
+    nostrBibleTrackerPublishedSnapshotRef.current = snapshotString;
+  }, [
+    defaultRelays,
+    normalizeRelayList,
+    nostrPK,
+    nostrSK,
+    setNostrBibleTrackerState,
+    settings.nostrBackupEnabled,
+  ]);
+
+  const publishNostrScriptureMemory = useCallback(async () => {
+    if (!settings.nostrBackupEnabled) return;
+    if (!nostrPK) return;
+    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
+    if (!relays.length) return;
+    const snapshotString = JSON.stringify(scriptureMemory);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const timestamp = Math.max(nowSeconds, (nostrScriptureMemoryStateRef.current.lastTimestamp || 0) + 1);
+    const payload = { version: 1, timestamp, scriptureMemory } as const;
+    const skHex = bytesToHex(nostrSK);
+    const content = await encryptNostrSyncPayload(payload, skHex, nostrPK);
+    const result = await nostrPublishRef.current(
+      relays,
+      {
+        kind: NOSTR_APP_STATE_KIND,
+        content,
+        tags: [
+          ["d", NOSTR_SCRIPTURE_MEMORY_D_TAG],
+          ["client", NOSTR_APP_STATE_CLIENT_TAG],
+        ],
+        created_at: timestamp,
+      },
+      { sk: nostrSK, returnEvent: true },
+    );
+    const eventId = (result as any)?.event?.id || null;
+    const publishedTs = (result as any)?.createdAt ?? timestamp;
+    const nextState = {
+      lastEventId: eventId || null,
+      lastTimestamp: publishedTs,
+      pubkey: nostrPK || null,
+    };
+    nostrScriptureMemoryStateRef.current = nextState;
+    setNostrScriptureMemoryState(nextState);
+    nostrScriptureMemoryPublishedSnapshotRef.current = snapshotString;
+  }, [
+    defaultRelays,
+    normalizeRelayList,
+    nostrPK,
+    nostrSK,
+    scriptureMemory,
+    setNostrScriptureMemoryState,
+    settings.nostrBackupEnabled,
+  ]);
+
+  const enqueueNostrBibleTrackerPublish = useCallback(() => {
+    if (nostrBibleTrackerPublishRef.current) {
+      nostrBibleTrackerQueuedPublishRef.current = true;
+      return nostrBibleTrackerPublishRef.current;
+    }
+    const task = publishNostrBibleTracker()
+      .catch((error) => {
+        console.warn("Failed to publish Bible tracker sync", error);
+        const now = Date.now();
+        if (now - nostrBibleTrackerErrorToastAtRef.current > 60_000) {
+          nostrBibleTrackerErrorToastAtRef.current = now;
+          showToast("Unable to sync Bible progress", 2600);
+        }
+      })
+      .finally(() => {
+        nostrBibleTrackerPublishRef.current = null;
+        if (!nostrBibleTrackerQueuedPublishRef.current) return;
+        nostrBibleTrackerQueuedPublishRef.current = false;
+        const currentSnapshot = JSON.stringify(bibleTrackerRef.current);
+        if (nostrBibleTrackerPublishedSnapshotRef.current === currentSnapshot) return;
+        enqueueNostrBibleTrackerPublish().catch(() => {});
+      });
+    nostrBibleTrackerPublishRef.current = task;
+    return task;
+  }, [publishNostrBibleTracker, showToast]);
+
+  const enqueueNostrScriptureMemoryPublish = useCallback(() => {
+    if (nostrScriptureMemoryPublishRef.current) return nostrScriptureMemoryPublishRef.current;
+    const task = publishNostrScriptureMemory()
+      .catch((error) => {
+        console.warn("Failed to publish scripture memory sync", error);
+        const now = Date.now();
+        if (now - nostrScriptureMemoryErrorToastAtRef.current > 60_000) {
+          nostrScriptureMemoryErrorToastAtRef.current = now;
+          showToast("Unable to sync scripture memory list", 2600);
+        }
+      })
+      .finally(() => {
+        nostrScriptureMemoryPublishRef.current = null;
+      });
+    nostrScriptureMemoryPublishRef.current = task;
+    return task;
+  }, [publishNostrScriptureMemory, showToast]);
+
+  const publishNostrBackup = useCallback(async () => {
+    if (!settings.nostrBackupEnabled) return;
+    if (!nostrPK) return;
+    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
+    if (!relays.length) return;
+    const snapshot = buildNostrBackupSnapshot();
+    const snapshotString = serializeNostrBackupSnapshotRef.current();
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const timestamp = Math.max(nowSeconds, (nostrBackupStateRef.current.lastTimestamp || 0) + 1);
+    const payload: NostrAppBackupPayload = { ...snapshot, version: 1, timestamp };
+    const skHex = bytesToHex(nostrSK);
+    const content = await encryptNostrBackupPayload(payload, skHex, nostrPK);
+    const result = await nostrPublishRef.current(
+      relays,
+      {
+        kind: NOSTR_APP_BACKUP_KIND,
+        content,
+        tags: [
+          ["d", NOSTR_APP_BACKUP_D_TAG],
+          ["client", NOSTR_APP_BACKUP_CLIENT_TAG],
+        ],
+        created_at: timestamp,
+      },
+      { sk: nostrSK, returnEvent: true },
+    );
+    const eventId = (result as any)?.event?.id || null;
+    const prev = nostrBackupStateRef.current;
+    const prevEventId = prev.pubkey === nostrPK ? prev.lastEventId : null;
+    const publishedTs = (result as any)?.createdAt ?? timestamp;
+    if (prevEventId && eventId && prevEventId !== eventId) {
+      try {
+        await nostrPublishRef.current(
+          relays,
+          {
+            kind: 5,
+            tags: [
+              ["e", prevEventId],
+              ["a", `${NOSTR_APP_BACKUP_KIND}:${nostrPK}:${NOSTR_APP_BACKUP_D_TAG}`],
+            ],
+            content: "Delete previous Taskify backup",
+            created_at: publishedTs + 1,
+          },
+          { sk: nostrSK },
+        );
+      } catch (error) {
+        console.warn("Failed to publish Nostr backup deletion", error);
+      }
+    }
+    const nextState = {
+      lastEventId: eventId || prevEventId,
+      lastTimestamp: publishedTs,
+      pubkey: nostrPK || null,
+    };
+    nostrBackupStateRef.current = nextState;
+    setNostrBackupState(nextState);
+    nostrBackupPublishedSnapshotRef.current = snapshotString;
+  }, [buildNostrBackupSnapshot, defaultRelays, normalizeRelayList, nostrPK, nostrSK, setNostrBackupState, settings.nostrBackupEnabled]);
+
+  const enqueueNostrBackupPublish = useCallback(() => {
+    if (nostrBackupPublishRef.current) return nostrBackupPublishRef.current;
+    const task = publishNostrBackup()
+      .catch((error) => {
+        console.warn("Failed to publish Nostr backup", error);
+        showToast("Unable to sync backup to Nostr", 2600);
+      })
+      .finally(() => {
+        nostrBackupPublishRef.current = null;
+      });
+    nostrBackupPublishRef.current = task;
+    return task;
+  }, [publishNostrBackup, showToast]);
+
+  const publishLatestNostrBackup = useCallback(async () => {
+    if (!settings.nostrBackupEnabled || !nostrPK) return;
+    const initialSnapshot = serializeNostrBackupSnapshot();
+    if (initialSnapshot === nostrBackupPublishedSnapshotRef.current) return;
+    if (nostrBackupPublishRef.current) {
+      try {
+        await nostrBackupPublishRef.current;
+      } catch {}
+    }
+    const latestSnapshot = serializeNostrBackupSnapshot();
+    if (latestSnapshot === nostrBackupPublishedSnapshotRef.current) return;
+    try {
+      await enqueueNostrBackupPublish();
+    } catch {}
+  }, [enqueueNostrBackupPublish, nostrPK, serializeNostrBackupSnapshot, settings.nostrBackupEnabled]);
+
 
   // header view
-  const [view, setView] = useState<"board" | "completed" | "bible">("board");
+  const [view, setView] = useState<"board" | "completed" | "board-upcoming" | "bible">("board");
+  const [activePage, setActivePage] = useState<
+    "boards" | "upcoming" | "wallet" | "wallet-bounties" | "contacts" | "settings"
+  >("boards");
+  const [walletBountiesTab, setWalletBountiesTab] = useState<"open" | "funded" | "pinned">("pinned");
   useEffect(() => {
     if (currentBoard?.kind === "bible") {
-      if (view === "board") setView("bible");
+      if (view !== "completed") setView("bible");
     } else if (view === "bible") {
       setView("board");
     }
   }, [currentBoard?.kind, view]);
-  const [showSettings, setShowSettingsState] = useState(false);
-  const [showWallet, setShowWalletState] = useState(false);
+  const showSettings = activePage === "settings";
+  const [addBoardOpen, setAddBoardOpen] = useState(false);
+  const nostrBackupPublishedSnapshotRef = useRef<string | null>(null);
+  const nostrBackupDebounceTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    nostrBackupPullFinishedRef.current = false;
+    let cancelled = false;
+    if (!settings.nostrBackupEnabled || !nostrPK || showSettings || nostrBackupHold) {
+      if (!nostrBackupHold) nostrBackupPullFinishedRef.current = true;
+      return () => {};
+    }
+    (async () => {
+      try {
+        await pullNostrBackupOnce();
+      } finally {
+        if (!cancelled) nostrBackupPullFinishedRef.current = true;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [nostrBackupHold, nostrPK, pullNostrBackupOnce, settings.nostrBackupEnabled, showSettings]);
+
+  useEffect(() => {
+    nostrBibleTrackerPullFinishedRef.current = false;
+    let cancelled = false;
+    if (!settings.nostrBackupEnabled || !nostrPK || showSettings) {
+      nostrBibleTrackerPullFinishedRef.current = true;
+      return () => {};
+    }
+    (async () => {
+      try {
+        await pullNostrBibleTrackerOnce();
+      } finally {
+        if (!cancelled) nostrBibleTrackerPullFinishedRef.current = true;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [nostrPK, pullNostrBibleTrackerOnce, settings.nostrBackupEnabled, showSettings]);
+
+  useEffect(() => {
+    nostrScriptureMemoryPullFinishedRef.current = false;
+    let cancelled = false;
+    if (!settings.nostrBackupEnabled || !nostrPK || showSettings) {
+      nostrScriptureMemoryPullFinishedRef.current = true;
+      return () => {};
+    }
+    (async () => {
+      try {
+        await pullNostrScriptureMemoryOnce();
+      } finally {
+        if (!cancelled) nostrScriptureMemoryPullFinishedRef.current = true;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [nostrPK, pullNostrScriptureMemoryOnce, settings.nostrBackupEnabled, showSettings]);
+
+  useEffect(() => {
+    if (!settings.nostrBackupEnabled) return;
+    if (showSettings || nostrBackupHold || !nostrBackupPullFinishedRef.current) return;
+    if (nostrBackupInitialPublishRef.current) return;
+    if ((nostrBackupStateRef.current.lastTimestamp || 0) > 0) return;
+    if (!nostrPK) return;
+    nostrBackupInitialPublishRef.current = true;
+    enqueueNostrBackupPublish();
+  }, [enqueueNostrBackupPublish, nostrBackupHold, nostrPK, settings.nostrBackupEnabled, showSettings]);
+
+  useEffect(() => {
+    if (!settings.nostrBackupEnabled) return;
+    if (showSettings || !nostrBibleTrackerPullFinishedRef.current) return;
+    if (nostrBibleTrackerInitialPublishRef.current) return;
+    if ((nostrBibleTrackerStateRef.current.lastTimestamp || 0) > 0) return;
+    if (!nostrPK) return;
+    nostrBibleTrackerInitialPublishRef.current = true;
+    enqueueNostrBibleTrackerPublish().catch(() => {});
+  }, [enqueueNostrBibleTrackerPublish, nostrPK, settings.nostrBackupEnabled, showSettings]);
+
+  useEffect(() => {
+    if (!settings.nostrBackupEnabled) return;
+    if (showSettings || !nostrScriptureMemoryPullFinishedRef.current) return;
+    if (nostrScriptureMemoryInitialPublishRef.current) return;
+    if ((nostrScriptureMemoryStateRef.current.lastTimestamp || 0) > 0) return;
+    if (!nostrPK) return;
+    nostrScriptureMemoryInitialPublishRef.current = true;
+    enqueueNostrScriptureMemoryPublish().catch(() => {});
+  }, [enqueueNostrScriptureMemoryPublish, nostrPK, settings.nostrBackupEnabled, showSettings]);
+
+  useEffect(() => {
+    if (!settings.nostrBackupEnabled) return;
+    if (!nostrPK || showSettings || nostrBackupHold) return;
+    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
+    if (!relays.length) return;
+    pool.setRelays(relays);
+    const since = nostrBackupStateRef.current.lastTimestamp || undefined;
+    const filters = [
+      {
+        kinds: [NOSTR_APP_BACKUP_KIND],
+        authors: [nostrPK],
+        "#d": [NOSTR_APP_BACKUP_D_TAG],
+        ...(since ? { since } : {}),
+        limit: 5,
+      },
+    ];
+    const unsub = pool.subscribe(relays, filters, (ev) => {
+      handleIncomingNostrBackupEvent(ev).catch(() => {});
+    });
+    return () => {
+      try { unsub(); } catch {}
+    };
+  }, [defaultRelays, handleIncomingNostrBackupEvent, normalizeRelayList, nostrBackupHold, nostrPK, pool, settings.nostrBackupEnabled, showSettings]);
+
+  useEffect(() => {
+    if (!settings.nostrBackupEnabled) return;
+    if (!nostrPK || showSettings) return;
+    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
+    if (!relays.length) return;
+    pool.setRelays(relays);
+    const since = nostrBibleTrackerStateRef.current.lastTimestamp || undefined;
+    const filters = [
+      {
+        kinds: [NOSTR_APP_STATE_KIND],
+        authors: [nostrPK],
+        "#d": [NOSTR_BIBLE_TRACKER_D_TAG],
+        ...(since ? { since } : {}),
+        limit: 5,
+      },
+    ];
+    const unsub = pool.subscribe(relays, filters, (ev) => {
+      enqueueNostrApply(() => applyNostrBibleTrackerSyncEvent(ev)).catch(() => {});
+    });
+    return () => {
+      try { unsub(); } catch {}
+    };
+  }, [
+    applyNostrBibleTrackerSyncEvent,
+    defaultRelays,
+    enqueueNostrApply,
+    normalizeRelayList,
+    nostrPK,
+    pool,
+    settings.nostrBackupEnabled,
+    showSettings,
+  ]);
+
+  useEffect(() => {
+    if (!settings.nostrBackupEnabled) return;
+    if (!nostrPK || showSettings) return;
+    const relays = normalizeRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
+    if (!relays.length) return;
+    pool.setRelays(relays);
+    const since = nostrScriptureMemoryStateRef.current.lastTimestamp || undefined;
+    const filters = [
+      {
+        kinds: [NOSTR_APP_STATE_KIND],
+        authors: [nostrPK],
+        "#d": [NOSTR_SCRIPTURE_MEMORY_D_TAG],
+        ...(since ? { since } : {}),
+        limit: 5,
+      },
+    ];
+    const unsub = pool.subscribe(relays, filters, (ev) => {
+      enqueueNostrApply(() => applyNostrScriptureMemorySyncEvent(ev)).catch(() => {});
+    });
+    return () => {
+      try { unsub(); } catch {}
+    };
+  }, [
+    applyNostrScriptureMemorySyncEvent,
+    defaultRelays,
+    enqueueNostrApply,
+    normalizeRelayList,
+    nostrPK,
+    pool,
+    settings.nostrBackupEnabled,
+    showSettings,
+  ]);
+
+  useEffect(() => {
+    if (showSettings) {
+      if (nostrBackupBaselineRef.current == null) {
+        nostrBackupBaselineRef.current = serializeNostrBackupSnapshot();
+        nostrBackupSettingsDirtyRef.current = false;
+      } else {
+        const currentSnapshot = serializeNostrBackupSnapshot();
+        nostrBackupSettingsDirtyRef.current = currentSnapshot !== nostrBackupBaselineRef.current;
+      }
+      return;
+    }
+    if (nostrBackupBaselineRef.current == null) return;
+    const baseline = nostrBackupBaselineRef.current;
+    nostrBackupBaselineRef.current = null;
+    const currentSnapshot = serializeNostrBackupSnapshot();
+    const changedDuringSettings =
+      nostrBackupSettingsDirtyRef.current || baseline !== currentSnapshot;
+    nostrBackupSettingsDirtyRef.current = false;
+    if (!settings.nostrBackupEnabled || !changedDuringSettings) return;
+    let cancelled = false;
+    setNostrBackupHold(true);
+    (async () => {
+      try {
+        await publishLatestNostrBackup();
+      } finally {
+        if (!cancelled) setNostrBackupHold(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [publishLatestNostrBackup, serializeNostrBackupSnapshot, settings.nostrBackupEnabled, showSettings]);
+
+  useEffect(() => {
+    if (!settings.nostrBackupEnabled) return;
+    if (showSettings || nostrBackupHold) return; // settings flow handled separately on close
+    const currentSnapshot = serializeNostrBackupSnapshot();
+    if (nostrBackupPublishedSnapshotRef.current === null) {
+      nostrBackupPublishedSnapshotRef.current = currentSnapshot;
+      return;
+    }
+    if (currentSnapshot === nostrBackupPublishedSnapshotRef.current) return;
+    if (nostrBackupDebounceTimerRef.current) {
+      window.clearTimeout(nostrBackupDebounceTimerRef.current);
+    }
+    nostrBackupDebounceTimerRef.current = window.setTimeout(() => {
+      nostrBackupDebounceTimerRef.current = null;
+      enqueueNostrBackupPublish().catch(() => {});
+    }, NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS);
+    return () => {
+      if (nostrBackupDebounceTimerRef.current) {
+        window.clearTimeout(nostrBackupDebounceTimerRef.current);
+        nostrBackupDebounceTimerRef.current = null;
+      }
+    };
+  }, [enqueueNostrBackupPublish, nostrBackupHold, serializeNostrBackupSnapshot, settings.nostrBackupEnabled, showSettings]);
+
+  useEffect(() => {
+    if (!settings.nostrBackupEnabled) return;
+    if (showSettings || !nostrPK || !nostrBibleTrackerPullFinishedRef.current) return;
+    const currentSnapshot = JSON.stringify(bibleTracker);
+    if (nostrBibleTrackerPublishedSnapshotRef.current === null) {
+      nostrBibleTrackerPublishedSnapshotRef.current = currentSnapshot;
+      return;
+    }
+    if (currentSnapshot === nostrBibleTrackerPublishedSnapshotRef.current) return;
+    if (nostrBibleTrackerDebounceTimerRef.current) {
+      window.clearTimeout(nostrBibleTrackerDebounceTimerRef.current);
+    }
+    nostrBibleTrackerDebounceTimerRef.current = window.setTimeout(() => {
+      nostrBibleTrackerDebounceTimerRef.current = null;
+      enqueueNostrBibleTrackerPublish().catch(() => {});
+    }, NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS);
+    return () => {
+      if (nostrBibleTrackerDebounceTimerRef.current) {
+        window.clearTimeout(nostrBibleTrackerDebounceTimerRef.current);
+        nostrBibleTrackerDebounceTimerRef.current = null;
+      }
+    };
+  }, [
+    bibleTracker,
+    enqueueNostrBibleTrackerPublish,
+    nostrPK,
+    settings.nostrBackupEnabled,
+    showSettings,
+  ]);
+
+  useEffect(() => {
+    if (!settings.nostrBackupEnabled) return;
+    if (showSettings || !nostrPK || !nostrScriptureMemoryPullFinishedRef.current) return;
+    const currentSnapshot = JSON.stringify(scriptureMemory);
+    if (nostrScriptureMemoryPublishedSnapshotRef.current === null) {
+      nostrScriptureMemoryPublishedSnapshotRef.current = currentSnapshot;
+      return;
+    }
+    if (currentSnapshot === nostrScriptureMemoryPublishedSnapshotRef.current) return;
+    if (nostrScriptureMemoryDebounceTimerRef.current) {
+      window.clearTimeout(nostrScriptureMemoryDebounceTimerRef.current);
+    }
+    nostrScriptureMemoryDebounceTimerRef.current = window.setTimeout(() => {
+      nostrScriptureMemoryDebounceTimerRef.current = null;
+      enqueueNostrScriptureMemoryPublish().catch(() => {});
+    }, NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS);
+    return () => {
+      if (nostrScriptureMemoryDebounceTimerRef.current) {
+        window.clearTimeout(nostrScriptureMemoryDebounceTimerRef.current);
+        nostrScriptureMemoryDebounceTimerRef.current = null;
+      }
+    };
+  }, [
+    enqueueNostrScriptureMemoryPublish,
+    nostrPK,
+    scriptureMemory,
+    settings.nostrBackupEnabled,
+    showSettings,
+  ]);
+  const showWallet = activePage === "wallet";
+  const showContacts = activePage === "contacts";
+  const showWalletShell = showWallet || showContacts;
+  const walletModalPrefetchedRef = useRef(false);
+  const prefetchWalletModal = useCallback(() => {
+    if (walletModalPrefetchedRef.current) return;
+    walletModalPrefetchedRef.current = true;
+    loadCashuWalletModal().catch(() => {});
+  }, []);
   const [walletTokenStateResetNonce, setWalletTokenStateResetNonce] = useState(0);
   const [updateToastVisible, setUpdateToastVisible] = useState(false);
-  const reloadOnNextNavigationRef = useRef(false);
-  const shouldReloadForNavigation = useCallback(() => {
-    if (!reloadOnNextNavigationRef.current) return false;
-    window.location.reload();
-    return true;
-  }, []);
+  const shouldReloadForNavigation = useCallback(() => false, []);
 
   useEffect(() => {
     function handleUpdateAvailable() {
-      reloadOnNextNavigationRef.current = true;
       setUpdateToastVisible(true);
     }
 
@@ -3609,12 +7625,38 @@ export default function App() {
   }, []);
 
   const handleReloadNow = useCallback(() => {
+    setUpdateToastVisible(false);
     window.location.reload();
   }, []);
 
   const handleReloadLater = useCallback(() => {
     setUpdateToastVisible(false);
   }, []);
+
+  useEffect(() => {
+    if (showWalletShell || walletModalPrefetchedRef.current) return;
+    const requestIdle = (window as any).requestIdleCallback as
+      | ((cb: () => void, opts?: { timeout: number }) => number)
+      | undefined;
+    const cancelIdle = (window as any).cancelIdleCallback as ((id: number) => void) | undefined;
+    let idleId: number | null = null;
+    let timer: number | undefined;
+    if (requestIdle) {
+      idleId = requestIdle(() => prefetchWalletModal(), { timeout: 1200 });
+    } else {
+      timer = window.setTimeout(() => {
+        prefetchWalletModal();
+      }, 300);
+    }
+    return () => {
+      if (idleId != null && cancelIdle) {
+        cancelIdle(idleId);
+      }
+      if (typeof timer === "number") {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [prefetchWalletModal, showWalletShell]);
   const handleResetWalletTokenTracking = useCallback(() => {
     setWalletTokenStateResetNonce((value) => value + 1);
     showToast("Background token tracking reset", 3000);
@@ -3630,195 +7672,265 @@ export default function App() {
 
   const openSettings = useCallback(() => {
     if (shouldReloadForNavigation()) return;
-    setShowSettingsState(true);
+    startTransition(() => setActivePage("settings"));
   }, [shouldReloadForNavigation]);
+  const closeSettings = useCallback(() => {
+    startTransition(() => setActivePage("boards"));
+  }, []);
+  const openAddBoard = useCallback(() => {
+    if (shouldReloadForNavigation()) return;
+    startTransition(() => setAddBoardOpen(true));
+  }, [shouldReloadForNavigation]);
+  const closeAddBoard = useCallback(() => {
+    startTransition(() => setAddBoardOpen(false));
+  }, []);
 
   const openWallet = useCallback(() => {
     if (shouldReloadForNavigation()) return;
-    setShowWalletState(true);
+    prefetchWalletModal();
+    startTransition(() => setActivePage("wallet"));
+  }, [prefetchWalletModal, shouldReloadForNavigation]);
+  const openWalletBounties = useCallback(() => {
+    if (shouldReloadForNavigation()) return;
+    startTransition(() => setActivePage("wallet-bounties"));
   }, [shouldReloadForNavigation]);
+  const closeWallet = useCallback(() => {
+    startTransition(() => setActivePage("boards"));
+  }, []);
 
   const openUpcoming = useCallback(() => {
     if (shouldReloadForNavigation()) return;
-    setShowUpcomingState(true);
+    startTransition(() => setActivePage("upcoming"));
   }, [shouldReloadForNavigation]);
+  const openBoardsPage = useCallback(() => {
+    if (shouldReloadForNavigation()) return;
+    if (activePage === "boards") {
+      const selector = boardSelectorBottomRef.current ?? boardSelectorRef.current;
+      if (selector) {
+        const showPicker = (selector as HTMLSelectElement & { showPicker?: () => void }).showPicker;
+        if (showPicker) {
+          showPicker.call(selector);
+        } else {
+          selector.click();
+        }
+      }
+      return;
+    }
+    startTransition(() => setActivePage("boards"));
+  }, [activePage, shouldReloadForNavigation]);
+  const openContactsPage = useCallback(() => {
+    if (shouldReloadForNavigation()) return;
+    prefetchWalletModal();
+    startTransition(() => setActivePage("contacts"));
+  }, [prefetchWalletModal, shouldReloadForNavigation]);
+  const openShareBoard = useCallback(() => {
+    if (shouldReloadForNavigation()) return;
+    if (!currentBoard) return;
+    setShareBoardTargetId(currentBoard.id);
+    setShareBoardMode("board");
+    setShareModeInfoOpen(false);
+    setShareTemplateShare(null);
+    setShareTemplateStatus(null);
+    setShareTemplateBusy(false);
+    setShareContactStatus(null);
+    setShareContactBusy(false);
+    setShareContactPickerOpen(false);
+    setShareBoardModalOpen(true);
+    shareBoardTargetIdRef.current = currentBoard.id;
+    shareBoardModalOpenRef.current = true;
+  }, [currentBoard, shouldReloadForNavigation]);
+  const closeShareBoard = useCallback(() => {
+    setShareBoardModalOpen(false);
+    setShareBoardTargetId(null);
+    setShareBoardMode("board");
+    setShareModeInfoOpen(false);
+    setShareTemplateShare(null);
+    setShareTemplateStatus(null);
+    setShareTemplateBusy(false);
+    setShareContactStatus(null);
+    setShareContactBusy(false);
+    setShareContactPickerOpen(false);
+    shareBoardTargetIdRef.current = null;
+    shareBoardModalOpenRef.current = false;
+  }, []);
+
+  const createBoardFromName = useCallback(
+    (name: string, type: "lists" | "compound") => {
+      if (shouldReloadForNavigation()) return null;
+      const trimmed = name.trim();
+      if (!trimmed) return null;
+      const id = crypto.randomUUID();
+      let board: Board;
+      if (type === "compound") {
+        board = {
+          id,
+          name: trimmed,
+          kind: "compound",
+          children: [],
+          archived: false,
+          hidden: false,
+          clearCompletedDisabled: false,
+          indexCardEnabled: false,
+          hideChildBoardNames: false,
+        };
+      } else {
+        board = {
+          id,
+          name: trimmed,
+          kind: "lists",
+          columns: [{ id: crypto.randomUUID(), name: "List 1" }],
+          archived: false,
+          hidden: false,
+          clearCompletedDisabled: false,
+          indexCardEnabled: false,
+        };
+      }
+      setBoards((prev) => [...prev, board]);
+      changeBoard(id);
+      return id;
+    },
+    [changeBoard, setBoards, shouldReloadForNavigation],
+  );
+
+  const joinSharedBoard = useCallback(
+    (nostrId: string, name?: string, relayCsv?: string) => {
+      if (shouldReloadForNavigation()) return;
+      const relays = (relayCsv || "").split(",").map((s) => s.trim()).filter(Boolean);
+      const id = nostrId.trim();
+      if (!id) return;
+      const defaultCols: ListColumn[] = [{ id: crypto.randomUUID(), name: "Items" }];
+      const newBoard: Board = {
+        id,
+        name: name || "Shared Board",
+        kind: "lists",
+        columns: defaultCols,
+        nostr: { boardId: id, relays: relays.length ? relays : defaultRelays },
+        archived: false,
+        hidden: false,
+        clearCompletedDisabled: false,
+        indexCardEnabled: false,
+      };
+      setBoards((prev) => {
+        const existingIndex = prev.findIndex((b) => b.id === id || b.nostr?.boardId === id);
+        if (existingIndex >= 0) {
+          const existing = prev[existingIndex];
+          const columns = existing.kind === "lists" ? existing.columns : newBoard.columns;
+          const indexCardEnabled = existing.kind === "lists"
+            ? (typeof existing.indexCardEnabled === "boolean" ? existing.indexCardEnabled : newBoard.indexCardEnabled)
+            : newBoard.indexCardEnabled;
+          const merged: Board = {
+            ...newBoard,
+            id: existing.id,
+            name: name || existing.name || newBoard.name,
+            columns,
+            archived: false,
+            hidden: false,
+            clearCompletedDisabled: existing.clearCompletedDisabled ?? newBoard.clearCompletedDisabled,
+            indexCardEnabled,
+          };
+          const copy = prev.slice();
+          copy[existingIndex] = merged;
+          return copy;
+        }
+        return [...prev, newBoard];
+      });
+      changeBoard(id);
+    },
+    [changeBoard, defaultRelays, setBoards, shouldReloadForNavigation],
+  );
   const startupViewHandledRef = useRef(false);
   useEffect(() => {
     if (startupViewHandledRef.current) return;
     startupViewHandledRef.current = true;
     if (settings.startupView === "wallet") {
-      setShowWalletState(true);
+      startTransition(() => setActivePage("wallet"));
     }
   }, [settings.startupView]);
-  const { receiveToken } = useCashu();
+  const { receiveToken, setWalletSyncEnabled } = useCashu();
+  useEffect(() => {
+    setWalletSyncEnabled(settings.walletNostrSyncEnabled);
+  }, [setWalletSyncEnabled, settings.walletNostrSyncEnabled]);
 
-  const [tutorialComplete, setTutorialComplete] = useState(() => {
+  const onboardingNeedsKeySelection = useMemo(() => {
     try {
-      return localStorage.getItem(LS_TUTORIAL_DONE) === "done";
+      const raw = (kvStorage.getItem(LS_NOSTR_SK) || "").trim();
+      return !/^[0-9a-fA-F]{64}$/.test(raw);
     } catch {
-      return false;
+      return true;
+    }
+  }, []);
+  const [showFirstRunOnboarding, setShowFirstRunOnboarding] = useState(() => {
+    if (!onboardingNeedsKeySelection) return false;
+    try {
+      return kvStorage.getItem(LS_FIRST_RUN_ONBOARDING_DONE) !== "done";
+    } catch {
+      return true;
     }
   });
-  const [tutorialStep, setTutorialStep] = useState<number | null>(null);
-
-  const markTutorialDone = useCallback(() => {
-    setTutorialStep(null);
-    setTutorialComplete(true);
+  const completeFirstRunOnboarding = useCallback(() => {
     try {
-      localStorage.setItem(LS_TUTORIAL_DONE, "done");
+      kvStorage.setItem(LS_FIRST_RUN_ONBOARDING_DONE, "done");
     } catch {}
+    setShowFirstRunOnboarding(false);
   }, []);
-
-  const handleCopyNsec = useCallback(async () => {
+  const handleOnboardingUseExistingKey = useCallback((value: string) => {
+    return applyCustomNostrKey(value, { silent: true });
+  }, [applyCustomNostrKey]);
+  const handleOnboardingGenerateNewKey = useCallback(() => {
     try {
-      const sk = localStorage.getItem(LS_NOSTR_SK) || "";
+      const nsec = rotateNostrKey();
+      // Ensure wallet seed exists for this account, even though onboarding now only displays nsec.
+      getWalletSeedMnemonic();
+      return { nsec };
+    } catch {
+      return null;
+    }
+  }, [rotateNostrKey]);
+  const completeOnboardingWithReload = useCallback(() => {
+    completeFirstRunOnboarding();
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => window.location.reload(), 120);
+    }
+  }, [completeFirstRunOnboarding]);
+  const handleOnboardingRestoreFromBackupFile = useCallback(async (file: File) => {
+    const parsed = parseBackupJsonPayload(await file.text());
+    applyBackupDataToStorage(parsed);
+    completeOnboardingWithReload();
+  }, [completeOnboardingWithReload]);
+  const handleOnboardingRestoreFromCloud = useCallback(async (value: string) => {
+    const parsed = await loadCloudBackupPayload(workerBaseUrl, value);
+    applyBackupDataToStorage(parsed);
+    completeOnboardingWithReload();
+  }, [completeOnboardingWithReload, workerBaseUrl]);
+  const handleOnboardingEnableNotifications = async () => {
+    const platform = settings.pushNotifications?.platform === "android"
+      ? "android"
+      : detectPushPlatformFromNavigator();
+    await enablePushNotifications(platform);
+  };
+  const onboardingPushSupported = typeof window !== "undefined"
+    && "serviceWorker" in navigator
+    && "PushManager" in window
+    && window.isSecureContext;
+  const onboardingPushConfigured = !!workerBaseUrl && !!vapidPublicKey;
+
+  const handleCopyMigrationPrivateKey = useCallback(async () => {
+    try {
+      const sk = (kvStorage.getItem(LS_NOSTR_SK) || "").trim();
       if (!sk) {
-        alert("No private key found yet. You can generate one from Settings → Nostr.");
+        showToast("No private key found yet", 2500);
         return;
       }
-      let nsec = "";
-      try {
-        nsec = typeof (nip19 as any)?.nsecEncode === "function" ? (nip19 as any).nsecEncode(sk) : sk;
-      } catch {
-        nsec = sk;
+      if (!navigator.clipboard?.writeText) {
+        showToast("Clipboard not available", 2500);
+        return;
       }
-      await navigator.clipboard?.writeText(nsec);
-      showToast("nsec copied");
+      await navigator.clipboard.writeText(toNsec(sk));
+      showToast("Private key copied");
     } catch {
-      alert("Unable to copy your key. You can copy it later from Settings → Nostr.");
+      showToast("Unable to copy private key", 2500);
     }
   }, [showToast]);
-
-  const tutorialSteps = useMemo(
-    () => [
-      {
-        title: "Welcome to the new Taskify",
-        body: (
-          <div className="space-y-3 text-sm text-secondary">
-            <p className="text-primary">
-              Taskify now opens on a glassy Week board with a command center that keeps your essential controls close.
-            </p>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Pick any board from the pill switcher, or drag a task onto it to move work between boards.</li>
-              <li>Use the control matrix to jump into your wallet, pop open Settings, review Completed tasks, or peek at Upcoming items.</li>
-              <li>The accent-aware surfaces keep lists legible while matching the color palette you choose.</li>
-            </ul>
-            <p className="text-tertiary">You can skip this tutorial at any time.</p>
-          </div>
-        ),
-      },
-      {
-        title: "Capture and organize tasks",
-        body: (
-          <div className="space-y-3 text-sm text-secondary">
-            <p className="text-primary">
-              Capture ideas instantly and arrange them across days or custom lists.
-            </p>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Use the New Task bar or enable inline add boxes in Settings → View to create cards exactly where you need them.</li>
-              <li>Drag tasks to reorder, drop them between boards, or toss them onto the floating Upcoming button to hide them until you&apos;re ready.</li>
-              <li>Open a task to reorder subtasks, paste images, set advanced recurrence, track streaks, and attach optional bounties.</li>
-            </ul>
-          </div>
-        ),
-      },
-      {
-        title: "Shape your workspace",
-        body: (
-          <div className="space-y-3 text-sm text-secondary">
-            <p className="text-primary">Settings are grouped so you can personalize the layout without hunting around.</p>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Adjust font size, accent color, start-of-week, and Completed tab behavior from Settings → View.</li>
-              <li>Pick inline add boxes, default task position, and per-day start boards to match how you plan.</li>
-              <li>Manage boards from Settings → Boards &amp; Lists: reorder, archive via drag, or join shared boards with an ID.</li>
-            </ul>
-          </div>
-        ),
-      },
-      {
-        title: "Lightning ecash tools",
-        body: (
-          <div className="space-y-3 text-sm text-secondary">
-            <p className="text-primary">The 💰 button opens your upgraded Cashu wallet with Lightning superpowers.</p>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Track balances in sats or USD (toggle conversions in Settings → Wallet) and switch units from the wallet header.</li>
-              <li>Scan QR codes to receive eCash, LNURL withdraws, Lightning invoices, or addresses without leaving the app.</li>
-              <li>Save Lightning contacts, reuse them when paying, and fund task bounties or NWC withdrawals in a couple taps.</li>
-              <li>Receive, Send, and Scan flows let you create shareable tokens, pay invoices, or move sats with Nostr Wallet Connect without leaving the app.</li>
-            </ul>
-            <p className="text-tertiary">Bounties on tasks reflect any ecash rewards you attach.</p>
-          </div>
-        ),
-      },
-      {
-        title: "Back up your nsec",
-        body: (
-          <div className="space-y-3 text-sm text-secondary">
-            <p className="text-primary">
-              Your Nostr private key (nsec) lives only on this device. It unlocks shared boards, wallet connections, and future recoveries.
-            </p>
-            <p>Copy it now or later from Settings → Nostr and store it in a secure password manager.</p>
-            <div>
-              <button
-                className="accent-button button-sm pressable"
-                onClick={handleCopyNsec}
-              >
-                Copy my nsec
-              </button>
-            </div>
-            <p className="text-tertiary">Skipping is okay—you can always copy it from Settings when you&apos;re ready.</p>
-          </div>
-        ),
-      },
-    ],
-    [handleCopyNsec]
-  );
-
-  useEffect(() => {
-    if (tutorialComplete || tutorialStep !== null) return;
-    const hasTasks = tasks.length > 0;
-    const hasCustomBoards = boards.some((b) => b.id !== "week-default" || b.kind !== "week");
-    let hasHistory = false;
-    try {
-      const raw = localStorage.getItem("cashuHistory");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) hasHistory = true;
-      }
-    } catch {}
-    if (!hasTasks && !hasCustomBoards && !hasHistory) {
-      setTutorialStep(0);
-    }
-  }, [boards, tasks, tutorialComplete, tutorialStep]);
-
-  const handleSkipTutorial = useCallback(() => {
-    markTutorialDone();
-  }, [markTutorialDone]);
-
-  const handleNextTutorial = useCallback(() => {
-    if (tutorialStep === null) return;
-    if (tutorialStep >= tutorialSteps.length - 1) {
-      markTutorialDone();
-    } else {
-      setTutorialStep(tutorialStep + 1);
-    }
-  }, [markTutorialDone, tutorialStep, tutorialSteps.length]);
-
-  const handlePrevTutorial = useCallback(() => {
-    setTutorialStep((prev) => {
-      if (prev === null || prev <= 0) return prev;
-      return prev - 1;
-    });
-  }, []);
-
-  const handleRestartTutorial = useCallback(() => {
-    try {
-      localStorage.removeItem(LS_TUTORIAL_DONE);
-    } catch {}
-    setTutorialComplete(false);
-    setTutorialStep(0);
-    setShowSettingsState(false);
-  }, []);
 
   useEffect(() => {
     if (!settings.completedTab) setView("board");
@@ -4050,6 +8162,291 @@ export default function App() {
     });
   }, [setBibleTracker]);
 
+  const handleOpenBiblePrint = useCallback(() => {
+    const meta: BiblePrintMeta = {
+      id: crypto.randomUUID(),
+      printedAtISO: new Date().toISOString(),
+    };
+    setBiblePrintMeta(meta);
+    setBiblePrintOpen(true);
+  }, []);
+
+  const handleBiblePaperSizeChange = useCallback((paperSize: PrintPaperSize) => {
+    setBiblePrintPaperSize(paperSize);
+  }, []);
+
+  const openOrSharePdf = useCallback(async (blob: Blob, fileName: string, title: string) => {
+    if (typeof window === "undefined") return;
+    const nav = navigator as Navigator & {
+      share?: (data: ShareData) => Promise<void>;
+      canShare?: (data: ShareData) => boolean;
+    };
+
+    try {
+      const file = new File([blob], fileName, { type: "application/pdf" });
+      if (typeof nav.share === "function" && typeof nav.canShare === "function" && nav.canShare({ files: [file] })) {
+        try {
+          await nav.share({ files: [file], title });
+        } catch (err) {
+          if (err instanceof DOMException && err.name === "AbortError") return;
+        }
+        return;
+      }
+    } catch {}
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.rel = "noopener";
+    anchor.target = "_blank";
+    anchor.download = fileName;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }, []);
+
+  const sanitizeFileNamePart = useCallback((value: string) => {
+    const cleaned = String(value || "").trim().replace(/[^a-z0-9]+/gi, "-");
+    return cleaned.replace(/^-+|-+$/g, "") || "print";
+  }, []);
+
+  const handlePrintBibleWindow = useCallback(() => {
+    if (typeof window === "undefined") return;
+    if (!biblePrintMeta || !biblePrintPortal) return;
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      showToast("Popup blocked. Allow popups to print.", 3000);
+      return;
+    }
+    try {
+      printWindow.opener = null;
+    } catch {}
+    const layout = buildBiblePrintLayout(biblePrintPaperSize);
+    const pageWidthMm = layout.page.widthMm;
+    const pageHeightMm = layout.page.heightMm;
+    const printCss = `
+      * { box-sizing: border-box; }
+      @page { size: ${pageWidthMm}mm ${pageHeightMm}mm; margin: 0; }
+      html, body { margin: 0; padding: 0; background: #ffffff; color: #101828; height: auto; overflow: visible; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .bible-print-root { width: 100%; }
+      .bible-print-controls { display: none; }
+      .bible-print-pages { display: block; }
+      .bible-print-page {
+        position: relative;
+        width: ${pageWidthMm}mm;
+        height: ${pageHeightMm}mm;
+        margin: 0;
+        background: #ffffff;
+        color: #101828;
+        page-break-after: always;
+        break-after: page;
+      }
+      .bible-print-marker {
+        position: absolute;
+        background: #101828;
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .bible-print-marker[data-marker-style="finder"]::after {
+        content: "";
+        position: absolute;
+        width: 45%;
+        height: 45%;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #ffffff;
+        border-radius: 1px;
+      }
+      .bible-print-page-id__bit {
+        position: absolute;
+        border-radius: 0.4mm;
+        border: 0.2mm solid rgba(16, 24, 40, 0.2);
+        background: #ffffff;
+      }
+      .bible-print-page-id__bit[data-filled="true"] {
+        background: #101828;
+        border-color: #101828;
+      }
+      .bible-print-header {
+        position: absolute;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.75rem;
+      }
+      .bible-print-header__left { display: flex; flex-direction: column; gap: 0.1rem; }
+      .bible-print-header__title { font-size: 8.5pt; font-weight: 600; }
+      .bible-print-header__meta { font-size: 7pt; color: rgba(16, 24, 40, 0.72); }
+      .bible-print-header__right { text-align: right; font-size: 7pt; color: rgba(16, 24, 40, 0.72); }
+      .bible-print-header__page { font-weight: 600; color: #101828; }
+      .bible-print-book { position: absolute; font-size: 7pt; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .bible-print-root[data-paper-size="a6"] .bible-print-book { font-size: 6.5pt; line-height: 1; }
+      .bible-print-box {
+        position: absolute;
+        box-sizing: border-box;
+        border: 0.3mm solid #1f2937;
+        border-radius: 0.6mm;
+        background: #ffffff;
+      }
+      .bible-print-box[data-filled="true"] {
+        background: #101828;
+        border-color: #101828;
+      }
+      .bible-print-box-number {
+        position: absolute;
+        top: 0.1mm;
+        left: 0.2mm;
+        font-size: 5pt;
+        line-height: 1;
+        color: rgba(16, 24, 40, 0.7);
+      }
+      .bible-print-root[data-paper-size="a6"] .bible-print-box-number { font-size: 4.6pt; }
+      .bible-print-box[data-filled="true"] .bible-print-box-number {
+        color: rgba(255, 255, 255, 0.8);
+      }
+      @media print {
+        .bible-print-page:last-child { break-after: auto; page-break-after: auto; }
+      }
+    `;
+    const markup = biblePrintPortal.innerHTML;
+    printWindow.document.open();
+    printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Bible tracker print</title><style>${printCss}</style></head><body>${markup}</body></html>`);
+    printWindow.document.close();
+    const triggerPrint = () => {
+      try {
+        printWindow.focus();
+        printWindow.print();
+      } catch {}
+    };
+    if (printWindow.document.readyState === "complete") {
+      setTimeout(triggerPrint, 80);
+    } else {
+      printWindow.addEventListener("load", () => setTimeout(triggerPrint, 80), { once: true });
+    }
+    printWindow.addEventListener("afterprint", () => {
+      printWindow.close();
+    }, { once: true });
+  }, [biblePrintMeta, biblePrintPaperSize, biblePrintPortal, showToast]);
+
+  const handleExportBiblePdf = useCallback(async () => {
+    if (typeof window === "undefined") return;
+    if (!biblePrintMeta) return;
+    if (biblePrintPdfBusy) return;
+    setBiblePrintPdfBusy(true);
+    try {
+      const blob = await buildBibleTrackerPrintPdf({
+        state: bibleTrackerRef.current,
+        meta: biblePrintMeta,
+        paperSize: biblePrintPaperSize,
+      });
+      const fileName = `taskify-bible-tracker-${sanitizeFileNamePart(biblePrintPaperSize)}-${biblePrintMeta.id.slice(0, 8)}.pdf`;
+      await openOrSharePdf(blob, fileName, "Bible tracker print");
+    } catch (err) {
+      console.warn("Failed to generate Bible tracker PDF", err);
+      showToast("Failed to generate PDF. Try again.", 3000);
+    } finally {
+      setBiblePrintPdfBusy(false);
+    }
+  }, [biblePrintMeta, biblePrintPaperSize, biblePrintPdfBusy, openOrSharePdf, sanitizeFileNamePart, showToast]);
+
+  const handleOpenBibleScan = useCallback(() => {
+    setBibleScanOpen(true);
+  }, []);
+
+  const handleApplyBibleScan = useCallback((scanProgress: BibleTrackerProgress) => {
+    if (!scanProgress || Object.keys(scanProgress).length === 0) {
+      showToast("No chapters detected in the scan.", 2500);
+      return;
+    }
+    let addedCount = 0;
+    setBibleTracker((prev) => {
+      let nextProgress = prev.progress;
+      let nextVerses = prev.verses;
+      let progressChanged = false;
+      let versesChanged = false;
+
+      for (const [bookIdRaw, chaptersRaw] of Object.entries(scanProgress)) {
+        const normalizedBookId = String(bookIdRaw || "");
+        const chapterTotal = getBibleBookChapterCount(normalizedBookId) ?? 0;
+        if (!chapterTotal || !Array.isArray(chaptersRaw)) continue;
+        const cleaned = Array.from(
+          new Set(
+            chaptersRaw
+              .map((value) => (typeof value === "number" ? Math.trunc(value) : NaN))
+              .filter((value) => Number.isFinite(value) && value > 0 && value <= chapterTotal)
+          )
+        ).sort((a, b) => a - b);
+        if (cleaned.length === 0) continue;
+
+        const existing = prev.progress[normalizedBookId] ?? [];
+        const existingSet = new Set(existing);
+        const merged = [...existing];
+        const newlyAdded: number[] = [];
+
+        for (const chapter of cleaned) {
+          if (!existingSet.has(chapter)) {
+            existingSet.add(chapter);
+            merged.push(chapter);
+            newlyAdded.push(chapter);
+          }
+        }
+
+        if (newlyAdded.length === 0) continue;
+        merged.sort((a, b) => a - b);
+
+        if (nextProgress === prev.progress) {
+          nextProgress = { ...prev.progress };
+        }
+        nextProgress[normalizedBookId] = merged;
+        progressChanged = true;
+        addedCount += newlyAdded.length;
+
+        if (newlyAdded.length > 0) {
+          const bookVerses = nextVerses?.[normalizedBookId];
+          if (bookVerses) {
+            const updatedBookVerses = { ...bookVerses };
+            let bookChanged = false;
+            for (const chapter of newlyAdded) {
+              if (updatedBookVerses[chapter]) {
+                delete updatedBookVerses[chapter];
+                bookChanged = true;
+              }
+            }
+            if (bookChanged) {
+              if (!versesChanged) {
+                nextVerses = { ...prev.verses };
+                versesChanged = true;
+              }
+              if (Object.keys(updatedBookVerses).length === 0) {
+                delete nextVerses[normalizedBookId];
+              } else {
+                nextVerses[normalizedBookId] = updatedBookVerses;
+              }
+            }
+          }
+        }
+      }
+
+      if (!progressChanged && !versesChanged) {
+        return prev;
+      }
+      return {
+        ...prev,
+        ...(progressChanged ? { progress: nextProgress } : {}),
+        ...(versesChanged ? { verses: nextVerses } : {}),
+      };
+    });
+    if (addedCount > 0) {
+      showToast(`Added ${addedCount} chapter${addedCount === 1 ? "" : "s"} from scan.`, 2500);
+    } else {
+      showToast("No new chapters detected.", 2500);
+    }
+  }, [setBibleTracker, showToast]);
+
   const handleResetBibleTracker = useCallback(() => {
     let confirmed = true;
     if (typeof window !== "undefined" && typeof window.confirm === "function") {
@@ -4234,23 +8631,34 @@ export default function App() {
     window.location.assign(doc.dataUrl);
   }, []);
 
-  const handleOpenDocument = useCallback((_task: Task, doc: TaskDocument) => {
+  const openDocumentPreview = useCallback((doc: TaskDocument) => {
     if (doc.kind === "pdf") {
       handleDownloadDocument(doc);
       return;
     }
     setPreviewDocument(doc);
   }, [handleDownloadDocument]);
+  const handleOpenDocument = useCallback((_task: Task, doc: TaskDocument) => {
+    openDocumentPreview(doc);
+  }, [openDocumentPreview]);
+  const handleOpenEventDocument = useCallback((doc: TaskDocument) => {
+    openDocumentPreview(doc);
+  }, [openDocumentPreview]);
 
   function handleBoardChanged(boardId: string, options?: { board?: Board; republishTasks?: boolean }) {
     const board = options?.board ?? boards.find((x) => x.id === boardId);
     if (!board) return;
-    publishBoardMetadata(board, { force: true }).catch(() => {});
+    publishBoardMetadataRef.current?.(board).catch(() => {});
     if (options?.republishTasks) {
       tasks
         .filter((t) => t.boardId === boardId)
         .forEach((t) => {
-          maybePublishTask(t, board, { skipBoardMetadata: true }).catch(() => {});
+          maybePublishTaskRef.current?.(t, board, { skipBoardMetadata: true }).catch(() => {});
+        });
+      calendarEvents
+        .filter((ev) => ev.boardId === boardId)
+        .forEach((ev) => {
+          maybePublishCalendarEventRef.current?.(ev, board, { skipBoardMetadata: true }).catch(() => {});
         });
     }
   }
@@ -4300,31 +8708,32 @@ export default function App() {
     });
   }, []);
 
-  const removeListColumn = useCallback(
-    (boardId: string, columnId: string) => {
-      const board = boards.find((b) => b.id === boardId && b.kind === "lists");
-      if (!board) return;
-      const updatedColumns = board.columns.filter((col) => col.id !== columnId);
-      if (updatedColumns.length === board.columns.length) return;
-      const updatedBoard: Board = { ...board, columns: updatedColumns };
-      setBoards((prev) => prev.map((b) => (b.id === boardId ? updatedBoard : b)));
-      setTasks((prev) => prev.filter((task) => !(task.boardId === boardId && task.columnId === columnId)));
-      setNewColumnIds((prev) => {
-        const next = { ...prev };
-        delete next[columnId];
-        return next;
-      });
-      clearColumnEditingState(columnId);
-      if (updatedBoard.nostr) {
-        setTimeout(() => handleBoardChanged(updatedBoard.id, { board: updatedBoard }), 0);
-      }
-    },
-    [boards, clearColumnEditingState, handleBoardChanged, setBoards, setTasks],
-  );
+  function removeListColumn(boardId: string, columnId: string) {
+    const board = boards.find((b) => b.id === boardId && b.kind === "lists");
+    if (!board) return;
+    const updatedColumns = board.columns.filter((col) => col.id !== columnId);
+    if (updatedColumns.length === board.columns.length) return;
+    const updatedBoard: Board = { ...board, columns: updatedColumns };
+    setBoards((prev) => prev.map((b) => (b.id === boardId ? updatedBoard : b)));
+    setTasks((prev) => prev.filter((task) => !(task.boardId === boardId && task.columnId === columnId)));
+    setNewColumnIds((prev) => {
+      const next = { ...prev };
+      delete next[columnId];
+      return next;
+    });
+    clearColumnEditingState(columnId);
+    if (updatedBoard.nostr) {
+      setTimeout(() => handleBoardChanged(updatedBoard.id, { board: updatedBoard }), 0);
+    }
+  }
 
   function handleBoardSelect(e: React.ChangeEvent<HTMLSelectElement>) {
     if (shouldReloadForNavigation()) return;
     const val = e.target.value;
+    if (val === ADD_BOARD_OPTION_ID) {
+      openAddBoard();
+      return;
+    }
     if (val === BIBLE_BOARD_ID) {
       if (view !== "completed") setView("bible");
     } else if (view === "bible") {
@@ -4333,7 +8742,7 @@ export default function App() {
     changeBoard(val);
   }
 
-  const handleQuickAddList = useCallback(() => {
+  function handleQuickAddList() {
     if (!currentBoard || currentBoard.kind !== "lists") return;
     const createdId = addListColumn(currentBoard.id, undefined);
     if (createdId) {
@@ -4346,56 +8755,216 @@ export default function App() {
     } else {
       showToast("Failed to add list. Try again.");
     }
-  }, [addListColumn, currentBoard, showToast]);
+  }
 
-  // edit modal
-  const [editing, setEditing] = useState<Task | null>(null);
+	  // edit modal actions
+	  const openUpcomingTaskEditor = useCallback(() => {
+	    if (shouldReloadForNavigation()) return;
+    const fallbackBoard =
+      (currentBoard && currentBoard.kind !== "bible" && currentBoard.kind !== "compound" ? currentBoard : null) ||
+      visibleBoards.find((board) => board.kind !== "bible" && board.kind !== "compound") ||
+      null;
+    if (!fallbackBoard) {
+      showToast("Create a board first.");
+      return;
+    }
+    if (fallbackBoard.kind === "lists" && fallbackBoard.columns.length === 0) {
+      showToast("Add a list to this board first.");
+      return;
+    }
+    const dueISO = isoForToday();
+    const dueDateEnabled = fallbackBoard.kind === "week";
+    const nextOrder = nextOrderForBoard(fallbackBoard.id, tasks, settings.newTaskPosition);
+    const draft: Task = {
+      id: crypto.randomUUID(),
+      boardId: fallbackBoard.id,
+      createdBy: nostrPK || undefined,
+      title: "",
+      createdAt: Date.now(),
+      dueISO,
+      dueDateEnabled,
+      completed: false,
+      order: nextOrder,
+      ...(fallbackBoard.kind === "lists"
+        ? { columnId: fallbackBoard.columns[0]?.id }
+        : fallbackBoard.kind === "week"
+          ? { column: "day" }
+          : {}),
+    };
+	    setEditing({ type: "task", originalType: "task", originalId: draft.id, task: draft });
+	  }, [currentBoard, nostrPK, settings.newTaskPosition, shouldReloadForNavigation, showToast, tasks, visibleBoards]);
 
-  // undo snackbar
-  const [undoTask, setUndoTask] = useState<Task | null>(null);
+	  // undo snackbar
+	  const [undoTask, setUndoTask] = useState<Task | null>(null);
+	  const [recurringDeleteTask, setRecurringDeleteTask] = useState<Task | null>(null);
+	  const [recurringDeleteEvent, setRecurringDeleteEvent] = useState<CalendarEvent | null>(null);
 
   const addTaskToBountyList = useCallback((taskId: string) => {
-    if (!bountyListEnabled || !activeBountyListKey) return;
+    const pinnedKey = PINNED_BOUNTY_LIST_KEY;
     setTasks((prev) => {
       let changed = false;
       const next = prev.map((task) => {
         if (task.id !== taskId) return task;
-        const updated = withTaskAddedToBountyList(task, activeBountyListKey);
+        const updated = withTaskAddedToBountyList(task, pinnedKey);
         if (updated !== task) changed = true;
         return updated;
       });
       return changed ? next : prev;
     });
     setEditing((prev) => {
-      if (!prev || prev.id !== taskId || !activeBountyListKey) return prev;
-      const updated = withTaskAddedToBountyList(prev, activeBountyListKey);
-      return updated === prev ? prev : updated;
+      if (!prev || prev.type !== "task" || prev.task.id !== taskId) return prev;
+      const updatedTask = withTaskAddedToBountyList(prev.task, pinnedKey);
+      return updatedTask === prev.task ? prev : { ...prev, task: updatedTask };
     });
-  }, [activeBountyListKey, bountyListEnabled, setTasks]);
+  }, [setTasks]);
 
   const removeTaskFromBountyList = useCallback((taskId: string) => {
-    if (!activeBountyListKey) return;
+    const pinnedKey = PINNED_BOUNTY_LIST_KEY;
     setTasks((prev) => {
       let changed = false;
       const next = prev.map((task) => {
         if (task.id !== taskId) return task;
-        const updated = withTaskRemovedFromBountyList(task, activeBountyListKey);
+        const updated = withTaskRemovedFromBountyList(task, pinnedKey);
         if (updated !== task) changed = true;
         return updated;
       });
       return changed ? next : prev;
     });
     setEditing((prev) => {
-      if (!prev || prev.id !== taskId) return prev;
-      const updated = withTaskRemovedFromBountyList(prev, activeBountyListKey);
-      return updated === prev ? prev : updated;
+      if (!prev || prev.type !== "task" || prev.task.id !== taskId) return prev;
+      const updatedTask = withTaskRemovedFromBountyList(prev.task, pinnedKey);
+      return updatedTask === prev.task ? prev : { ...prev, task: updatedTask };
     });
-  }, [activeBountyListKey, setTasks]);
+  }, [setTasks]);
 
   // drag-to-delete
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [trashHover, setTrashHover] = useState(false);
   const [upcomingHover, setUpcomingHover] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [upcomingFilterOpen, setUpcomingFilterOpen] = useState(false);
+  const [upcomingUsHolidaysEnabled, setUpcomingUsHolidaysEnabled] = useState<boolean>(() => {
+    const raw = kvStorage.getItem(LS_UPCOMING_US_HOLIDAYS_ENABLED);
+    if (!raw) return true;
+    return raw === "1" || raw.toLowerCase() === "true";
+  });
+  const [upcomingFilter, setUpcomingFilter] = useState<string[] | null>(() => {
+    const raw = kvStorage.getItem(LS_UPCOMING_FILTER);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed === null) return null;
+      if (Array.isArray(parsed)) {
+        return parsed.filter((id) => typeof id === "string");
+      }
+    } catch {}
+    return null;
+  });
+  const [upcomingFilterPresets, setUpcomingFilterPresets] = useState<UpcomingFilterPreset[]>(() => {
+    const raw = kvStorage.getItem(LS_UPCOMING_FILTER_PRESETS);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.flatMap((entry) => {
+        const name = typeof entry?.name === "string" ? entry.name.trim() : "";
+        if (!name) return [];
+        const id = typeof entry?.id === "string" && entry.id ? entry.id : crypto.randomUUID();
+        const selection = Array.isArray(entry?.selection)
+          ? entry.selection.filter((id: unknown) => typeof id === "string")
+          : [];
+        return [{ id, name, selection }];
+      });
+    } catch {
+      return [];
+    }
+  });
+  const [upcomingViewSheetOpen, setUpcomingViewSheetOpen] = useState(false);
+  const [upcomingView, setUpcomingView] = useState<"details" | "list">(() => {
+    const raw = kvStorage.getItem(LS_UPCOMING_VIEW);
+    return raw === "list" ? "list" : "details";
+  });
+  const [upcomingSearchOpen, setUpcomingSearchOpen] = useState(false);
+  const [upcomingSearch, setUpcomingSearch] = useState("");
+  const [upcomingListDate, setUpcomingListDate] = useState(() => isoDatePart(new Date().toISOString()));
+  const [upcomingSortSheetOpen, setUpcomingSortSheetOpen] = useState(false);
+  const [upcomingSort, setUpcomingSort] = useState<{ mode: BoardSortMode; direction: BoardSortDirection }>(() => {
+    const fallback = { mode: "due" as const, direction: DEFAULT_BOARD_SORT_DIRECTION.due };
+    const raw = kvStorage.getItem(LS_UPCOMING_SORT);
+    if (!raw) return fallback;
+    try {
+      return normalizeBoardSortState(JSON.parse(raw)) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  const [upcomingBoardGrouping, setUpcomingBoardGrouping] = useState<UpcomingBoardGrouping>(() => {
+    const raw = kvStorage.getItem(LS_UPCOMING_BOARD_GROUPING);
+    return raw === "grouped" ? "grouped" : "mixed";
+  });
+  const [boardSortSheetOpen, setBoardSortSheetOpen] = useState(false);
+  const [boardSort, setBoardSort] = useState<{ mode: BoardSortMode; direction: BoardSortDirection }>(() => {
+    const fallback = { mode: "due" as const, direction: DEFAULT_BOARD_SORT_DIRECTION.due };
+    const raw = kvStorage.getItem(LS_BOARD_SORT);
+    if (!raw) return fallback;
+    try {
+      return normalizeBoardSortState(JSON.parse(raw)) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  useEffect(() => {
+    try {
+      kvStorage.setItem(LS_UPCOMING_SORT, JSON.stringify(upcomingSort));
+    } catch {}
+  }, [upcomingSort]);
+  useEffect(() => {
+    try {
+      kvStorage.setItem(LS_UPCOMING_BOARD_GROUPING, upcomingBoardGrouping);
+    } catch {}
+  }, [upcomingBoardGrouping]);
+  useEffect(() => {
+    try {
+      kvStorage.setItem(LS_BOARD_SORT, JSON.stringify(boardSort));
+    } catch {}
+  }, [boardSort]);
+  const boardSortOptions = useMemo(
+    () => [
+      { id: "manual", label: "Manual", supportsDirection: false },
+      { id: "due", label: "Due Date", supportsDirection: true },
+      { id: "priority", label: "Priority", supportsDirection: true },
+      { id: "created", label: "Creation Date", supportsDirection: true },
+      { id: "alpha", label: "A-Z", supportsDirection: true },
+    ] as const,
+    [],
+  );
+  const handleBoardSortSelect = useCallback((mode: BoardSortMode) => {
+    setBoardSort((prev) => {
+      if (prev.mode === mode) {
+        if (mode === "manual") return prev;
+        const nextDirection = prev.direction === "asc" ? "desc" : "asc";
+        return { mode, direction: nextDirection };
+      }
+      return { mode, direction: DEFAULT_BOARD_SORT_DIRECTION[mode] };
+    });
+  }, []);
+  const upcomingBoardGroupingOptions = useMemo(
+    () => [
+      { id: "mixed", label: "Across boards" },
+      { id: "grouped", label: "Group by board" },
+    ] as const,
+    [],
+  );
+  const handleUpcomingSortSelect = useCallback((mode: BoardSortMode) => {
+    setUpcomingSort((prev) => {
+      if (prev.mode === mode) {
+        if (mode === "manual") return prev;
+        const nextDirection = prev.direction === "asc" ? "desc" : "asc";
+        return { mode, direction: nextDirection };
+      }
+      return { mode, direction: DEFAULT_BOARD_SORT_DIRECTION[mode] };
+    });
+  }, []);
   const [boardDropOpen, setBoardDropOpen] = useState(false);
   const [boardDropPos, setBoardDropPos] = useState<{ top: number; left: number } | null>(null);
   const boardDropTimer = useRef<number>();
@@ -4427,25 +8996,308 @@ export default function App() {
     if (boardDropCloseTimer.current) window.clearTimeout(boardDropCloseTimer.current);
   }
 
-  // upcoming drawer (out-of-the-way FAB)
-  const [showUpcoming, setShowUpcomingState] = useState(false);
+  const upcomingFilterGroups = useMemo<UpcomingFilterGroup[]>(() => {
+    const groups: UpcomingFilterGroup[] = [];
+    visibleBoards
+      .filter((board) => board.kind !== "bible" && board.kind !== "compound")
+      .forEach((board) => {
+        const label = board.name || "Board";
+        const boardOption: UpcomingFilterOption = {
+          id: `board:${board.id}`,
+          label,
+          boardId: board.id,
+        };
+        const listOptions =
+          board.kind === "lists"
+            ? board.columns.map((column) => ({
+                id: `board:${board.id}:col:${column.id}`,
+                label: column.name,
+                boardId: board.id,
+                columnId: column.id,
+              }))
+            : [];
+        groups.push({
+          id: board.id,
+          label,
+          boardId: board.id,
+          boardOption,
+          listOptions,
+        });
+      });
+    return groups;
+  }, [visibleBoards]);
+
+  const upcomingFilterOptions = useMemo(
+    () => upcomingFilterGroups.flatMap((group) => [group.boardOption, ...group.listOptions]),
+    [upcomingFilterGroups],
+  );
+  const upcomingFilterOptionMap = useMemo(() => {
+    const map = new Map<string, UpcomingFilterOption>();
+    upcomingFilterOptions.forEach((option) => {
+      map.set(option.id, option);
+    });
+    return map;
+  }, [upcomingFilterOptions]);
+  const upcomingFilterGroupMap = useMemo(() => {
+    const map = new Map<string, UpcomingFilterGroup>();
+    upcomingFilterGroups.forEach((group) => {
+      map.set(group.boardId, group);
+    });
+    return map;
+  }, [upcomingFilterGroups]);
+
+  const upcomingFilterOptionIds = useMemo(
+    () => upcomingFilterOptions.map((option) => option.id),
+    [upcomingFilterOptions],
+  );
+
   useEffect(() => {
-    if (view === "bible" && showUpcoming) {
-      setShowUpcomingState(false);
+    if (upcomingFilter === null || !upcomingFilterOptionIds.length) return;
+    const allowed = new Set(upcomingFilterOptionIds);
+    const next = new Set(upcomingFilter.filter((id) => allowed.has(id)));
+    upcomingFilterOptions.forEach((option) => {
+      if (!option.columnId) return;
+      if (next.has(option.id)) {
+        next.add(`board:${option.boardId}`);
+      }
+    });
+    upcomingFilterGroups.forEach((group) => {
+      if (!next.has(group.boardOption.id)) return;
+      if (group.listOptions.length === 0) return;
+      const hasAnyList = group.listOptions.some((option) => next.has(option.id));
+      if (!hasAnyList) {
+        group.listOptions.forEach((option) => next.add(option.id));
+      }
+    });
+    if (next.size !== upcomingFilter.length || upcomingFilter.some((id) => !next.has(id))) {
+      setUpcomingFilter(Array.from(next));
     }
-  }, [view, showUpcoming]);
+  }, [upcomingFilter, upcomingFilterGroups, upcomingFilterOptionIds, upcomingFilterOptions]);
+  useEffect(() => {
+    try {
+      kvStorage.setItem(LS_UPCOMING_FILTER, JSON.stringify(upcomingFilter));
+    } catch {}
+  }, [upcomingFilter]);
+  useEffect(() => {
+    try {
+      kvStorage.setItem(LS_UPCOMING_US_HOLIDAYS_ENABLED, upcomingUsHolidaysEnabled ? "1" : "0");
+    } catch {}
+  }, [upcomingUsHolidaysEnabled]);
+  useEffect(() => {
+    try {
+      kvStorage.setItem(LS_UPCOMING_FILTER_PRESETS, JSON.stringify(upcomingFilterPresets));
+    } catch {}
+  }, [upcomingFilterPresets]);
+  useEffect(() => {
+    try {
+      kvStorage.setItem(LS_UPCOMING_VIEW, upcomingView);
+    } catch {}
+  }, [upcomingView]);
+
+  const upcomingFilterLabel = useMemo(() => {
+    if (!upcomingFilterOptions.length) {
+      return upcomingUsHolidaysEnabled ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL : "No boards";
+    }
+    if (upcomingFilter === null) {
+      return upcomingUsHolidaysEnabled ? "All boards + US holidays" : "All boards";
+    }
+    if (upcomingFilter.length === 0) {
+      return upcomingUsHolidaysEnabled ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL : "None";
+    }
+    if (upcomingFilter.length === 1) {
+      const baseLabel = upcomingFilterOptions.find((option) => option.id === upcomingFilter[0])?.label || "1 selected";
+      return upcomingUsHolidaysEnabled ? `${baseLabel} + US holidays` : baseLabel;
+    }
+    const baseLabel = `${upcomingFilter.length} selected`;
+    return upcomingUsHolidaysEnabled ? `${baseLabel} + US holidays` : baseLabel;
+  }, [upcomingFilter, upcomingFilterOptions, upcomingUsHolidaysEnabled]);
+
+  const upcomingFilterSelection = useMemo(() => {
+    if (upcomingFilter === null) return new Set(upcomingFilterOptionIds);
+    return new Set(upcomingFilter);
+  }, [upcomingFilter, upcomingFilterOptionIds]);
+
+  const upcomingFilterMap = useMemo(() => {
+    const selectedBoards = new Set<string>();
+    const selectedLists = new Map<string, Set<string>>();
+    upcomingFilterOptions.forEach((option) => {
+      if (!upcomingFilterSelection.has(option.id)) return;
+      if (option.columnId) {
+        const existing = selectedLists.get(option.boardId) ?? new Set<string>();
+        existing.add(option.columnId);
+        selectedLists.set(option.boardId, existing);
+      } else {
+        selectedBoards.add(option.boardId);
+      }
+    });
+    return { selectedBoards, selectedLists };
+  }, [upcomingFilterOptions, upcomingFilterSelection]);
+
+  const upcomingSearchTerm = useMemo(() => upcomingSearch.trim().toLowerCase(), [upcomingSearch]);
+  const showUpcomingSearch = upcomingSearchOpen || upcomingSearchTerm.length > 0;
+
+  useEffect(() => {
+    if (activePage !== "upcoming") return;
+    if (!upcomingSearchOpen) return;
+    upcomingSearchInputRef.current?.focus();
+  }, [activePage, upcomingSearchOpen]);
+
+  const toggleUpcomingFilter = useCallback((optionId: string) => {
+    if (!upcomingFilterOptionIds.length) return;
+    setUpcomingFilter((prev) => {
+      const option = upcomingFilterOptionMap.get(optionId);
+      if (!option) return prev;
+      const next = new Set(prev ?? upcomingFilterOptionIds);
+      const group = upcomingFilterGroupMap.get(option.boardId);
+      const listIds = group?.listOptions.map((opt) => opt.id) ?? [];
+      const boardId = `board:${option.boardId}`;
+
+      if (!option.columnId) {
+        if (next.has(optionId)) {
+          next.delete(optionId);
+          listIds.forEach((id) => next.delete(id));
+        } else {
+          next.add(optionId);
+          listIds.forEach((id) => next.add(id));
+        }
+      } else {
+        if (next.has(optionId)) {
+          next.delete(optionId);
+        } else {
+          next.add(optionId);
+          next.add(boardId);
+        }
+        const hasAnyList = listIds.some((id) => next.has(id));
+        if (!hasAnyList) {
+          next.delete(boardId);
+        }
+      }
+
+      const output = Array.from(next);
+      if (output.length === upcomingFilterOptionIds.length) return null;
+      return output;
+    });
+  }, [upcomingFilterGroupMap, upcomingFilterOptionIds, upcomingFilterOptionMap]);
+
+  const applyUpcomingFilterPreset = useCallback(
+    (preset: UpcomingFilterPreset) => {
+      if (!upcomingFilterOptions.length) return;
+      const presetSet = new Set(preset.selection);
+      const next = upcomingFilterOptions
+        .filter((option) => presetSet.has(option.id))
+        .map((option) => option.id);
+      setUpcomingFilter(next.length ? next : []);
+    },
+    [upcomingFilterOptions],
+  );
+
+  const saveUpcomingFilterPreset = useCallback(() => {
+    if (!upcomingFilterOptions.length) return;
+    const name = window.prompt("Name this preset");
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const selection = upcomingFilterOptions
+      .filter((option) => upcomingFilterSelection.has(option.id))
+      .map((option) => option.id);
+    const uniqueSelection = Array.from(new Set(selection));
+    setUpcomingFilterPresets((prev) => {
+      const existingIndex = prev.findIndex((preset) => preset.name.toLowerCase() === trimmed.toLowerCase());
+      const updatedPreset = {
+        id: existingIndex === -1 ? crypto.randomUUID() : prev[existingIndex].id,
+        name: trimmed,
+        selection: uniqueSelection,
+      };
+      if (existingIndex === -1) {
+        return [updatedPreset, ...prev];
+      }
+      return [updatedPreset, ...prev.filter((_, idx) => idx !== existingIndex)];
+    });
+  }, [upcomingFilterOptions, upcomingFilterSelection]);
+
+  const deleteUpcomingFilterPreset = useCallback((preset: UpcomingFilterPreset) => {
+    let confirmed = true;
+    if (typeof window !== "undefined" && typeof window.confirm === "function") {
+      confirmed = window.confirm(`Delete preset "${preset.name}"?`);
+    }
+    if (!confirmed) return;
+    setUpcomingFilterPresets((prev) => prev.filter((p) => p.id !== preset.id));
+  }, []);
+
+  const upcomingPresetHoldTimerRef = useRef<number | null>(null);
+  const upcomingPresetHoldTriggeredRef = useRef(false);
+  const upcomingPresetHoldStartRef = useRef<{ x: number; y: number } | null>(null);
+  const cancelUpcomingPresetHold = useCallback(() => {
+    if (upcomingPresetHoldTimerRef.current != null) {
+      window.clearTimeout(upcomingPresetHoldTimerRef.current);
+      upcomingPresetHoldTimerRef.current = null;
+    }
+    upcomingPresetHoldStartRef.current = null;
+  }, []);
+  useEffect(() => cancelUpcomingPresetHold, [cancelUpcomingPresetHold]);
+
+  const startUpcomingPresetHold = useCallback(
+    (preset: UpcomingFilterPreset, event: React.PointerEvent<HTMLButtonElement>) => {
+      if (event.button !== 0) return;
+      cancelUpcomingPresetHold();
+      upcomingPresetHoldTriggeredRef.current = false;
+      upcomingPresetHoldStartRef.current = { x: event.clientX, y: event.clientY };
+      upcomingPresetHoldTimerRef.current = window.setTimeout(() => {
+        upcomingPresetHoldTimerRef.current = null;
+        upcomingPresetHoldTriggeredRef.current = true;
+        upcomingPresetHoldStartRef.current = null;
+        deleteUpcomingFilterPreset(preset);
+      }, 650);
+    },
+    [cancelUpcomingPresetHold, deleteUpcomingFilterPreset],
+  );
+  const maybeCancelUpcomingPresetHold = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      const start = upcomingPresetHoldStartRef.current;
+      if (!start) return;
+      const dx = event.clientX - start.x;
+      const dy = event.clientY - start.y;
+      if (Math.abs(dx) > 12 || Math.abs(dy) > 12) {
+        cancelUpcomingPresetHold();
+      }
+    },
+    [cancelUpcomingPresetHold],
+  );
 
   // fly-to-completed overlay + target
   const flyLayerRef = useRef<HTMLDivElement>(null);
   const completedTabRef = useRef<HTMLButtonElement>(null);
+  const appContentRef = useRef<HTMLDivElement>(null);
   // wallet button target for coin animation
   const boardSelectorRef = useRef<HTMLSelectElement>(null);
+  const boardSelectorBottomRef = useRef<HTMLSelectElement>(null);
   const walletButtonRef = useRef<HTMLButtonElement>(null);
   const boardDropContainerRef = useRef<HTMLDivElement>(null);
   const boardDropListRef = useRef<HTMLDivElement>(null);
   const upcomingButtonRef = useRef<HTMLButtonElement>(null);
+  const upcomingListRef = useRef<HTMLDivElement | null>(null);
+  const upcomingSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const upcomingAutoScrollRef = useRef(false);
+  const upcomingPendingDetailDateRef = useRef<string | null>(null);
+  const upcomingCalendarSwipeRef = useRef<{ startX: number; startY: number } | null>(null);
   const columnRefs = useRef(new Map<string, HTMLDivElement>());
   const inlineInputRefs = useRef(new Map<string, HTMLInputElement>());
+
+  const openUpcomingSearch = useCallback(() => {
+    setUpcomingSearchOpen(true);
+    const container = appContentRef.current;
+    if (container) {
+      container.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    requestAnimationFrame(() => {
+      upcomingSearchInputRef.current?.focus();
+    });
+  }, []);
+
+  const closeUpcomingSearch = useCallback(() => {
+    setUpcomingSearch("");
+    setUpcomingSearchOpen(false);
+  }, []);
 
   const setColumnRef = useCallback((key: string, el: HTMLDivElement | null) => {
     if (el) columnRefs.current.set(key, el);
@@ -4550,15 +9402,15 @@ export default function App() {
     [currentBoard, listColumnSources, scrollColumnIntoView, setDayChoice],
   );
 
-  const cancelRenameColumn = useCallback((columnId: string) => {
+  function cancelRenameColumn(columnId: string) {
     if (currentBoard?.kind === "lists" && newColumnIds[columnId]) {
       removeListColumn(currentBoard.id, columnId);
       return;
     }
     clearColumnEditingState(columnId);
-  }, [clearColumnEditingState, currentBoard, newColumnIds, removeListColumn]);
+  }
 
-  const commitRenameColumn = useCallback((columnId: string) => {
+  function commitRenameColumn(columnId: string) {
     if (!currentBoard || currentBoard.kind !== "lists") return;
     const nextName = columnDrafts[columnId] ?? "";
     renameListColumn(currentBoard.id, columnId, nextName);
@@ -4568,7 +9420,7 @@ export default function App() {
       return next;
     });
     clearColumnEditingState(columnId);
-  }, [clearColumnEditingState, columnDrafts, currentBoard, renameListColumn]);
+  }
 
   useEffect(() => {
     if (!pendingFocusColumnId) return;
@@ -4794,11 +9646,9 @@ export default function App() {
     }
 
     if (board.kind === "week") {
-      const due = new Date(task.dueISO);
-      if (Number.isNaN(due.getTime())) return;
-      const key = task.column === "bounties"
-        ? "week-bounties"
-        : `week-day-${due.getDay()}`;
+      const dueWeekday = taskWeekday(task);
+      if (dueWeekday == null) return;
+      const key = `week-day-${dueWeekday}`;
       flyNewTask(from, { type: "column", key, label });
     } else if (isListLikeBoard(board) && task.columnId) {
       let columnKey: string | null = null;
@@ -4816,55 +9666,311 @@ export default function App() {
     }
   }
 
+  const pendingSharedBoardIds = useMemo(() => {
+    const ids = new Set<string>();
+    boards.forEach((board) => {
+      const nostrBoardId = board.nostr?.boardId;
+      if (!nostrBoardId) return;
+      if (pendingNostrInitialSyncByBoardTag[boardTag(nostrBoardId)]) {
+        ids.add(board.id);
+      }
+    });
+    return ids;
+  }, [boards, pendingNostrInitialSyncByBoardTag]);
+
   /* ---------- Derived: board-scoped lists ---------- */
   const tasksForBoard = useMemo(() => {
     if (!currentBoard) return [] as Task[];
     const scope = new Set(boardScopeIds(currentBoard, boards));
     return tasks
-      .filter(t => scope.has(t.boardId))
+      .filter((t) => scope.has(t.boardId) && !pendingSharedBoardIds.has(t.boardId))
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  }, [boards, tasks, currentBoard]);
+  }, [boards, tasks, currentBoard, pendingSharedBoardIds]);
+
+  const calendarEventsForBoard = useMemo(() => {
+    if (!currentBoard) return [] as CalendarEvent[];
+    const scope = new Set(boardScopeIds(currentBoard, boards));
+    return calendarEvents
+      .filter((ev) => !isExternalCalendarEvent(ev) && scope.has(ev.boardId))
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  }, [boards, calendarEvents, currentBoard]);
+
+  const titleCollator = useMemo(
+    () => new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }),
+    [],
+  );
+  const taskPriorityValue = useCallback(
+    (task: Task) => normalizeTaskPriority(task.priority) ?? 0,
+    [],
+  );
+  const taskCreatedAtValue = useCallback(
+    (task: Task) => (typeof task.createdAt === "number" ? task.createdAt : 0),
+    [],
+  );
+  const taskTitleValue = useCallback(
+    (task: Task) => task.title?.trim() || "",
+    [],
+  );
+  const taskDueDateKey = useCallback((task: Task) => {
+    if (task.dueDateEnabled === false) return null;
+    return isoDatePart(task.dueISO, task.dueTimeZone);
+  }, []);
+  const taskDueTimestamp = useCallback((task: Task) => {
+    if (task.dueDateEnabled === false) return null;
+    const ts = Date.parse(task.dueISO);
+    return Number.isNaN(ts) ? null : ts;
+  }, []);
+  const compareNumber = useCallback((a: number, b: number, direction: BoardSortDirection) => {
+    const diff = a - b;
+    return direction === "asc" ? diff : -diff;
+  }, []);
+  const compareDue = useCallback(
+    (a: Task, b: Task, direction: BoardSortDirection) => {
+      const aDate = taskDueDateKey(a);
+      const bDate = taskDueDateKey(b);
+      if (aDate == null && bDate == null) return 0;
+      if (aDate == null) return 1;
+      if (bDate == null) return -1;
+      if (aDate !== bDate) {
+        const result = aDate.localeCompare(bDate);
+        return direction === "asc" ? result : -result;
+      }
+      const aHasTime = !!a.dueTimeEnabled;
+      const bHasTime = !!b.dueTimeEnabled;
+      if (aHasTime !== bHasTime) return aHasTime ? -1 : 1;
+      if (aHasTime && bHasTime) {
+        const aDue = taskDueTimestamp(a);
+        const bDue = taskDueTimestamp(b);
+        if (aDue == null && bDue == null) return 0;
+        if (aDue == null) return 1;
+        if (bDue == null) return -1;
+        return compareNumber(aDue, bDue, direction);
+      }
+      return 0;
+    },
+    [compareNumber, taskDueDateKey, taskDueTimestamp],
+  );
+  const comparePriority = useCallback(
+    (a: Task, b: Task, direction: BoardSortDirection) =>
+      compareNumber(taskPriorityValue(a), taskPriorityValue(b), direction),
+    [compareNumber, taskPriorityValue],
+  );
+  const compareCreatedAt = useCallback(
+    (a: Task, b: Task, direction: BoardSortDirection) =>
+      compareNumber(taskCreatedAtValue(a), taskCreatedAtValue(b), direction),
+    [compareNumber, taskCreatedAtValue],
+  );
+  const compareAlpha = useCallback(
+    (a: Task, b: Task, direction: BoardSortDirection) => {
+      const result = titleCollator.compare(taskTitleValue(a), taskTitleValue(b));
+      return direction === "asc" ? result : -result;
+    },
+    [taskTitleValue, titleCollator],
+  );
+  const compareDefault = useCallback(
+    (a: Task, b: Task) => {
+      let result = compareDue(a, b, DEFAULT_BOARD_SORT_DIRECTION.due);
+      if (result !== 0) return result;
+      result = comparePriority(a, b, DEFAULT_BOARD_SORT_DIRECTION.priority);
+      if (result !== 0) return result;
+      result = compareCreatedAt(a, b, DEFAULT_BOARD_SORT_DIRECTION.created);
+      if (result !== 0) return result;
+      result = compareAlpha(a, b, DEFAULT_BOARD_SORT_DIRECTION.alpha);
+      if (result !== 0) return result;
+      const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+      if (orderDiff !== 0) return orderDiff;
+      return a.id.localeCompare(b.id);
+    },
+    [compareAlpha, compareCreatedAt, compareDue, comparePriority],
+  );
+  const walletBountySortTimestamp = useCallback(
+    (task: Task) => {
+      if (task.completed) {
+        const completedAt = task.completedAt ? Date.parse(task.completedAt) : Number.NaN;
+        if (Number.isFinite(completedAt)) return completedAt;
+      }
+      return taskCreatedAtValue(task);
+    },
+    [taskCreatedAtValue],
+  );
+  const compareWalletBountyTasks = useCallback(
+    (a: Task, b: Task) => {
+      const aTs = walletBountySortTimestamp(a);
+      const bTs = walletBountySortTimestamp(b);
+      if (aTs !== bTs) return bTs - aTs;
+      if (!!a.completed !== !!b.completed) return a.completed ? -1 : 1;
+      return compareDefault(a, b);
+    },
+    [compareDefault, walletBountySortTimestamp],
+  );
+  const sortBoardTasks = useCallback(
+    (arr: Task[]) => {
+      arr.sort((a, b) => {
+        if (a.completed !== b.completed) return a.completed ? 1 : -1;
+        if (boardSort.mode === "manual") {
+          const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+          if (orderDiff !== 0) return orderDiff;
+          return compareDefault(a, b);
+        }
+        let primary = 0;
+        switch (boardSort.mode) {
+          case "due":
+            primary = compareDue(a, b, boardSort.direction);
+            break;
+          case "priority":
+            primary = comparePriority(a, b, boardSort.direction);
+            break;
+          case "created":
+            primary = compareCreatedAt(a, b, boardSort.direction);
+            break;
+          case "alpha":
+            primary = compareAlpha(a, b, boardSort.direction);
+            break;
+        }
+        if (primary !== 0) return primary;
+        return compareDefault(a, b);
+      });
+    },
+    [boardSort.direction, boardSort.mode, compareAlpha, compareCreatedAt, compareDefault, compareDue, comparePriority],
+  );
 
   // Week board
+  const currentWeekStartMs = startOfDay(startOfWeek(new Date(), settings.weekStart)).getTime();
   const byDay = useMemo(() => {
     if (!currentBoard || currentBoard.kind !== "week") return new Map<Weekday, Task[]>();
     const visible = tasksForBoard.filter(t => {
-      const pendingBounty = t.completed && t.bounty && t.bounty.state !== "claimed";
-      return ((!t.completed || pendingBounty || !settings.completedTab) && t.column !== "bounties" && isVisibleNow(t));
+      const pendingBounty = t.completed && t.bounty && t.bounty.state !== "claimed" && !isRecoverableBountyTask(t);
+      return (!t.completed || pendingBounty || !settings.completedTab) && isVisibleNow(t);
     });
     const m = new Map<Weekday, Task[]>();
     for (const t of visible) {
-      const wd = new Date(t.dueISO).getDay() as Weekday;
+      const wd = taskWeekday(t);
+      if (wd == null) continue;
       if (!m.has(wd)) m.set(wd, []);
       m.get(wd)!.push(t);
     }
     for (const arr of m.values()) {
-      arr.sort((a, b) => (a.completed === b.completed ? (a.order ?? 0) - (b.order ?? 0) : a.completed ? 1 : -1));
+      sortBoardTasks(arr);
     }
     return m;
-  }, [tasksForBoard, currentBoard, settings.completedTab]);
+  }, [currentBoard, settings.completedTab, sortBoardTasks, tasksForBoard]);
 
-  const bounties = useMemo(() => {
-    if (!currentBoard || currentBoard.kind !== "week" || !bountyListEnabled || !activeBountyListKey) {
-      return [] as Task[];
+  const calendarByDay = useMemo(() => {
+    if (!currentBoard || currentBoard.kind !== "week") return new Map<Weekday, CalendarEvent[]>();
+    const m = new Map<Weekday, CalendarEvent[]>();
+    const weekStartDate = new Date(currentWeekStartMs);
+    const weekStartKey = formatDateKeyLocal(weekStartDate);
+    const weekEndDate = new Date(weekStartDate);
+    weekEndDate.setDate(weekEndDate.getDate() + 6);
+    const weekEndKey = formatDateKeyLocal(weekEndDate);
+
+    const weekdayFromDateKey = (dateKey: string): Weekday | null => {
+      if (!ISO_DATE_PATTERN.test(dateKey)) return null;
+      const parsed = parseDateKey(dateKey);
+      if (!parsed) return null;
+      const utc = Date.UTC(parsed.year, parsed.month - 1, parsed.day);
+      if (!Number.isFinite(utc)) return null;
+      return new Date(utc).getUTCDay() as Weekday;
+    };
+
+    const addDaysToKey = (dateKey: string, delta: number): string | null => {
+      const parsed = parseDateKey(dateKey);
+      if (!parsed) return null;
+      const base = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
+      if (Number.isNaN(base.getTime())) return null;
+      base.setUTCDate(base.getUTCDate() + delta);
+      return base.toISOString().slice(0, 10);
+    };
+
+    for (const ev of calendarEventsForBoard) {
+      if (ev.kind === "date") {
+        const start = ISO_DATE_PATTERN.test(ev.startDate) ? ev.startDate : null;
+        if (!start) continue;
+        const end = ev.endDate && ISO_DATE_PATTERN.test(ev.endDate) && ev.endDate >= start ? ev.endDate : start;
+        if (end < weekStartKey || start > weekEndKey) continue;
+        let cursor = start < weekStartKey ? weekStartKey : start;
+        const clippedEnd = end > weekEndKey ? weekEndKey : end;
+        let guard = 0;
+        while (guard++ < 366) {
+          const wd = weekdayFromDateKey(cursor);
+          if (wd != null) {
+            if (!m.has(wd)) m.set(wd, []);
+            m.get(wd)!.push(ev);
+          }
+          if (cursor === clippedEnd) break;
+          const next = addDaysToKey(cursor, 1);
+          if (!next) break;
+          cursor = next;
+        }
+        continue;
+      }
+
+      const startKey = isoDatePart(ev.startISO, ev.startTzid);
+      if (!ISO_DATE_PATTERN.test(startKey)) continue;
+      if (startKey < weekStartKey || startKey > weekEndKey) continue;
+      const wd = weekdayFromISO(ev.startISO, ev.startTzid);
+      if (wd == null) continue;
+      if (!m.has(wd)) m.set(wd, []);
+      m.get(wd)!.push(ev);
     }
-    return tasks
-      .filter((t) => {
-        if (!taskHasBountyList(t, activeBountyListKey)) return false;
-        if (!isVisibleNow(t)) return false;
-        const pendingBounty = t.completed && t.bounty && t.bounty.state !== "claimed";
-        if (t.completed && !pendingBounty && settings.completedTab) return false;
-        return true;
-      })
-      .sort((a, b) => (a.completed === b.completed ? (a.order ?? 0) - (b.order ?? 0) : a.completed ? 1 : -1));
-  }, [activeBountyListKey, bountyListEnabled, currentBoard, settings.completedTab, tasks]);
+
+    const timeValue = (ev: CalendarEvent): number => {
+      if (ev.kind !== "time") return -1;
+      const timePart = isoTimePart(ev.startISO, ev.startTzid);
+      const parsed = parseTimeValue(timePart);
+      if (!parsed) return 0;
+      return parsed.hour * 60 + parsed.minute;
+    };
+
+    for (const arr of m.values()) {
+      arr.sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === "date" ? -1 : 1;
+        const ta = timeValue(a);
+        const tb = timeValue(b);
+        if (ta !== tb) return ta - tb;
+        const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+        if (orderDiff !== 0) return orderDiff;
+        return a.id.localeCompare(b.id);
+      });
+    }
+
+    return m;
+  }, [calendarEventsForBoard, currentBoard, currentWeekStartMs]);
+
+  const allBountyTasks = useMemo(() => {
+    const list = tasks.filter((task) => !!task.bounty && !isRecoverableBountyTask(task));
+    list.sort(compareWalletBountyTasks);
+    return list;
+  }, [compareWalletBountyTasks, tasks]);
+
+  const openBountyTasks = useMemo(
+    () => allBountyTasks.filter((task) => task.bounty && task.bounty.state !== "claimed" && task.bounty.state !== "revoked"),
+    [allBountyTasks],
+  );
+
+  const fundedBountyTasks = useMemo(() => {
+    if (!nostrPK) return [] as Task[];
+    return allBountyTasks.filter((task) => !!task.bounty?.sender && pubkeysEqual(task.bounty?.sender, nostrPK));
+  }, [allBountyTasks, nostrPK]);
+
+  const pinnedBountyTasks = useMemo(() => {
+    const list = tasks.filter((task) => taskHasBountyList(task, PINNED_BOUNTY_LIST_KEY) && !isRecoverableBountyTask(task));
+    list.sort(compareWalletBountyTasks);
+    return list;
+  }, [compareWalletBountyTasks, tasks]);
+
+  const walletBountiesVisibleTasks = useMemo(() => {
+    if (walletBountiesTab === "funded") return fundedBountyTasks;
+    if (walletBountiesTab === "pinned") return pinnedBountyTasks;
+    return openBountyTasks;
+  }, [fundedBountyTasks, openBountyTasks, pinnedBountyTasks, walletBountiesTab]);
 
   const itemsByColumn = useMemo(() => {
     if (!currentBoard || !isListLikeBoard(currentBoard)) return new Map<string, Task[]>();
     const m = new Map<string, Task[]>();
     for (const col of listColumns) m.set(col.id, []);
     for (const t of tasksForBoard) {
-      const pendingBounty = t.completed && t.bounty && t.bounty.state !== "claimed";
+      const pendingBounty = t.completed && t.bounty && t.bounty.state !== "claimed" && !isRecoverableBountyTask(t);
       if (t.completed && !pendingBounty && settings.completedTab) continue;
       if (!t.columnId) continue;
       if (!isVisibleNow(t)) continue;
@@ -4884,10 +9990,382 @@ export default function App() {
       if (arr) arr.push(t);
     }
     for (const arr of m.values()) {
-      arr.sort((a, b) => (a.completed === b.completed ? (a.order ?? 0) - (b.order ?? 0) : a.completed ? 1 : -1));
+      sortBoardTasks(arr);
     }
     return m;
-  }, [currentBoard, listColumns, listColumnSources, settings.completedTab, tasksForBoard]);
+  }, [currentBoard, listColumns, listColumnSources, settings.completedTab, sortBoardTasks, tasksForBoard]);
+
+  const calendarItemsByColumn = useMemo(() => {
+    if (!currentBoard || !isListLikeBoard(currentBoard)) return new Map<string, CalendarEvent[]>();
+    const m = new Map<string, CalendarEvent[]>();
+    for (const col of listColumns) m.set(col.id, []);
+    const now = new Date();
+
+    const dateKeyForEvent = (ev: CalendarEvent): string => {
+      if (ev.kind === "date") return ISO_DATE_PATTERN.test(ev.startDate) ? ev.startDate : isoDatePart(new Date().toISOString());
+      return isoDatePart(ev.startISO, ev.startTzid);
+    };
+
+    const timeValue = (ev: CalendarEvent): number => {
+      if (ev.kind !== "time") return -1;
+      const timePart = isoTimePart(ev.startISO, ev.startTzid);
+      const parsed = parseTimeValue(timePart);
+      if (!parsed) return 0;
+      return parsed.hour * 60 + parsed.minute;
+    };
+
+    for (const ev of calendarEventsForBoard) {
+      if (!ev.columnId) continue;
+      if (!isCalendarEventVisibleOnListBoard(ev, settings.weekStart, now)) continue;
+
+      let key: string | null = null;
+      if (currentBoard.kind === "compound") {
+        const source = listColumnSources.get(compoundColumnKey(ev.boardId, ev.columnId));
+        if (!source) continue;
+        key = compoundColumnKey(source.boardId, source.columnId);
+      } else {
+        if (!listColumnSources.has(ev.columnId)) continue;
+        key = ev.columnId;
+      }
+
+      if (!key) continue;
+      const arr = m.get(key);
+      if (arr) arr.push(ev);
+    }
+
+    for (const arr of m.values()) {
+      arr.sort((a, b) => {
+        const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+        if (orderDiff !== 0) return orderDiff;
+        const da = dateKeyForEvent(a);
+        const db = dateKeyForEvent(b);
+        if (da !== db) return da.localeCompare(db);
+        const ta = timeValue(a);
+        const tb = timeValue(b);
+        if (ta !== tb) return ta - tb;
+        return a.id.localeCompare(b.id);
+      });
+    }
+
+    return m;
+  }, [calendarEventsForBoard, currentBoard, listColumns, listColumnSources, settings.weekStart]);
+
+  const buildBoardPrintTasks = useCallback((): BoardPrintTask[] => {
+    if (!currentBoard) return [];
+    const titleForTask = (task: Task) => {
+      const labelSource = task.title || (task.images?.length ? "Image" : task.documents?.[0]?.name || "");
+      return labelSource.trim() || "Task";
+    };
+    const visible = tasksForBoard.filter((task) => !task.completed && isVisibleNow(task));
+    if (visible.length === 0) return [];
+
+    if (currentBoard.kind === "week") {
+      const dayOrder = Array.from({ length: 7 }, (_, i) => ((settings.weekStart + i) % 7) as Weekday);
+      const dayMap = new Map<Weekday, Task[]>();
+      visible.forEach((task) => {
+        const day = taskWeekday(task) ?? (new Date().getDay() as Weekday);
+        const list = dayMap.get(day) ?? [];
+        list.push(task);
+        dayMap.set(day, list);
+      });
+
+      const output: BoardPrintTask[] = [];
+      const pushGroup = (label: string, groupTasks: Task[]) => {
+        groupTasks
+          .slice()
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+          .forEach((task) => {
+            output.push({ id: task.id, title: titleForTask(task), label });
+          });
+      };
+
+      dayOrder.forEach((day) => {
+        const groupTasks = dayMap.get(day);
+        if (groupTasks && groupTasks.length) {
+          pushGroup(WD_SHORT[day], groupTasks);
+        }
+      });
+      return output;
+    }
+
+    if (isListLikeBoard(currentBoard)) {
+      const columnTaskMap = new Map<string, Task[]>();
+      listColumns.forEach((col) => columnTaskMap.set(col.id, []));
+      for (const task of visible) {
+        if (!task.columnId) continue;
+        let columnKey = task.columnId;
+        if (currentBoard.kind === "compound") {
+          const source = listColumnSources.get(compoundColumnKey(task.boardId, task.columnId));
+          if (!source) continue;
+          columnKey = compoundColumnKey(source.boardId, source.columnId);
+        } else if (!listColumnSources.has(task.columnId)) {
+          continue;
+        }
+        const bucket = columnTaskMap.get(columnKey);
+        if (bucket) bucket.push(task);
+      }
+
+      const output: BoardPrintTask[] = [];
+      listColumns.forEach((col) => {
+        const bucket = columnTaskMap.get(col.id);
+        if (!bucket || bucket.length === 0) return;
+        bucket
+          .slice()
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+          .forEach((task) => {
+            output.push({ id: task.id, title: titleForTask(task), label: col.name });
+          });
+      });
+      return output;
+    }
+
+    return visible.map((task) => ({ id: task.id, title: titleForTask(task) }));
+  }, [currentBoard, listColumns, listColumnSources, settings.weekStart, tasksForBoard]);
+
+  const handleOpenBoardPrint = useCallback(() => {
+    if (!currentBoard) return;
+    const tasks = buildBoardPrintTasks();
+    if (!tasks.length) {
+      showToast("No tasks to print yet.", 2500);
+      return;
+    }
+    closeShareBoard();
+    const job: BoardPrintJob = {
+      id: crypto.randomUUID(),
+      boardId: currentBoard.id,
+      boardName: currentBoard.name || "Board",
+      printedAtISO: new Date().toISOString(),
+      layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
+      paperSize: boardPrintJob?.paperSize ?? "letter",
+      tasks,
+    };
+    setBoardPrintJob(job);
+    persistBoardPrintJob(job);
+    setBoardPrintOpen(true);
+  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, showToast]);
+
+  const handleBoardPaperSizeChange = useCallback((paperSize: PrintPaperSize) => {
+    setBoardPrintJob((prev) => {
+      if (!prev || prev.paperSize === paperSize) return prev;
+      const next = { ...prev, paperSize };
+      persistBoardPrintJob(next);
+      return next;
+    });
+  }, []);
+
+  const handlePrintBoardWindow = useCallback(() => {
+    if (typeof window === "undefined") return;
+    if (!boardPrintJob || !boardPrintPortal) return;
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      showToast("Popup blocked. Allow popups to print.", 3000);
+      return;
+    }
+    try {
+      printWindow.opener = null;
+    } catch {}
+    const layout = buildBoardPrintLayout(boardPrintJob.tasks, {
+      layoutVersion: boardPrintJob.layoutVersion,
+      paperSize: boardPrintJob.paperSize,
+    });
+    const pageWidthMm = layout.page.widthMm;
+    const pageHeightMm = layout.page.heightMm;
+    const printCss = `
+      * { box-sizing: border-box; }
+      @page { size: ${pageWidthMm}mm ${pageHeightMm}mm; margin: 0; }
+      html, body { margin: 0; padding: 0; background: #ffffff; color: #101828; height: auto; overflow: visible; }
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .board-print-root { width: 100%; }
+      .board-print-controls { display: none; }
+      .board-print-pages { display: block; }
+      .board-print-page {
+        position: relative;
+        width: ${pageWidthMm}mm;
+        height: ${pageHeightMm}mm;
+        margin: 0;
+        background: #ffffff;
+        color: #101828;
+        page-break-after: always;
+        break-after: page;
+      }
+      .board-print-marker {
+        position: absolute;
+        background: #101828;
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .board-print-marker[data-marker-style="finder"]::after {
+        content: "";
+        position: absolute;
+        width: 45%;
+        height: 45%;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #ffffff;
+        border-radius: 1px;
+      }
+      .board-print-page-id__bit {
+        position: absolute;
+        border-radius: 0.4mm;
+        border: 0.2mm solid rgba(16, 24, 40, 0.2);
+        background: #ffffff;
+      }
+      .board-print-page-id__bit[data-filled="true"] {
+        background: #101828;
+        border-color: #101828;
+      }
+      .board-print-header {
+        position: absolute;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.75rem;
+      }
+      .board-print-header__left { display: flex; flex-direction: column; gap: 0.1rem; }
+      .board-print-header__title { font-size: 9pt; font-weight: 600; }
+      .board-print-header__meta { font-size: 7pt; color: rgba(16, 24, 40, 0.72); }
+      .board-print-header__right { text-align: right; font-size: 7pt; color: rgba(16, 24, 40, 0.72); }
+      .board-print-header__page { font-weight: 600; color: #101828; }
+      .board-print-row {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        gap: 2.4mm;
+      }
+      .board-print-circle {
+        box-sizing: border-box;
+        border: 0.3mm solid #1f2937;
+        border-radius: 999px;
+        background: #ffffff;
+        flex-shrink: 0;
+      }
+      .board-print-title {
+        font-size: 8pt;
+        font-weight: 500;
+        color: #101828;
+        line-height: 1.1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .board-print-label {
+        font-size: 7pt;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: rgba(16, 24, 40, 0.55);
+        margin-right: 0.3rem;
+      }
+      .board-print-group {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      .board-print-group__text {
+        font-size: 7pt;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: rgba(16, 24, 40, 0.6);
+        white-space: nowrap;
+        max-width: 60%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .board-print-group__rule {
+        flex: 1;
+        height: 0.3mm;
+        background: rgba(16, 24, 40, 0.18);
+        border-radius: 999px;
+      }
+      @media print {
+        .board-print-page:last-child { break-after: auto; page-break-after: auto; }
+      }
+    `;
+    const markup = boardPrintPortal.innerHTML;
+    printWindow.document.open();
+    printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Board print</title><style>${printCss}</style></head><body>${markup}</body></html>`);
+    printWindow.document.close();
+    const triggerPrint = () => {
+      try {
+        printWindow.focus();
+        printWindow.print();
+      } catch {}
+    };
+    if (printWindow.document.readyState === "complete") {
+      setTimeout(triggerPrint, 80);
+    } else {
+      printWindow.addEventListener("load", () => setTimeout(triggerPrint, 80), { once: true });
+    }
+    printWindow.addEventListener("afterprint", () => {
+      printWindow.close();
+    }, { once: true });
+  }, [boardPrintJob, boardPrintPortal, showToast]);
+
+  const handleExportBoardPdf = useCallback(async () => {
+    if (typeof window === "undefined") return;
+    if (!boardPrintJob) return;
+    if (boardPrintPdfBusy) return;
+    setBoardPrintPdfBusy(true);
+    try {
+      const blob = await buildBoardPrintPdf({
+        job: boardPrintJob,
+        paperSize: boardPrintJob.paperSize,
+      });
+      const boardName = sanitizeFileNamePart(boardPrintJob.boardName || "board");
+      const fileName = `taskify-board-${boardName}-${sanitizeFileNamePart(boardPrintJob.paperSize)}-${boardPrintJob.id.slice(0, 8)}.pdf`;
+      await openOrSharePdf(blob, fileName, `${boardPrintJob.boardName || "Board"} print`);
+    } catch (err) {
+      console.warn("Failed to generate board PDF", err);
+      showToast("Failed to generate PDF. Try again.", 3000);
+    } finally {
+      setBoardPrintPdfBusy(false);
+    }
+  }, [boardPrintJob, boardPrintPdfBusy, openOrSharePdf, sanitizeFileNamePart, showToast]);
+
+  const handleOpenBoardScan = useCallback(() => {
+    if (!currentBoard) return;
+    const job = loadBoardPrintJob(currentBoard.id);
+    if (!job || job.tasks.length === 0) {
+      showToast("Print this board before scanning.", 2500);
+      return;
+    }
+    setBoardPrintJob(job);
+    setBoardScanOpen(true);
+  }, [currentBoard, showToast]);
+
+  function handleApplyBoardScan(taskIds: string[]) {
+    if (!taskIds.length) {
+      showToast("No tasks detected in the scan.", 2500);
+      return;
+    }
+    const taskLookup = new Map(tasks.map((task) => [task.id, task] as const));
+    let completedCount = 0;
+    let ignoredCount = 0;
+    const uniqueIds = Array.from(new Set(taskIds));
+    uniqueIds.forEach((taskId) => {
+      const task = taskLookup.get(taskId);
+      if (!task || task.completed) {
+        ignoredCount += 1;
+        return;
+      }
+      completeTask(taskId);
+      completedCount += 1;
+    });
+
+    if (completedCount > 0) {
+      const ignoredLine = ignoredCount > 0 ? ` (${ignoredCount} ignored)` : "";
+      showToast(`Marked ${completedCount} task${completedCount === 1 ? "" : "s"} complete${ignoredLine}.`, 2500);
+      return;
+    }
+    if (ignoredCount > 0) {
+      showToast(`No new tasks found. ${ignoredCount} already completed or deleted.`, 2500);
+      return;
+    }
+    showToast("No new tasks detected.", 2500);
+  }
 
   const resolveListPlacement = useCallback(
     (columnKey?: string | null) => {
@@ -4913,7 +10391,7 @@ export default function App() {
   const completed = useMemo(
     () =>
       tasksForBoard
-        .filter((t) => t.completed && (!t.bounty || t.bounty.state === "claimed"))
+        .filter((t) => t.completed && (isRecoverableBountyTask(t) || !t.bounty || t.bounty.state === "claimed"))
         .sort((a, b) => (b.completedAt || "").localeCompare(a.completedAt || "")),
     [tasksForBoard]
   );
@@ -4938,20 +10416,1112 @@ export default function App() {
       });
   }, [bibleTracker.completedBooks]);
 
-  const upcoming = useMemo(
-    () =>
-      tasksForBoard
-        .filter((t) => !t.completed && t.hiddenUntilISO && !isVisibleNow(t))
-        .sort((a, b) => (a.hiddenUntilISO || "").localeCompare(b.hiddenUntilISO || "")),
-    [tasksForBoard]
+  const upcomingBoardOrder = useMemo(() => {
+    const visibleBoardOrder = visibleBoards.filter((b) => b.kind !== "bible");
+    const boardOrder = new Map<string, number>();
+    visibleBoardOrder.forEach((board, index) => {
+      boardOrder.set(board.id, index);
+    });
+    return {
+      visibleIds: new Set(visibleBoardOrder.map((b) => b.id)),
+      boardOrder,
+      fallbackBoardOrder: visibleBoardOrder.length + 1,
+    };
+  }, [visibleBoards]);
+  const getUpcomingBoardOrder = useCallback(
+    (task: Task) => upcomingBoardOrder.boardOrder.get(task.boardId) ?? upcomingBoardOrder.fallbackBoardOrder,
+    [upcomingBoardOrder],
+  );
+  const getUpcomingEventBoardOrder = useCallback(
+    (ev: CalendarEvent) => upcomingBoardOrder.boardOrder.get(ev.boardId) ?? upcomingBoardOrder.fallbackBoardOrder,
+    [upcomingBoardOrder],
+  );
+  const compareUpcomingTime = useCallback((a: Task, b: Task, direction: BoardSortDirection) => {
+    const timeA = taskTimeValue(a);
+    const timeB = taskTimeValue(b);
+    if (timeA != null && timeB != null && timeA !== timeB) {
+      return direction === "asc" ? timeA - timeB : timeB - timeA;
+    }
+    if (timeA != null && timeB == null) return -1;
+    if (timeA == null && timeB != null) return 1;
+    return 0;
+  }, []);
+  const compareUpcomingFallback = useCallback(
+    (a: Task, b: Task) => {
+      let result = compareUpcomingTime(a, b, DEFAULT_BOARD_SORT_DIRECTION.due);
+      if (result !== 0) return result;
+      const boardDiff = getUpcomingBoardOrder(a) - getUpcomingBoardOrder(b);
+      if (boardDiff !== 0) return boardDiff;
+      const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+      if (orderDiff !== 0) return orderDiff;
+      result = compareAlpha(a, b, DEFAULT_BOARD_SORT_DIRECTION.alpha);
+      if (result !== 0) return result;
+      return a.id.localeCompare(b.id);
+    },
+    [compareAlpha, compareUpcomingTime, getUpcomingBoardOrder],
+  );
+  const compareUpcomingMode = useCallback(
+    (a: Task, b: Task) => {
+      if (upcomingSort.mode === "manual") {
+        const boardDiff = getUpcomingBoardOrder(a) - getUpcomingBoardOrder(b);
+        if (boardDiff !== 0) return boardDiff;
+        const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+        if (orderDiff !== 0) return orderDiff;
+        return compareDefault(a, b);
+      }
+      let primary = 0;
+      switch (upcomingSort.mode) {
+        case "due":
+          primary = compareUpcomingTime(a, b, upcomingSort.direction);
+          break;
+        case "priority":
+          primary = comparePriority(a, b, upcomingSort.direction);
+          break;
+        case "created":
+          primary = compareCreatedAt(a, b, upcomingSort.direction);
+          break;
+        case "alpha":
+          primary = compareAlpha(a, b, upcomingSort.direction);
+          break;
+      }
+      if (primary !== 0) return primary;
+      return compareUpcomingFallback(a, b);
+    },
+    [
+      compareAlpha,
+      compareCreatedAt,
+      compareDefault,
+      comparePriority,
+      compareUpcomingFallback,
+      compareUpcomingTime,
+      getUpcomingBoardOrder,
+      upcomingSort.direction,
+      upcomingSort.mode,
+    ],
+  );
+  const sortUpcomingTasks = useCallback(
+    (arr: Task[]) => {
+      arr.sort((a, b) => {
+        if (upcomingBoardGrouping === "grouped") {
+          const boardDiff = getUpcomingBoardOrder(a) - getUpcomingBoardOrder(b);
+          if (boardDiff !== 0) return boardDiff;
+        }
+        return compareUpcomingMode(a, b);
+      });
+    },
+    [compareUpcomingMode, getUpcomingBoardOrder, upcomingBoardGrouping],
   );
 
+  const compareUpcomingEventTime = useCallback((a: CalendarEvent, b: CalendarEvent, direction: BoardSortDirection) => {
+    const timeValue = (ev: CalendarEvent): number => {
+      if (ev.kind === "date") return -1;
+      const timePart = isoTimePart(ev.startISO, ev.startTzid);
+      const parsed = parseTimeValue(timePart);
+      if (!parsed) return 0;
+      return parsed.hour * 60 + parsed.minute;
+    };
+
+    const aTime = timeValue(a);
+    const bTime = timeValue(b);
+    if (aTime !== bTime) return direction === "asc" ? aTime - bTime : bTime - aTime;
+    return 0;
+  }, []);
+
+  const compareUpcomingEventFallback = useCallback(
+    (a: CalendarEvent, b: CalendarEvent) => {
+      let result = compareUpcomingEventTime(a, b, DEFAULT_BOARD_SORT_DIRECTION.due);
+      if (result !== 0) return result;
+      const boardDiff = getUpcomingEventBoardOrder(a) - getUpcomingEventBoardOrder(b);
+      if (boardDiff !== 0) return boardDiff;
+      const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+      if (orderDiff !== 0) return orderDiff;
+      result = titleCollator.compare(a.title?.trim() || "", b.title?.trim() || "");
+      if (result !== 0) return result;
+      return a.id.localeCompare(b.id);
+    },
+    [compareUpcomingEventTime, getUpcomingEventBoardOrder, titleCollator],
+  );
+
+  const compareUpcomingEventMode = useCallback(
+    (a: CalendarEvent, b: CalendarEvent) => {
+      if (upcomingSort.mode === "manual") {
+        const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+        if (orderDiff !== 0) return orderDiff;
+        return compareUpcomingEventFallback(a, b);
+      }
+
+      let primary = 0;
+      switch (upcomingSort.mode) {
+        case "due":
+          primary = compareUpcomingEventTime(a, b, upcomingSort.direction);
+          break;
+        case "alpha": {
+          const result = titleCollator.compare(a.title?.trim() || "", b.title?.trim() || "");
+          primary = upcomingSort.direction === "asc" ? result : -result;
+          break;
+        }
+      }
+      if (primary !== 0) return primary;
+      return compareUpcomingEventFallback(a, b);
+    },
+    [
+      compareUpcomingEventFallback,
+      compareUpcomingEventTime,
+      titleCollator,
+      upcomingSort.direction,
+      upcomingSort.mode,
+    ],
+  );
+
+  const sortUpcomingEvents = useCallback(
+    (arr: CalendarEvent[]) => {
+      arr.sort((a, b) => {
+        if (upcomingBoardGrouping === "grouped") {
+          const boardDiff = getUpcomingEventBoardOrder(a) - getUpcomingEventBoardOrder(b);
+          if (boardDiff !== 0) return boardDiff;
+        }
+        return compareUpcomingEventMode(a, b);
+      });
+    },
+    [compareUpcomingEventMode, getUpcomingEventBoardOrder, upcomingBoardGrouping],
+  );
+  const upcomingUsHolidayEvents = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return buildUsHolidayCalendarEvents(
+      currentYear - SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS,
+      currentYear + SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS,
+    );
+  }, []);
+  const upcoming = useMemo(() => {
+    const visibleIds = upcomingBoardOrder.visibleIds;
+    return tasks.filter((t) => {
+      if (!visibleIds.has(t.boardId)) return false;
+      if (t.boardId === messagesBoardId) return false;
+      if (t.completed) return false;
+      if (t.dueDateEnabled === false) return false;
+      const ts = Date.parse(t.dueISO);
+      return !Number.isNaN(ts);
+    });
+  }, [messagesBoardId, tasks, upcomingBoardOrder]);
+
+  const upcomingEvents = useMemo(() => {
+    const visibleIds = upcomingBoardOrder.visibleIds;
+    const boardEvents = calendarEvents.filter((ev) => {
+      if (!isExternalCalendarEvent(ev)) {
+        if (!visibleIds.has(ev.boardId)) return false;
+        if (ev.boardId === messagesBoardId) return false;
+      }
+      if (ev.kind === "date") {
+        return ISO_DATE_PATTERN.test(ev.startDate);
+      }
+      const ts = Date.parse(ev.startISO);
+      return !Number.isNaN(ts);
+    });
+    if (!upcomingUsHolidaysEnabled) return boardEvents;
+    return [...boardEvents, ...upcomingUsHolidayEvents];
+  }, [
+    calendarEvents,
+    messagesBoardId,
+    upcomingBoardOrder,
+    upcomingUsHolidayEvents,
+    upcomingUsHolidaysEnabled,
+  ]);
+
+  const upcomingItemCount = upcoming.length + upcomingEvents.length;
+
+  const filteredUpcoming = useMemo(() => {
+    let filtered = upcoming;
+    if (upcomingFilterOptions.length) {
+      if (upcomingFilter !== null && upcomingFilter.length === 0) {
+        filtered = [];
+      } else if (upcomingFilter !== null) {
+        const { selectedBoards, selectedLists } = upcomingFilterMap;
+        filtered = upcoming.filter((task) => {
+          const board = boardMap.get(task.boardId);
+          const listSet = selectedLists.get(task.boardId);
+          if (selectedBoards.has(task.boardId)) {
+            if (board?.kind === "lists") {
+              if (!task.columnId) return false;
+              if (!listSet) return true;
+              if (listSet.size === 0) return false;
+              return listSet.has(task.columnId);
+            }
+            return true;
+          }
+          if (listSet && task.columnId && listSet.has(task.columnId)) return true;
+          return false;
+        });
+      }
+    }
+
+    if (!upcomingSearchTerm) return filtered;
+
+    return filtered.filter((task) => {
+      const note = task.note?.toLowerCase() ?? "";
+      return task.title.toLowerCase().includes(upcomingSearchTerm) || note.includes(upcomingSearchTerm);
+    });
+  }, [boardMap, upcoming, upcomingFilter, upcomingFilterMap, upcomingFilterOptions.length, upcomingSearchTerm]);
+
+  const filteredUpcomingEvents = useMemo(() => {
+    let filtered = upcomingEvents;
+    if (upcomingFilterOptions.length) {
+      if (upcomingFilter !== null && upcomingFilter.length === 0) {
+        filtered = [];
+      } else if (upcomingFilter !== null) {
+        const { selectedBoards, selectedLists } = upcomingFilterMap;
+        filtered = upcomingEvents.filter((ev) => {
+          if (isUsHolidayCalendarEvent(ev)) return upcomingUsHolidaysEnabled;
+          if (ev.external) return true;
+          const board = boardMap.get(ev.boardId);
+          const listSet = selectedLists.get(ev.boardId);
+          if (selectedBoards.has(ev.boardId)) {
+            if (board?.kind === "lists") {
+              if (!ev.columnId) return false;
+              if (!listSet) return true;
+              if (listSet.size === 0) return false;
+              return listSet.has(ev.columnId);
+            }
+            return true;
+          }
+          if (listSet && ev.columnId && listSet.has(ev.columnId)) return true;
+          return false;
+        });
+      }
+    }
+
+    if (!upcomingSearchTerm) return filtered;
+
+    return filtered.filter((ev) => {
+      const summary = (ev.summary || "").toLowerCase();
+      const description = (ev.description || "").toLowerCase();
+      const locations = (ev.locations || []).join(" ").toLowerCase();
+      const refs = (ev.references || []).join(" ").toLowerCase();
+      return (
+        ev.title.toLowerCase().includes(upcomingSearchTerm) ||
+        summary.includes(upcomingSearchTerm) ||
+        description.includes(upcomingSearchTerm) ||
+        locations.includes(upcomingSearchTerm) ||
+        refs.includes(upcomingSearchTerm)
+      );
+    });
+  }, [
+    boardMap,
+    upcomingEvents,
+    upcomingFilter,
+    upcomingFilterMap,
+    upcomingFilterOptions.length,
+    upcomingSearchTerm,
+    upcomingUsHolidaysEnabled,
+  ]);
+
+  const filteredUpcomingCount = filteredUpcoming.length + filteredUpcomingEvents.length;
+
+  const boardUpcomingTasks = useMemo(() => {
+    return tasksForBoard.filter((task) => {
+      if (task.completed) return false;
+      if (task.dueDateEnabled === false) return false;
+      const ts = Date.parse(task.dueISO);
+      return !Number.isNaN(ts);
+    });
+  }, [tasksForBoard]);
+
+  const boardUpcomingEvents = useMemo(() => {
+    return calendarEventsForBoard.filter((ev) => {
+      if (ev.kind === "date") {
+        return ISO_DATE_PATTERN.test(ev.startDate);
+      }
+      const ts = Date.parse(ev.startISO);
+      return !Number.isNaN(ts);
+    });
+  }, [calendarEventsForBoard]);
+
+  const boardUpcomingCount = boardUpcomingTasks.length + boardUpcomingEvents.length;
+
+  const boardUpcomingDayMap = useMemo(() => {
+    const map = new Map<string, { tasks: Task[]; events: CalendarEvent[] }>();
+    const ensureEntry = (dateKey: string) => {
+      let entry = map.get(dateKey);
+      if (entry) return entry;
+      entry = { tasks: [], events: [] };
+      map.set(dateKey, entry);
+      return entry;
+    };
+
+    boardUpcomingTasks.forEach((task) => {
+      const dateKey = taskDisplayDateKey(task);
+      ensureEntry(dateKey).tasks.push(task);
+    });
+
+    const addDaysToKey = (dateKey: string, delta: number): string | null => {
+      const parsed = parseDateKey(dateKey);
+      if (!parsed) return null;
+      const base = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
+      if (Number.isNaN(base.getTime())) return null;
+      base.setUTCDate(base.getUTCDate() + delta);
+      return base.toISOString().slice(0, 10);
+    };
+
+    boardUpcomingEvents.forEach((ev) => {
+      if (ev.kind === "date") {
+        const start = ISO_DATE_PATTERN.test(ev.startDate) ? ev.startDate : null;
+        if (!start) return;
+        const end =
+          ev.endDate && ISO_DATE_PATTERN.test(ev.endDate) && ev.endDate >= start
+            ? ev.endDate
+            : start;
+        let cursor = start;
+        let guard = 0;
+        while (guard++ < 366) {
+          ensureEntry(cursor).events.push(ev);
+          if (cursor === end) break;
+          const next = addDaysToKey(cursor, 1);
+          if (!next) break;
+          cursor = next;
+        }
+        return;
+      }
+
+      const dateKey = isoDatePart(ev.startISO, ev.startTzid);
+      ensureEntry(dateKey).events.push(ev);
+    });
+
+    for (const entry of map.values()) {
+      sortUpcomingEvents(entry.events);
+      sortUpcomingTasks(entry.tasks);
+    }
+
+    return map;
+  }, [boardUpcomingEvents, boardUpcomingTasks, sortUpcomingEvents, sortUpcomingTasks]);
+
+  const boardUpcomingGroups = useMemo(() => {
+    const groups: { dateKey: string; label: string; tasks: Task[]; events: CalendarEvent[] }[] = [];
+    const dateKeys = Array.from(boardUpcomingDayMap.keys()).sort((a, b) => a.localeCompare(b));
+    dateKeys.forEach((dateKey) => {
+      const entry = boardUpcomingDayMap.get(dateKey);
+      if (!entry) return;
+      groups.push({
+        dateKey,
+        label: formatUpcomingDayLabel(dateKey),
+        tasks: entry.tasks,
+        events: entry.events,
+      });
+    });
+    return groups;
+  }, [boardUpcomingDayMap]);
+
+  const upcomingDayMap = useMemo(() => {
+    const map = new Map<string, { tasks: Task[]; events: CalendarEvent[] }>();
+    const ensureEntry = (dateKey: string) => {
+      let entry = map.get(dateKey);
+      if (entry) return entry;
+      entry = { tasks: [], events: [] };
+      map.set(dateKey, entry);
+      return entry;
+    };
+
+    filteredUpcoming.forEach((task) => {
+      const dateKey = taskDisplayDateKey(task);
+      ensureEntry(dateKey).tasks.push(task);
+    });
+
+    const addDaysToKey = (dateKey: string, delta: number): string | null => {
+      const parsed = parseDateKey(dateKey);
+      if (!parsed) return null;
+      const base = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
+      if (Number.isNaN(base.getTime())) return null;
+      base.setUTCDate(base.getUTCDate() + delta);
+      return base.toISOString().slice(0, 10);
+    };
+
+    filteredUpcomingEvents.forEach((ev) => {
+      if (ev.kind === "date") {
+        const start = ISO_DATE_PATTERN.test(ev.startDate) ? ev.startDate : null;
+        if (!start) return;
+        const end =
+          ev.endDate && ISO_DATE_PATTERN.test(ev.endDate) && ev.endDate >= start
+            ? ev.endDate
+            : start;
+        let cursor = start;
+        let guard = 0;
+        while (guard++ < 366) {
+          ensureEntry(cursor).events.push(ev);
+          if (cursor === end) break;
+          const next = addDaysToKey(cursor, 1);
+          if (!next) break;
+          cursor = next;
+        }
+        return;
+      }
+
+      const dateKey = isoDatePart(ev.startISO, ev.startTzid);
+      ensureEntry(dateKey).events.push(ev);
+    });
+
+    for (const entry of map.values()) {
+      sortUpcomingEvents(entry.events);
+      sortUpcomingTasks(entry.tasks);
+    }
+
+    return map;
+  }, [filteredUpcoming, filteredUpcomingEvents, sortUpcomingEvents, sortUpcomingTasks]);
+  const upcomingGroups = useMemo(() => {
+    const groups: { dateKey: string; label: string; tasks: Task[]; events: CalendarEvent[] }[] = [];
+    const dateKeys = Array.from(upcomingDayMap.keys()).sort((a, b) => a.localeCompare(b));
+    dateKeys.forEach((dateKey) => {
+      const entry = upcomingDayMap.get(dateKey);
+      if (!entry) return;
+      groups.push({
+        dateKey,
+        label: formatUpcomingDayLabel(dateKey),
+        tasks: entry.tasks,
+        events: entry.events,
+      });
+    });
+    return groups;
+  }, [upcomingDayMap]);
+  const {
+    calendarAnchor: upcomingListAnchor,
+    calendarMonthLabel: upcomingListMonthLabel,
+    calendarCells: upcomingListCalendar,
+    showMonthPicker: upcomingListMonthPickerOpen,
+    moveCalendarMonth: moveUpcomingListMonth,
+    handleMonthLabelClick: handleUpcomingListMonthLabelClick,
+    monthPickerYears: upcomingListMonthPickerYears,
+    monthPickerMonth: upcomingListMonthPickerMonth,
+    monthPickerYear: upcomingListMonthPickerYear,
+    monthPickerMonthColumnRef: upcomingListMonthPickerMonthColumnRef,
+    monthPickerYearColumnRef: upcomingListMonthPickerYearColumnRef,
+    handleMonthPickerMonthScroll: handleUpcomingListMonthPickerMonthScroll,
+    handleMonthPickerYearScroll: handleUpcomingListMonthPickerYearScroll,
+  } = useCalendarPicker(upcomingListDate);
+  const upcomingListSelectedDate = useMemo(() => {
+    const parsed = new Date(`${upcomingListDate}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }, [upcomingListDate]);
+	  const upcomingListToday = useMemo(() => startOfDay(new Date()), []);
+	  const upcomingListDayMap = upcomingDayMap;
+	  const upcomingListEntry = useMemo(
+	    () => upcomingListDayMap.get(upcomingListDate) ?? { tasks: [], events: [] },
+	    [upcomingListDayMap, upcomingListDate],
+	  );
+	  const upcomingListEvents = upcomingListEntry.events;
+	  const upcomingListTasks = upcomingListEntry.tasks;
+	  const upcomingListDateRef = useRef(upcomingListDate);
+  useEffect(() => {
+    const prevDate = upcomingListDateRef.current;
+    const dateChanged = prevDate !== upcomingListDate;
+    upcomingListDateRef.current = upcomingListDate;
+    if (upcomingView !== "list") return;
+    if (dateChanged) return;
+    const selected = new Date(`${upcomingListDate}T00:00:00`);
+    if (Number.isNaN(selected.getTime())) return;
+    if (
+      selected.getFullYear() === upcomingListAnchor.getFullYear() &&
+      selected.getMonth() === upcomingListAnchor.getMonth()
+    ) {
+      return;
+    }
+    const maxDay = daysInCalendarMonth(upcomingListAnchor.getFullYear(), upcomingListAnchor.getMonth());
+    const next = new Date(
+      upcomingListAnchor.getFullYear(),
+      upcomingListAnchor.getMonth(),
+      Math.min(selected.getDate(), maxDay),
+    );
+    setUpcomingListDate(formatDateKeyLocal(next));
+  }, [upcomingListAnchor, upcomingListDate, upcomingView]);
+
+  const resolveUpcomingTargetDateKey = useCallback((preferredDateKey: string) => {
+    if (!upcomingGroups.length) return null;
+    if (upcomingGroups.some((group) => group.dateKey === preferredDateKey)) {
+      return preferredDateKey;
+    }
+    const nextGroup = upcomingGroups.find((group) => group.dateKey > preferredDateKey);
+    if (nextGroup) return nextGroup.dateKey;
+    return upcomingGroups[upcomingGroups.length - 1].dateKey;
+  }, [upcomingGroups]);
+  const scrollUpcomingToDate = useCallback((dateKey: string, behavior: ScrollBehavior = "smooth") => {
+    const list = upcomingListRef.current;
+    const scrollContainer = appContentRef.current;
+    if (!list || !scrollContainer) return false;
+    const targetKey = resolveUpcomingTargetDateKey(dateKey);
+    if (!targetKey) return false;
+    const selector = `[data-upcoming-date="${targetKey}"]`;
+    const target = list.querySelector(selector) as HTMLElement | null;
+    const fallback = list.firstElementChild as HTMLElement | null;
+    const scrollTarget = target ?? fallback;
+    if (!scrollTarget) return false;
+    requestAnimationFrame(() => {
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const targetRect = scrollTarget.getBoundingClientRect();
+      const offset = targetRect.top - containerRect.top + scrollContainer.scrollTop;
+      scrollContainer.scrollTo({ top: offset, behavior });
+    });
+    return true;
+  }, [resolveUpcomingTargetDateKey]);
+  const scrollUpcomingToToday = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const todayKey = isoDatePart(new Date().toISOString());
+    return scrollUpcomingToDate(todayKey, behavior);
+  }, [scrollUpcomingToDate]);
+  const getFocusedUpcomingDateFromScroll = useCallback(() => {
+    const list = upcomingListRef.current;
+    const scrollContainer = appContentRef.current;
+    if (!list || !scrollContainer) return null;
+    const groups = Array.from(list.querySelectorAll<HTMLElement>("[data-upcoming-date]"));
+    if (!groups.length) return null;
+    const containerTop = scrollContainer.getBoundingClientRect().top;
+    const firstVisible = groups.find((group) => group.getBoundingClientRect().bottom >= containerTop + 1);
+    const focused = firstVisible ?? groups[groups.length - 1];
+    const key = focused.getAttribute("data-upcoming-date");
+    return key && key.trim() ? key : null;
+  }, []);
+  const handleUpcomingViewChange = useCallback((nextView: "details" | "list") => {
+    if (nextView === upcomingView) {
+      setUpcomingViewSheetOpen(false);
+      return;
+    }
+    if (nextView === "details") {
+      upcomingPendingDetailDateRef.current = upcomingListDate;
+      upcomingAutoScrollRef.current = false;
+    } else {
+      const focusedDate = getFocusedUpcomingDateFromScroll();
+      if (focusedDate) {
+        setUpcomingListDate(focusedDate);
+      }
+    }
+    setUpcomingView(nextView);
+    setUpcomingViewSheetOpen(false);
+  }, [getFocusedUpcomingDateFromScroll, upcomingListDate, upcomingView]);
+  const handleUpcomingCalendarTouchStart = useCallback((event: React.TouchEvent) => {
+    if (upcomingListMonthPickerOpen) return;
+    if (!event.touches.length) return;
+    const touch = event.touches[0];
+    upcomingCalendarSwipeRef.current = { startX: touch.clientX, startY: touch.clientY };
+  }, [upcomingListMonthPickerOpen]);
+  const handleUpcomingCalendarTouchEnd = useCallback((event: React.TouchEvent) => {
+    if (upcomingListMonthPickerOpen) return;
+    const swipe = upcomingCalendarSwipeRef.current;
+    upcomingCalendarSwipeRef.current = null;
+    if (!swipe) return;
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    const deltaX = touch.clientX - swipe.startX;
+    const deltaY = touch.clientY - swipe.startY;
+    if (Math.abs(deltaY) < 40 || Math.abs(deltaY) < Math.abs(deltaX)) return;
+    moveUpcomingListMonth(deltaY < 0 ? 1 : -1);
+  }, [moveUpcomingListMonth, upcomingListMonthPickerOpen]);
+  const handleUpcomingListDaySelect = useCallback((day: number) => {
+    const next = new Date(upcomingListCalendar.year, upcomingListCalendar.month, day);
+    if (Number.isNaN(next.getTime())) return;
+    setUpcomingListDate(formatDateKeyLocal(next));
+  }, [upcomingListCalendar.month, upcomingListCalendar.year]);
+  const handleUpcomingToday = useCallback(() => {
+    if (upcomingView === "list") {
+      const today = isoDatePart(new Date().toISOString());
+      setUpcomingListDate(today);
+      return;
+    }
+    scrollUpcomingToToday("smooth");
+  }, [scrollUpcomingToToday, upcomingView]);
+	  function renderUpcomingTaskCard(t: Task) {
+    const board = boardMap.get(t.boardId);
+    const boardLabel = board?.name || "Board";
+    const listLabel =
+      board?.kind === "lists"
+        ? board.columns.find((column) => column.id === t.columnId)?.name || ""
+        : "";
+    const locationLabel = listLabel ? `${boardLabel} • ${listLabel}` : boardLabel;
+    const canReveal = t.hiddenUntilISO && !isVisibleNow(t);
+    const revealAction = canReveal ? (
+      <button
+        type="button"
+        className="icon-button icon-button--accent pressable"
+        aria-label="Reveal now"
+        title="Reveal now"
+        onClick={() =>
+          setTasks((prev) =>
+            prev.map((x) => (x.id === t.id ? { ...x, hiddenUntilISO: undefined } : x))
+          )
+        }
+      >
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
+          <circle cx="12" cy="12" r="3" />
+        </svg>
+      </button>
+    ) : null;
+    return (
+      <div key={t.id} className="space-y-2">
+        <Card
+          task={t}
+          meta={locationLabel}
+          trailing={revealAction}
+          onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
+          onComplete={(from) => {
+            if (!t.completed) completeTask(t.id);
+            else if (t.bounty && t.bounty.state === "locked") revealBounty(t.id);
+            else if (t.bounty && t.bounty.state === "unlocked" && t.bounty.token) claimBounty(t.id, from);
+            else restoreTask(t.id);
+          }}
+          onEdit={() => setEditing({ type: "task", originalType: "task", originalId: t.id, task: t })}
+          onDropBefore={() => {}}
+          showStreaks={settings.streaksEnabled}
+          onToggleSubtask={(subId) => toggleSubtask(t.id, subId)}
+          onDragStart={(id) => setDraggingTaskId(id)}
+          onDragEnd={handleDragEnd}
+          hideCompletedSubtasks={settings.hideCompletedSubtasks}
+          onOpenDocument={handleOpenDocument}
+          onDismissInbox={
+            t.inboxItem ? () => completeTask(t.id, { inboxAction: "dismiss" }) : undefined
+          }
+        />
+      </div>
+    );
+	  }
+
+	  const renderUpcomingEventCard = useCallback((ev: CalendarEvent) => {
+	    const isUsHoliday = isUsHolidayCalendarEvent(ev);
+	    const board = boardMap.get(ev.boardId);
+	    const boardLabel = isUsHoliday ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL : board?.name || "Board";
+	    const listLabel =
+	      board?.kind === "lists"
+	        ? board.columns.find((column) => column.id === ev.columnId)?.name || ""
+	        : "";
+	    const placementLabel = listLabel ? `${boardLabel} • ${listLabel}` : boardLabel;
+	    const location = (ev.locations || []).find((value) => typeof value === "string" && value.trim())?.trim() || "";
+	    const meta = location ? `${placementLabel} • ${location}` : placementLabel;
+	    const now = new Date();
+	    const canReveal =
+	      !!ev.hiddenUntilISO &&
+	      !!board &&
+	      isListLikeBoard(board) &&
+	      !isCalendarEventVisibleOnListBoard(ev, settings.weekStart, now);
+	    const revealAction = canReveal ? (
+	      <button
+	        type="button"
+	        className="icon-button icon-button--accent pressable"
+	        aria-label="Reveal now"
+	        title="Reveal now"
+	        onClick={() =>
+	          setCalendarEvents((prev) =>
+	            prev.map((x) => (x.id === ev.id ? { ...x, hiddenUntilISO: undefined } : x))
+	          )
+	        }
+	      >
+	        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+	          <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
+	          <circle cx="12" cy="12" r="3" />
+	        </svg>
+	      </button>
+	    ) : null;
+
+	    return (
+	      <div key={ev.id} className="space-y-2">
+	        <EventCard
+	          event={ev}
+	          showDate={false}
+	          meta={meta}
+	          trailing={revealAction}
+	          onOpenDocument={(_event, doc) => handleOpenEventDocument(doc)}
+	          onEdit={isUsHoliday ? undefined : () => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
+	        />
+	      </div>
+	    );
+	  }, [boardMap, handleOpenEventDocument, setCalendarEvents, setEditing, settings.weekStart]);
+
+	  useEffect(() => {
+	    if (activePage !== "upcoming") {
+	      upcomingAutoScrollRef.current = false;
+      upcomingPendingDetailDateRef.current = null;
+	      return;
+	    }
+	    if (upcomingView !== "details") return;
+	    if (upcomingAutoScrollRef.current) return;
+    const targetDate = upcomingPendingDetailDateRef.current ?? upcomingListDate;
+    upcomingPendingDetailDateRef.current = null;
+    if (targetDate && scrollUpcomingToDate(targetDate, "auto")) {
+      upcomingAutoScrollRef.current = true;
+      return;
+    }
+    if (scrollUpcomingToToday("auto")) {
+	      upcomingAutoScrollRef.current = true;
+	    }
+	  }, [activePage, scrollUpcomingToDate, scrollUpcomingToToday, upcomingListDate, upcomingView]);
+
+  useEffect(() => {
+    if (activePage !== "boards" && activePage !== "upcoming") return;
+    if (activePage === "upcoming" && upcomingAutoScrollRef.current) return;
+    const container = appContentRef.current;
+    if (!container) return;
+    requestAnimationFrame(() => {
+      container.scrollTo({ top: 0, behavior: "auto" });
+      if (typeof window !== "undefined") {
+        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+      }
+    });
+  }, [activePage]);
+
   const editingBoard = useMemo(
-    () => (editing ? boards.find((b) => b.id === editing.boardId) ?? null : null),
+    () => {
+      if (!editing) return null;
+      const boardId = editing.type === "task" ? editing.task.boardId : editing.event.boardId;
+      return boards.find((b) => b.id === boardId) ?? null;
+    },
     [boards, editing]
   );
 
-  const reminderTasks = useMemo(() => tasks.filter(taskHasReminders), [tasks]);
+  const applyCalendarRsvpEvent = useCallback(async (ev: NostrEvent) => {
+    if (!ev?.content || ev.kind !== TASKIFY_CALENDAR_RSVP_KIND) return;
+    const ctx = activeEventRsvpContextRef.current;
+    if (!ctx) return;
+    const tokenMap = activeEventInviteTokensRef.current ?? {};
+    const attendeePubkey = (ev.pubkey || "").toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(attendeePubkey)) return;
+    try {
+      const raw = await decryptCalendarRsvpPayload(ev.content, ctx.boardSkHex, ev.pubkey);
+      const payload = parseCalendarRsvpPayload(raw);
+      if (!payload || payload.eventId !== ctx.eventId) return;
+      const expectedToken = tokenMap[attendeePubkey];
+      const boardToken = deriveBoardRsvpToken(ctx.boardNostrId, attendeePubkey);
+      const tokenValues = Object.values(tokenMap);
+      const tokenMatches =
+        payload.inviteToken === boardToken
+        || (!!expectedToken && payload.inviteToken === expectedToken)
+        || (tokenValues.length > 0 && tokenValues.includes(payload.inviteToken));
+      if (!tokenMatches) return;
+      const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
+      const next: CalendarRsvpEnvelope = {
+        eventId: payload.eventId,
+        authorPubkey: attendeePubkey,
+        createdAt,
+        status: payload.status,
+        ...(payload.fb ? { fb: payload.fb } : {}),
+        inviteToken: payload.inviteToken,
+      };
+      const existing = activeEventRsvpMapRef.current.get(next.authorPubkey);
+      if (existing && existing.createdAt > next.createdAt) return;
+      activeEventRsvpMapRef.current.set(next.authorPubkey, next);
+      setActiveEventRsvps(
+        Array.from(activeEventRsvpMapRef.current.values()).sort((a, b) => b.createdAt - a.createdAt),
+      );
+    } catch (err) {
+      console.warn("Failed to decrypt RSVP", err);
+    }
+  }, [setActiveEventRsvps]);
+
+  const applyExternalCalendarRsvpEvent = useCallback(async (ev: NostrEvent) => {
+    if (!ev?.content || ev.kind !== TASKIFY_CALENDAR_RSVP_KIND) return;
+    if (!nostrSkHex || !nostrPK) return;
+    const attendeePubkey = (ev.pubkey || "").toLowerCase();
+    if (attendeePubkey !== nostrPK) return;
+    const canonicalAddr = tagValue(ev, "a");
+    if (!canonicalAddr) return;
+    const target = calendarEventsRef.current.find(
+      (event) => event.external && event.canonicalAddress === canonicalAddr,
+    );
+    if (!target || !target.boardPubkey) return;
+    try {
+      const raw = await decryptCalendarRsvpPayloadForAttendee(ev.content, nostrSkHex, target.boardPubkey);
+      const payload = parseCalendarRsvpPayload(raw);
+      if (!payload || payload.eventId !== target.id) return;
+      const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
+      setCalendarEvents((prev) => {
+        const idx = prev.findIndex((event) => event.external && event.canonicalAddress === canonicalAddr);
+        if (idx < 0) return prev;
+        const existing = prev[idx];
+        if (existing.rsvpCreatedAt && existing.rsvpCreatedAt > createdAt) return prev;
+        const updated: CalendarEvent = {
+          ...existing,
+          rsvpStatus: payload.status,
+          rsvpCreatedAt: createdAt,
+          ...(payload.fb ? { rsvpFb: payload.fb } : { rsvpFb: undefined }),
+          ...(payload.inviteToken && !existing.inviteToken ? { inviteToken: payload.inviteToken } : {}),
+        };
+        const copy = prev.slice();
+        copy[idx] = updated;
+        return copy;
+      });
+    } catch (err) {
+      console.warn("Failed to decrypt external RSVP", err);
+    }
+  }, [nostrPK, nostrSkHex, setCalendarEvents, tagValue]);
+
+  useEffect(() => {
+    if (activeEventRsvpSubCloserRef.current) {
+      try {
+        activeEventRsvpSubCloserRef.current();
+      } catch {}
+      activeEventRsvpSubCloserRef.current = null;
+    }
+    activeEventRsvpMapRef.current = new Map();
+    activeEventInviteTokensRef.current = null;
+    activeEventInviteTokensVersionRef.current = "";
+    activeEventRsvpContextRef.current = null;
+    setActiveEventRsvps([]);
+    setActiveEventRsvpCoord(null);
+    setActiveEventRsvpRelays([]);
+
+    if (!editing || editing.type !== "event") return;
+    const event = editing.event;
+    const board = boards.find((b) => b.id === event.boardId);
+    const relayCandidates = [
+      ...(board?.nostr?.relays?.length ? board.nostr.relays : []),
+      ...defaultRelays,
+      ...inboxRelays,
+      ...Array.from(DEFAULT_NOSTR_RELAYS),
+    ];
+    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+
+    if (board?.nostr?.boardId && relays.length) {
+      let cancelled = false;
+      const boardNostrId = board.nostr.boardId;
+
+      (async () => {
+        try {
+          const boardKeys = await deriveBoardNostrKeys(board.nostr!.boardId);
+          const coord = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, event.id);
+          if (cancelled) return;
+          activeEventRsvpContextRef.current = { eventId: event.id, boardNostrId, boardSkHex: boardKeys.skHex };
+          setActiveEventRsvpCoord(coord);
+          setActiveEventRsvpRelays(relays);
+          activeEventInviteTokensRef.current = event.inviteTokens ?? null;
+          activeEventInviteTokensVersionRef.current = event.inviteTokens
+            ? JSON.stringify(Object.keys(event.inviteTokens).sort().map((key) => [key, event.inviteTokens![key]]))
+            : "";
+
+          const subscription = pool.subscribeMany(
+            relays,
+            { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": [coord] },
+            {
+              onevent: (ev) => {
+                if (cancelled) return;
+                void applyCalendarRsvpEvent(ev as NostrEvent);
+              },
+            },
+          );
+          activeEventRsvpSubCloserRef.current = () => {
+            try {
+              subscription.close("taskify-rsvps");
+            } catch {}
+          };
+
+          try {
+            if (typeof (pool as any).list === "function") {
+              const events = await (pool as any).list(relays, [
+                { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": [coord] },
+              ]);
+              if (!cancelled && Array.isArray(events)) {
+                events.forEach((evt: any) => void applyCalendarRsvpEvent(evt as NostrEvent));
+              }
+            }
+          } catch (err) {
+            console.warn("RSVP fetch failed", err);
+          }
+        } catch (err) {
+          console.warn("RSVP subscription failed", err);
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+        if (activeEventRsvpSubCloserRef.current) {
+          try {
+            activeEventRsvpSubCloserRef.current();
+          } catch {}
+          activeEventRsvpSubCloserRef.current = null;
+        }
+      };
+    }
+
+    if (event.canonicalAddress && event.inviteToken) {
+      setActiveEventRsvpCoord(event.canonicalAddress);
+      setActiveEventRsvpRelays(event.inviteRelays ?? []);
+      if (event.external && nostrPK && event.rsvpStatus) {
+        const createdAt = event.rsvpCreatedAt ?? 0;
+        const next: CalendarRsvpEnvelope = {
+          eventId: event.id,
+          authorPubkey: nostrPK,
+          createdAt,
+          status: event.rsvpStatus,
+          ...(event.rsvpFb ? { fb: event.rsvpFb } : {}),
+          ...(event.inviteToken ? { inviteToken: event.inviteToken } : {}),
+        };
+        activeEventRsvpMapRef.current = new Map([[nostrPK, next]]);
+        setActiveEventRsvps([next]);
+      }
+    }
+  }, [boards, defaultRelays, editing, inboxRelays, nostrPK, pool, applyCalendarRsvpEvent]);
+
+  useEffect(() => {
+    if (externalEventRsvpSubCloserRef.current) {
+      try {
+        externalEventRsvpSubCloserRef.current();
+      } catch {}
+      externalEventRsvpSubCloserRef.current = null;
+    }
+    if (!nostrSkHex || !nostrPK) return;
+
+    const targets = calendarEvents.filter(
+      (event) => event.external && !!event.canonicalAddress && !!event.boardPubkey,
+    );
+    if (!targets.length) return;
+
+    const canonicalAddrs = new Set<string>();
+    const relaySet = new Set<string>();
+    targets.forEach((event) => {
+      if (event.canonicalAddress) canonicalAddrs.add(event.canonicalAddress);
+      (event.inviteRelays ?? []).forEach((relay) => relaySet.add(relay));
+    });
+    if (!canonicalAddrs.size) return;
+
+    const relayCandidates = [
+      ...Array.from(relaySet),
+      ...defaultRelays,
+      ...inboxRelays,
+      ...Array.from(DEFAULT_NOSTR_RELAYS),
+    ];
+    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+    if (!relays.length) return;
+
+    let cancelled = false;
+    const filter: any = { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": Array.from(canonicalAddrs) };
+    if (nostrPK) filter.authors = [nostrPK];
+
+    const subscription = pool.subscribeMany(
+      relays,
+      filter,
+      {
+        onevent: (ev) => {
+          if (cancelled) return;
+          void applyExternalCalendarRsvpEvent(ev as NostrEvent);
+        },
+      },
+    );
+    externalEventRsvpSubCloserRef.current = () => {
+      try {
+        subscription.close("taskify-external-rsvps");
+      } catch {}
+    };
+
+    (async () => {
+      try {
+        if (typeof (pool as any).list === "function") {
+          const events = await (pool as any).list(relays, [filter]);
+          if (!cancelled && Array.isArray(events)) {
+            events.forEach((evt: any) => void applyExternalCalendarRsvpEvent(evt as NostrEvent));
+          }
+        }
+      } catch (err) {
+        console.warn("External RSVP fetch failed", err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (externalEventRsvpSubCloserRef.current) {
+        try {
+          externalEventRsvpSubCloserRef.current();
+        } catch {}
+        externalEventRsvpSubCloserRef.current = null;
+      }
+    };
+  }, [
+    applyExternalCalendarRsvpEvent,
+    calendarEvents,
+    defaultRelays,
+    inboxRelays,
+    nostrPK,
+    nostrSkHex,
+    pool,
+  ]);
+
+  useEffect(() => {
+    if (!editing || editing.type !== "event") return;
+    if (!editing.event.external) return;
+    if (!nostrPK) return;
+    const latest = calendarEventsRef.current.find(
+      (event) =>
+        event.external &&
+        event.id === editing.event.id &&
+        event.canonicalAddress === editing.event.canonicalAddress,
+    );
+    if (!latest?.rsvpStatus) {
+      activeEventRsvpMapRef.current = new Map();
+      setActiveEventRsvps([]);
+      return;
+    }
+    const createdAt = latest.rsvpCreatedAt ?? 0;
+    const next: CalendarRsvpEnvelope = {
+      eventId: latest.id,
+      authorPubkey: nostrPK,
+      createdAt,
+      status: latest.rsvpStatus,
+      ...(latest.rsvpFb ? { fb: latest.rsvpFb } : {}),
+      ...(latest.inviteToken ? { inviteToken: latest.inviteToken } : {}),
+    };
+    activeEventRsvpMapRef.current = new Map([[nostrPK, next]]);
+    setActiveEventRsvps([next]);
+  }, [calendarEvents, editing, nostrPK]);
+
+  useEffect(() => {
+    if (!editing || editing.type !== "event") return;
+    const eventId = editing.event.id;
+    const latest = calendarEventsRef.current.find((ev) => ev.id === eventId) ?? null;
+    const inviteTokens = latest?.inviteTokens ?? editing.event.inviteTokens ?? null;
+    const tokenVersion = inviteTokens
+      ? JSON.stringify(Object.keys(inviteTokens).sort().map((key) => [key, inviteTokens[key]]))
+      : "";
+    if (tokenVersion === activeEventInviteTokensVersionRef.current) return;
+    activeEventInviteTokensVersionRef.current = tokenVersion;
+    activeEventInviteTokensRef.current = inviteTokens;
+    if (!activeEventRsvpCoord || !activeEventRsvpRelays.length) return;
+    (async () => {
+      try {
+        if (typeof (pool as any).list === "function") {
+          const events = await (pool as any).list(activeEventRsvpRelays, [
+            { kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": [activeEventRsvpCoord] },
+          ]);
+          if (Array.isArray(events)) {
+            events.forEach((evt: any) => void applyCalendarRsvpEvent(evt as NostrEvent));
+          }
+        }
+      } catch (err) {
+        console.warn("RSVP refresh failed", err);
+      }
+    })();
+  }, [activeEventRsvpCoord, activeEventRsvpRelays, applyCalendarRsvpEvent, calendarEvents, editing, pool]);
+
+  const reminderSystemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
+  const reminderSyncItems = useMemo(() => {
+    const taskItems = tasks.flatMap((task) => {
+      if (!taskHasReminders(task)) return [];
+      const dueISO = reminderScheduleISOForTask(task, reminderSystemTimeZone);
+      if (!dueISO) return [];
+      return [{
+        taskId: task.id,
+        boardId: task.boardId,
+        title: task.title,
+        dueISO,
+        reminders: task.reminders ?? [],
+      }];
+    });
+    const eventItems = calendarEvents.flatMap((ev) => {
+      if (!calendarEventHasReminders(ev)) return [];
+      const dueISO = reminderScheduleISOForCalendarEvent(ev, reminderSystemTimeZone);
+      if (!dueISO) return [];
+      return [{
+        taskId: `event:${ev.id}`,
+        boardId: ev.boardId,
+        title: ev.title,
+        dueISO,
+        reminders: ev.reminders ?? [],
+      }];
+    });
+    const merged = [...taskItems, ...eventItems];
+    merged.sort((a, b) => a.taskId.localeCompare(b.taskId));
+    return merged;
+  }, [calendarEvents, reminderSystemTimeZone, tasks]);
   const reminderPayloadRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -4964,13 +11534,13 @@ export default function App() {
       return;
     }
 
-    const remindersPayload = reminderTasks
-      .map((task) => ({
-        taskId: task.id,
-        boardId: task.boardId,
-        dueISO: task.dueISO,
-        title: task.title,
-        minutesBefore: (task.reminders ?? []).map(reminderPresetToMinutes).sort((a, b) => a - b),
+    const remindersPayload = reminderSyncItems
+      .map((item) => ({
+        taskId: item.taskId,
+        boardId: item.boardId,
+        dueISO: item.dueISO,
+        title: item.title,
+        minutesBefore: (item.reminders ?? []).map(reminderPresetToMinutes).sort((a, b) => a - b),
       }))
       .sort((a, b) => a.taskId.localeCompare(b.taskId));
     const payloadString = JSON.stringify(remindersPayload);
@@ -4979,7 +11549,7 @@ export default function App() {
 
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      syncRemindersToWorker(workerBaseUrl, pushPrefs, reminderTasks, { signal: controller.signal }).catch((err) => {
+      syncRemindersToWorker(workerBaseUrl, pushPrefs, reminderSyncItems, { signal: controller.signal }).catch((err) => {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         console.error('Reminder sync failed', err);
         setPushError(err instanceof Error ? err.message : 'Failed to sync reminders');
@@ -4990,7 +11560,7 @@ export default function App() {
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [reminderTasks, settings.pushNotifications, workerBaseUrl]);
+  }, [reminderSyncItems, settings.pushNotifications, workerBaseUrl]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -5041,12 +11611,20 @@ export default function App() {
       let registration: ServiceWorkerRegistration | null | undefined;
       try {
         registration = typeof navigator.serviceWorker.getRegistration === 'function'
-          ? await navigator.serviceWorker.getRegistration()
+          ? await withTimeout(
+            navigator.serviceWorker.getRegistration(),
+            PUSH_OPERATION_TIMEOUT_MS,
+            'Timed out while checking the service worker registration.',
+          )
           : undefined;
       } catch {}
       if (!registration) {
         try {
-          registration = await navigator.serviceWorker.ready;
+          registration = await withTimeout(
+            navigator.serviceWorker.ready,
+            PUSH_OPERATION_TIMEOUT_MS,
+            'Timed out waiting for the service worker to become ready.',
+          );
         } catch {}
       }
       if (cancelled) return;
@@ -5057,7 +11635,11 @@ export default function App() {
 
       let subscription: PushSubscription | null = null;
       try {
-        subscription = await registration.pushManager.getSubscription();
+        subscription = await withTimeout(
+          registration.pushManager.getSubscription(),
+          PUSH_OPERATION_TIMEOUT_MS,
+          'Timed out while checking the existing push subscription.',
+        );
       } catch {}
       if (cancelled) return;
       if (!subscription || permission !== 'granted') {
@@ -5076,13 +11658,15 @@ export default function App() {
   }, [setSettings, settings.pushNotifications]);
 
   // --------- Nostr helpers
-  const tagValue = useCallback((ev: NostrEvent, name: string): string | undefined => {
-    const t = ev.tags.find((x) => x[0] === name);
-    return t ? t[1] : undefined;
-  }, []);
   const isShared = (board: Board) => !!board.nostr?.boardId;
   const getBoardRelays = useCallback((board: Board): string[] => {
-    return (board.nostr?.relays?.length ? board.nostr!.relays : defaultRelays).filter(Boolean);
+    const fallback = (defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS))
+      .map((relay) => relay.trim())
+      .filter(Boolean);
+    const candidate = (board.nostr?.relays?.length ? board.nostr!.relays : fallback)
+      .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
+      .filter(Boolean);
+    return candidate.length ? candidate : fallback;
   }, [defaultRelays]);
   const ensureMigrationState = useCallback((bTag: string): BoardMigrationState => {
     let state = boardMigrationRef.current.get(bTag);
@@ -5092,48 +11676,70 @@ export default function App() {
     }
     return state;
   }, []);
-  async function publishBoardMetadata(board: Board, options?: { force?: boolean }) {
+  async function publishBoardMetadata(board: Board) {
     if (!board.nostr?.boardId) return;
+    const relays = getBoardRelays(board);
+    const boardKeys = await deriveBoardNostrKeys(board.nostr.boardId);
     const idTag = boardTag(board.nostr.boardId);
-    if (!options?.force) {
-      const last = lastBoardMetadataPublishMs.current.get(idTag) || 0;
-      if (Date.now() - last < NOSTR_BOARD_META_COOLDOWN_MS) return;
+    const tags: string[][] = [["d", idTag],["b", idTag],["k", board.kind],["name", board.name]];
+    const payload: any = { clearCompletedDisabled: !!board.clearCompletedDisabled };
+    if (board.kind === "lists") {
+      payload.columns = board.columns;
+      payload.listIndex = !!board.indexCardEnabled;
+    } else if (board.kind === "compound") {
+      const childBoardIds = board.children
+        .map((childId) => {
+          const child = findBoardByCompoundChildId(boardsRef.current, childId);
+          const canonicalId = child?.nostr?.boardId || child?.id || childId;
+          return typeof canonicalId === "string" ? canonicalId : "";
+        })
+        .filter((childId) => !!childId);
+      payload.children = childBoardIds;
+      payload.listIndex = !!board.indexCardEnabled;
+      payload.hideBoardNames = !!board.hideChildBoardNames;
     }
-    lastBoardMetadataPublishMs.current.set(idTag, Date.now());
-    try {
-      const relays = getBoardRelays(board);
-      const boardKeys = await deriveBoardNostrKeys(board.nostr.boardId);
-      const tags: string[][] = [["d", idTag],["b", idTag],["k", board.kind],["name", board.name]];
-      const payload: any = { clearCompletedDisabled: !!board.clearCompletedDisabled };
-      if (board.kind === "lists") {
-        payload.columns = board.columns;
-        payload.listIndex = !!board.indexCardEnabled;
-      } else if (board.kind === "compound") {
-        const childBoardIds = board.children
-          .map((childId) => {
-            const child = findBoardByCompoundChildId(boardsRef.current, childId);
-            const canonicalId = child?.nostr?.boardId || child?.id || childId;
-            return typeof canonicalId === "string" ? canonicalId : "";
-          })
-          .filter((childId) => !!childId);
-        payload.children = childBoardIds;
-        payload.listIndex = !!board.indexCardEnabled;
-        payload.hideBoardNames = !!board.hideChildBoardNames;
-      }
-      const raw = JSON.stringify(payload);
-      const content = await encryptToBoard(board.nostr.boardId, raw);
-      const createdAt = await nostrPublish(relays, {
-        kind: 30300,
-        tags,
-        content,
-        created_at: Math.floor(Date.now() / 1000),
-      }, { sk: boardKeys.sk });
-      nostrIdxRef.current.boardMeta.set(idTag, createdAt);
-    } catch (err) {
-      lastBoardMetadataPublishMs.current.delete(idTag);
-      throw err;
-    }
+    const raw = JSON.stringify(payload);
+    const content = await encryptToBoard(board.nostr.boardId, raw);
+    const createdAt = await nostrPublish(relays, {
+      kind: 30300,
+      tags,
+      content,
+      created_at: Math.floor(Date.now() / 1000),
+    }, { sk: boardKeys.sk });
+    nostrIdxRef.current.boardMeta.set(idTag, createdAt);
   }
+  publishBoardMetadataRef.current = publishBoardMetadata;
+  async function publishBoardMetadataSnapshot(board: Board, boardId: string, relays: string[]) {
+    if (!boardId || !relays.length) return;
+    const boardKeys = await deriveBoardNostrKeys(boardId);
+    const idTag = boardTag(boardId);
+    const tags: string[][] = [["d", idTag], ["b", idTag], ["k", board.kind], ["name", board.name]];
+    const payload: any = { clearCompletedDisabled: !!board.clearCompletedDisabled };
+    if (board.kind === "lists") {
+      payload.columns = board.columns;
+      payload.listIndex = !!board.indexCardEnabled;
+    } else if (board.kind === "compound") {
+      const childBoardIds = board.children
+        .map((childId) => {
+          const child = findBoardByCompoundChildId(boardsRef.current, childId);
+          const canonicalId = child?.nostr?.boardId || child?.id || childId;
+          return typeof canonicalId === "string" ? canonicalId : "";
+        })
+        .filter((childId) => !!childId);
+      payload.children = childBoardIds;
+      payload.listIndex = !!board.indexCardEnabled;
+      payload.hideBoardNames = !!board.hideChildBoardNames;
+    }
+    const raw = JSON.stringify(payload);
+    const content = await encryptToBoard(boardId, raw);
+    await nostrPublish(relays, {
+      kind: 30300,
+      tags,
+      content,
+      created_at: Math.floor(Date.now() / 1000),
+    }, { sk: boardKeys.sk });
+  }
+  publishBoardMetadataSnapshotRef.current = publishBoardMetadataSnapshot;
   async function publishTaskDeletionRequest(boardKeys: BoardNostrKeyPair, relays: string[], taskId: string) {
     const aTag = `30301:${boardKeys.pk}:${taskId}`;
     try {
@@ -5147,164 +11753,49 @@ export default function App() {
       console.warn("Failed to publish nostr deletion", err);
     }
   }
-  async function sendBatchDeletion(board: Board, taskIds: string[], nostrTimestamp?: number) {
-    if (!taskIds.length || !board.nostr?.boardId) return;
-    const relays = getBoardRelays(board);
-    const boardKeys = await deriveBoardNostrKeys(board.nostr.boardId);
-    const tags = taskIds.map((id) => ["a", `30301:${boardKeys.pk}:${id}`]);
-    const created_at = typeof nostrTimestamp === "number" ? nostrTimestamp : Math.floor(Date.now() / 1000);
-    await nostrPublish(relays, {
-      kind: 5,
-      tags,
-      content: "Tasks deleted",
-      created_at,
-    }, { sk: boardKeys.sk });
-    const bTag = boardTag(board.nostr.boardId);
-    if (!nostrIdxRef.current.taskClock.has(bTag)) {
-      nostrIdxRef.current.taskClock.set(bTag, new Map());
-    }
-    const clock = nostrIdxRef.current.taskClock.get(bTag)!;
-    taskIds.forEach((id) => clock.set(id, created_at));
-  }
-  async function sendTaskDeletion(t: Task, board: Board, nostrTimestamp?: number) {
-    if (!isShared(board) || !board.nostr) return;
-    await publishBoardMetadata(board);
-    const relays = getBoardRelays(board);
-    const boardId = board.nostr.boardId;
-    const boardKeys = await deriveBoardNostrKeys(boardId);
-    const bTag = boardTag(boardId);
-    const colTag = (board.kind === "week") ? (t.column === "bounties" ? "bounties" : "day") : (t.columnId || "");
-    const tags: string[][] = [["d", t.id],["b", bTag],["col", String(colTag)],["status","deleted"]];
-    const raw = JSON.stringify({
-      title: t.title,
-      note: t.note || "",
-      dueISO: t.dueISO,
-      completedAt: t.completedAt,
-      recurrence: t.recurrence,
-      hiddenUntilISO: t.hiddenUntilISO,
-      streak: t.streak,
-      longestStreak: t.longestStreak,
-      subtasks: t.subtasks,
-      seriesId: t.seriesId,
-      documents: t.documents,
-    });
-    const content = await encryptToBoard(boardId, raw);
-    const createdAt = await nostrPublish(relays, {
-      kind: 30301,
-      tags,
-      content,
-      created_at: typeof nostrTimestamp === "number" ? nostrTimestamp : Math.floor(Date.now() / 1000),
-    }, { sk: boardKeys.sk });
-    await publishTaskDeletionRequest(boardKeys, relays, t.id);
-    if (!nostrIdxRef.current.taskClock.has(bTag)) {
-      nostrIdxRef.current.taskClock.set(bTag, new Map());
-    }
-    nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
-  }
-  async function sendTaskUpsert(
-    t: Task,
-    board: Board,
-    options?: { skipBoardMetadata?: boolean; nostrTimestamp?: number }
-  ) {
-    if (!isShared(board) || !board.nostr) return;
-    const relays = getBoardRelays(board);
-    const boardId = board.nostr.boardId;
-    const boardKeys = await deriveBoardNostrKeys(boardId);
-    const bTag = boardTag(boardId);
-    const status = t.completed ? "done" : "open";
-    const colTag = (board.kind === "week") ? (t.column === "bounties" ? "bounties" : "day") : (t.columnId || "");
-    const tags: string[][] = [["d", t.id],["b", bTag],["col", String(colTag)],["status", status]];
-    const normalizedBounty = normalizeBounty(t.bounty);
-    const body: any = { title: t.title, note: t.note || "", dueISO: t.dueISO, completedAt: t.completedAt, completedBy: t.completedBy, recurrence: t.recurrence, hiddenUntilISO: t.hiddenUntilISO, createdBy: t.createdBy, order: t.order, streak: t.streak, longestStreak: t.longestStreak, seriesId: t.seriesId };
-    body.dueTimeEnabled = typeof t.dueTimeEnabled === 'boolean' ? t.dueTimeEnabled : null;
-    // Reminders are device-specific and should not be published to shared boards.
-    // Include explicit nulls to signal removals when undefined
-    body.images = (typeof t.images === 'undefined') ? null : t.images;
-    body.documents = (typeof t.documents === 'undefined') ? null : t.documents;
-    body.bounty = (typeof t.bounty === 'undefined') ? null : (normalizedBounty ?? null);
-    body.subtasks = (typeof t.subtasks === 'undefined') ? null : t.subtasks;
-    if (!options?.skipBoardMetadata) {
-      await publishBoardMetadata(board);
-    }
-    const raw = JSON.stringify(body);
-    const content = await encryptToBoard(boardId, raw);
-    const createdAt = await nostrPublish(relays, {
-      kind: 30301,
-      tags,
-      content,
-      created_at: typeof options?.nostrTimestamp === "number" ? options.nostrTimestamp : Math.floor(Date.now() / 1000),
-    }, { sk: boardKeys.sk });
-    if (!nostrIdxRef.current.taskClock.has(bTag)) {
-      nostrIdxRef.current.taskClock.set(bTag, new Map());
-    }
-    nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
-  }
-  const processPendingNostrQueue = useCallback(async () => {
-    if (pendingNostrProcessingRef.current) return;
-    pendingNostrProcessingRef.current = true;
-    try {
-      while (pendingNostrQueueRef.current.length) {
-        const job = pendingNostrQueueRef.current[0];
-        const board = boardsRef.current.find((b) => b.id === job.boardId || b.nostr?.boardId === job.boardId);
-        if (!board || !board.nostr) {
-          removePendingJobById(job.id);
-          continue;
-        }
-        const bTag = job.boardTag || boardTag(board.nostr.boardId);
-        const isStale = (() => {
-          if (!nostrIdxRef.current.taskClock.has(bTag)) return false;
-          const clock = nostrIdxRef.current.taskClock.get(bTag)!;
-          if (job.type === "task") return (clock.get(job.task.id) || 0) > job.nostrTimestamp;
-          if (job.type === "delete") return (clock.get(job.taskId) || 0) > job.nostrTimestamp;
-          if (job.type === "delete-batch") return job.taskIds.some((id) => (clock.get(id) || 0) > job.nostrTimestamp);
-          return false;
-        })();
-        if (isStale) {
-          removePendingJobById(job.id);
-          continue;
-        }
-        try {
-          if (job.type === "task") {
-            await sendTaskUpsert(job.task, board, { ...job.options, nostrTimestamp: job.nostrTimestamp });
-          } else if (job.type === "delete") {
-            const snapshot =
-              job.taskSnapshot ||
-              tasksRef.current.find((t) => t.id === job.taskId && t.boardId === board.id) ||
-              {
-                id: job.taskId,
-                boardId: board.id,
-                title: "Deleted task",
-                dueISO: new Date().toISOString(),
-              } as Task;
-            await sendTaskDeletion(snapshot, board, job.nostrTimestamp);
-          } else if (job.type === "delete-batch") {
-            await sendBatchDeletion(board, job.taskIds, job.nostrTimestamp);
-          }
-          removePendingJobById(job.id);
-        } catch (err) {
-          console.warn("Pending nostr publish failed, will retry", err);
-          schedulePendingProcessing(2500);
-          break;
-        }
-      }
-    } finally {
-      pendingNostrProcessingRef.current = false;
-    }
-  }, [boardsRef, removePendingJobById, schedulePendingProcessing, sendBatchDeletion, sendTaskDeletion, sendTaskUpsert]);
   async function publishTaskDeleted(t: Task) {
     const b = boards.find((x) => x.id === t.boardId);
     if (!b || !isShared(b) || !b.nostr) return;
-    const bTag = boardTag(b.nostr.boardId);
-    setPendingTaskClock(bTag, t.id);
-    enqueuePendingJob({
-      id: crypto.randomUUID(),
-      type: "delete",
-      boardId: b.id,
-      boardTag: bTag,
-      taskId: t.id,
-      taskSnapshot: t,
-      nostrTimestamp: Math.floor(Date.now() / 1000),
-    });
+    const relays = getBoardRelays(b);
+    const boardId = b.nostr.boardId;
+    const boardKeys = await deriveBoardNostrKeys(boardId);
+    const bTag = boardTag(boardId);
+    const pendingKey = `${bTag}::${t.id}`;
+    pendingNostrTasksRef.current.add(pendingKey);
+    try {
+      await publishBoardMetadata(b);
+      const colTag = (b.kind === "week") ? "day" : (t.columnId || "");
+      const tags: string[][] = [["d", t.id],["b", bTag],["col", String(colTag)],["status","deleted"]];
+      const raw = JSON.stringify({
+        title: t.title,
+        priority: t.priority ?? null,
+        note: t.note || "",
+        dueISO: t.dueISO,
+        completedAt: t.completedAt,
+        recurrence: t.recurrence,
+        hiddenUntilISO: t.hiddenUntilISO,
+        streak: t.streak,
+        longestStreak: t.longestStreak,
+        subtasks: t.subtasks,
+        seriesId: t.seriesId,
+        documents: t.documents,
+        inboxItem: t.inboxItem ?? null,
+      });
+      const content = await encryptToBoard(boardId, raw);
+      const createdAt = await nostrPublish(relays, {
+        kind: 30301,
+        tags,
+        content,
+        created_at: Math.floor(Date.now() / 1000),
+      }, { sk: boardKeys.sk });
+      await publishTaskDeletionRequest(boardKeys, relays, t.id);
+      if (!nostrIdxRef.current.taskClock.has(bTag)) {
+        nostrIdxRef.current.taskClock.set(bTag, new Map());
+      }
+      nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
+    } finally {
+      pendingNostrTasksRef.current.delete(pendingKey);
+    }
   }
   async function maybePublishTask(
     t: Task,
@@ -5313,20 +11804,343 @@ export default function App() {
   ) {
     const b = boardOverride || boards.find((x) => x.id === t.boardId);
     if (!b || !isShared(b) || !b.nostr) return;
-    const bTag = boardTag(b.nostr.boardId);
-    setPendingTaskClock(bTag, t.id);
-    enqueuePendingJob({
-      id: crypto.randomUUID(),
-      type: "task",
-      boardId: b.id,
-      boardTag: bTag,
-      task: t,
-      options,
-      nostrTimestamp: Math.floor(Date.now() / 1000),
-    });
+    const relays = getBoardRelays(b);
+    const boardId = b.nostr.boardId;
+    const boardKeys = await deriveBoardNostrKeys(boardId);
+    const bTag = boardTag(boardId);
+    const pendingKey = `${bTag}::${t.id}`;
+    pendingNostrTasksRef.current.add(pendingKey);
+    const status = t.completed ? "done" : "open";
+    const colTag = (b.kind === "week") ? "day" : (t.columnId || "");
+    const tags: string[][] = [["d", t.id],["b", bTag],["col", String(colTag)],["status", status]];
+    const normalizedBounty = normalizeBounty(t.bounty);
+    const body: any = { title: t.title, priority: t.priority ?? null, note: t.note || "", dueISO: t.dueISO, completedAt: t.completedAt, completedBy: t.completedBy, recurrence: t.recurrence, hiddenUntilISO: t.hiddenUntilISO, createdBy: t.createdBy, streak: t.streak, longestStreak: t.longestStreak, seriesId: t.seriesId };
+    body.dueDateEnabled = typeof t.dueDateEnabled === "boolean" ? t.dueDateEnabled : null;
+    body.dueTimeEnabled = typeof t.dueTimeEnabled === 'boolean' ? t.dueTimeEnabled : null;
+    body.dueTimeZone = typeof t.dueTimeZone === "string" ? t.dueTimeZone : null;
+    // Reminders are device-specific and should not be published to shared boards.
+    // Include explicit nulls to signal removals when undefined
+    body.images = (typeof t.images === 'undefined') ? null : t.images;
+    body.documents = (typeof t.documents === 'undefined') ? null : t.documents;
+    body.bounty = (typeof t.bounty === 'undefined') ? null : (normalizedBounty ?? null);
+    body.subtasks = (typeof t.subtasks === 'undefined') ? null : t.subtasks;
+    body.inboxItem = typeof t.inboxItem === "undefined" ? null : t.inboxItem ?? null;
+    try {
+      if (!options?.skipBoardMetadata) {
+        await publishBoardMetadata(b);
+      }
+      const raw = JSON.stringify(body);
+      const content = await encryptToBoard(boardId, raw);
+      const createdAt = await nostrPublish(relays, {
+        kind: 30301,
+        tags,
+        content,
+        created_at: Math.floor(Date.now() / 1000),
+      }, { sk: boardKeys.sk });
+      // Update local task clock so immediate refreshes don't revert state
+      if (!nostrIdxRef.current.taskClock.has(bTag)) {
+        nostrIdxRef.current.taskClock.set(bTag, new Map());
+      }
+      nostrIdxRef.current.taskClock.get(bTag)!.set(t.id, createdAt);
+    } finally {
+      pendingNostrTasksRef.current.delete(pendingKey);
+    }
   }
 
   maybePublishTaskRef.current = maybePublishTask;
+
+  const isDateKey = (value: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const addDaysToDateKey = (dateKey: string, delta: number): string | null => {
+    const parsed = parseDateKey(dateKey);
+    if (!parsed) return null;
+    const base = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
+    if (Number.isNaN(base.getTime())) return null;
+    base.setUTCDate(base.getUTCDate() + delta);
+    return formatDateKeyFromParts(base.getUTCFullYear(), base.getUTCMonth() + 1, base.getUTCDate());
+  };
+  const resolveCalendarEventPublishBoard = (event: CalendarEvent, boardOverride?: Board): Board | null => {
+    const targetId = event.originBoardId ?? event.boardId;
+    if (boardOverride && boardOverride.id === targetId) return boardOverride;
+    return boards.find((x) => x.id === targetId) ?? null;
+  };
+
+  const normalizeInvitePubkeys = (event: CalendarEvent, extraPubkeys?: string[]) => {
+    const normalized: string[] = [];
+    const seen = new Set<string>();
+    (event.participants ?? []).forEach((participant) => {
+      const pubkey = normalizeNostrPubkeyHex(participant.pubkey);
+      if (!pubkey || seen.has(pubkey)) return;
+      seen.add(pubkey);
+      normalized.push(pubkey);
+    });
+    (extraPubkeys ?? []).forEach((candidate) => {
+      const pubkey = normalizeNostrPubkeyHex(candidate);
+      if (!pubkey || seen.has(pubkey)) return;
+      seen.add(pubkey);
+      normalized.push(pubkey);
+    });
+    return normalized;
+  };
+
+  const mergeInviteTokens = (event: CalendarEvent, extraPubkeys?: string[]) => {
+    const eventKey = event.eventKey || generateEventKey();
+    const existing = event.inviteTokens ?? {};
+    const recipients = normalizeInvitePubkeys(event, extraPubkeys);
+    const nextTokens: Record<string, string> = {};
+    recipients.forEach((pubkey) => {
+      nextTokens[pubkey] = existing[pubkey] || generateInviteToken();
+    });
+    const existingKeys = Object.keys(existing);
+    const nextKeys = Object.keys(nextTokens);
+    let changed = eventKey !== event.eventKey || existingKeys.length !== nextKeys.length;
+    if (!changed) {
+      for (const key of nextKeys) {
+        if (existing[key] !== nextTokens[key]) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    return {
+      eventKey,
+      inviteTokens: nextKeys.length ? nextTokens : undefined,
+      changed,
+    };
+  };
+
+  const buildCanonicalCalendarPayload = (event: CalendarEvent, options?: { deleted?: boolean }) => {
+    const eventKey = event.eventKey || generateEventKey();
+    const deleted = !!options?.deleted;
+    const base: any = {
+      v: 1,
+      eventId: event.id,
+      eventKey,
+      ...(deleted ? { deleted: true } : {}),
+    };
+    if (deleted) return base;
+    base.kind = event.kind;
+    base.title = event.title || "Untitled";
+    if (event.summary) base.summary = event.summary;
+    if (event.description) base.description = event.description;
+    if (event.documents?.length) base.documents = event.documents;
+    if (event.image) base.image = event.image;
+    if (event.locations?.length) base.locations = event.locations;
+    if (event.geohash) base.geohash = event.geohash;
+    if (event.participants?.length) base.participants = event.participants;
+    if (event.hashtags?.length) base.hashtags = event.hashtags;
+    if (event.references?.length) base.references = event.references;
+    if (event.inviteTokens && Object.keys(event.inviteTokens).length) base.inviteTokens = event.inviteTokens;
+    if (event.kind === "date") {
+      const startDate = isDateKey(event.startDate) ? event.startDate : isoDatePart(new Date().toISOString());
+      base.startDate = startDate;
+      const normalizedEnd = event.endDate && isDateKey(event.endDate) ? event.endDate : "";
+      if (normalizedEnd && normalizedEnd > startDate) base.endDate = normalizedEnd;
+      return base;
+    }
+    const startMs = Date.parse(event.startISO);
+    if (Number.isNaN(startMs)) return null;
+    base.startISO = new Date(startMs).toISOString();
+    if (event.endISO) {
+      const endMs = Date.parse(event.endISO);
+      if (!Number.isNaN(endMs) && endMs > startMs) base.endISO = new Date(endMs).toISOString();
+    }
+    const startTzid = normalizeTimeZone(event.startTzid) ?? undefined;
+    const endTzid = normalizeTimeZone(event.endTzid) ?? undefined;
+    if (startTzid) base.startTzid = startTzid;
+    if (endTzid) base.endTzid = endTzid;
+    return base;
+  };
+
+  const buildViewCalendarPayload = (event: CalendarEvent, options?: { deleted?: boolean }) => {
+    const deleted = !!options?.deleted;
+    const base: any = {
+      v: 1,
+      eventId: event.id,
+      ...(deleted ? { deleted: true } : {}),
+    };
+    if (deleted) return base;
+    base.kind = event.kind;
+    base.title = event.title || "Untitled";
+    if (event.summary) base.summary = event.summary;
+    if (event.description) base.description = event.description;
+    if (event.documents?.length) base.documents = event.documents;
+    if (event.image) base.image = event.image;
+    if (event.locations?.length) base.locations = event.locations;
+    if (event.geohash) base.geohash = event.geohash;
+    if (event.hashtags?.length) base.hashtags = event.hashtags;
+    if (event.references?.length) base.references = event.references;
+    if (event.kind === "date") {
+      const startDate = isDateKey(event.startDate) ? event.startDate : isoDatePart(new Date().toISOString());
+      base.startDate = startDate;
+      const normalizedEnd = event.endDate && isDateKey(event.endDate) ? event.endDate : "";
+      if (normalizedEnd && normalizedEnd > startDate) base.endDate = normalizedEnd;
+      return base;
+    }
+    const startMs = Date.parse(event.startISO);
+    if (Number.isNaN(startMs)) return null;
+    base.startISO = new Date(startMs).toISOString();
+    if (event.endISO) {
+      const endMs = Date.parse(event.endISO);
+      if (!Number.isNaN(endMs) && endMs > startMs) base.endISO = new Date(endMs).toISOString();
+    }
+    const startTzid = normalizeTimeZone(event.startTzid) ?? undefined;
+    const endTzid = normalizeTimeZone(event.endTzid) ?? undefined;
+    if (startTzid) base.startTzid = startTzid;
+    if (endTzid) base.endTzid = endTzid;
+    return base;
+  };
+
+  async function publishCalendarEventDeleted(event: CalendarEvent) {
+    if (event.readOnly) return;
+    const b = resolveCalendarEventPublishBoard(event);
+    if (!b || !isShared(b) || !b.nostr) return;
+    const relays = getBoardRelays(b);
+    const boardId = b.nostr.boardId;
+    const boardKeys = await deriveBoardNostrKeys(boardId);
+    const bTag = boardTag(boardId);
+    const pendingKey = `${bTag}::${event.id}`;
+    pendingNostrCalendarRef.current.add(pendingKey);
+    try {
+      await publishBoardMetadata(b);
+      const { eventKey, inviteTokens, changed } = mergeInviteTokens(event);
+      const updatedEvent = changed ? { ...event, eventKey, inviteTokens } : event;
+      if (changed) {
+        setCalendarEvents((prev) => prev.map((ev) => (ev.id === event.id ? updatedEvent : ev)));
+      }
+      const canonicalPayload = buildCanonicalCalendarPayload(updatedEvent, { deleted: true });
+      const viewPayload = buildViewCalendarPayload(updatedEvent, { deleted: true });
+      if (!canonicalPayload || !viewPayload) return;
+      const canonicalContent = await encryptCalendarPayloadForBoard(
+        canonicalPayload,
+        boardKeys.skHex,
+        boardKeys.pk,
+      );
+      const canonicalTags: string[][] = [["d", event.id], ["b", bTag]];
+      if (updatedEvent.columnId) canonicalTags.push(["col", updatedEvent.columnId]);
+      if (typeof updatedEvent.order === "number" && Number.isFinite(updatedEvent.order)) {
+        canonicalTags.push(["order", String(updatedEvent.order)]);
+      }
+      const createdAt = await nostrPublish(relays, {
+        kind: TASKIFY_CALENDAR_EVENT_KIND,
+        tags: canonicalTags,
+        content: canonicalContent,
+        created_at: Math.floor(Date.now() / 1000),
+      }, { sk: boardKeys.sk });
+      const canonicalAddr = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, event.id);
+      const viewContent = await encryptCalendarPayloadWithEventKey(viewPayload, eventKey);
+      await nostrPublish(relays, {
+        kind: TASKIFY_CALENDAR_VIEW_KIND,
+        tags: [["d", event.id], ["a", canonicalAddr]],
+        content: viewContent,
+        created_at: Math.floor(Date.now() / 1000),
+      }, { sk: boardKeys.sk });
+      if (!nostrIdxRef.current.calendarClock.has(bTag)) {
+        nostrIdxRef.current.calendarClock.set(bTag, new Map());
+      }
+      nostrIdxRef.current.calendarClock.get(bTag)!.set(event.id, createdAt);
+    } finally {
+      pendingNostrCalendarRef.current.delete(pendingKey);
+    }
+  }
+  publishCalendarEventDeletedRef.current = publishCalendarEventDeleted;
+
+  async function maybePublishCalendarEvent(
+    event: CalendarEvent,
+    boardOverride?: Board,
+    options?: { skipBoardMetadata?: boolean },
+  ) {
+    if (event.readOnly) return;
+    const b = resolveCalendarEventPublishBoard(event, boardOverride);
+    if (!b || !isShared(b) || !b.nostr) return;
+    const relays = getBoardRelays(b);
+    const boardId = b.nostr.boardId;
+    const boardKeys = await deriveBoardNostrKeys(boardId);
+    const bTag = boardTag(boardId);
+    const pendingKey = `${bTag}::${event.id}`;
+    pendingNostrCalendarRef.current.add(pendingKey);
+    try {
+      if (!options?.skipBoardMetadata) {
+        await publishBoardMetadata(b);
+      }
+
+      const mergedSecrets = mergeInviteTokens(event);
+      const updatedEvent = mergedSecrets.changed ? { ...event, eventKey: mergedSecrets.eventKey, inviteTokens: mergedSecrets.inviteTokens } : event;
+      if (mergedSecrets.changed) {
+        setCalendarEvents((prev) => prev.map((ev) => (ev.id === event.id ? updatedEvent : ev)));
+      }
+
+      const canonicalPayload = buildCanonicalCalendarPayload(updatedEvent);
+      if (!canonicalPayload) return;
+      const viewPayload = buildViewCalendarPayload(updatedEvent);
+      if (!viewPayload) return;
+      const canonicalContent = await encryptCalendarPayloadForBoard(
+        canonicalPayload,
+        boardKeys.skHex,
+        boardKeys.pk,
+      );
+      const colTag = b.kind === "week" ? "day" : (updatedEvent.columnId || "");
+      const canonicalTags: string[][] = [["d", updatedEvent.id], ["b", bTag]];
+      if (colTag) canonicalTags.push(["col", colTag]);
+      if (typeof updatedEvent.order === "number" && Number.isFinite(updatedEvent.order)) {
+        canonicalTags.push(["order", String(updatedEvent.order)]);
+      }
+      const createdAt = await nostrPublish(relays, {
+        kind: TASKIFY_CALENDAR_EVENT_KIND,
+        tags: canonicalTags,
+        content: canonicalContent,
+        created_at: Math.floor(Date.now() / 1000),
+      }, { sk: boardKeys.sk });
+      const canonicalAddr = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, updatedEvent.id);
+      const viewContent = await encryptCalendarPayloadWithEventKey(viewPayload, mergedSecrets.eventKey);
+      await nostrPublish(relays, {
+        kind: TASKIFY_CALENDAR_VIEW_KIND,
+        tags: [["d", updatedEvent.id], ["a", canonicalAddr]],
+        content: viewContent,
+        created_at: Math.floor(Date.now() / 1000),
+      }, { sk: boardKeys.sk });
+      if (!nostrIdxRef.current.calendarClock.has(bTag)) {
+        nostrIdxRef.current.calendarClock.set(bTag, new Map());
+      }
+      nostrIdxRef.current.calendarClock.get(bTag)!.set(updatedEvent.id, createdAt);
+    } finally {
+      pendingNostrCalendarRef.current.delete(pendingKey);
+    }
+  }
+
+  maybePublishCalendarEventRef.current = maybePublishCalendarEvent;
+
+  const enableBoardSharing = useCallback(
+    (boardId: string, relayCsv?: string) => {
+      const r = (relayCsv || "").split(",").map((s) => s.trim()).filter(Boolean);
+      const relays = r.length ? r : defaultRelays;
+      setBoards((prev) =>
+        prev.map((b) => {
+          if (b.id !== boardId) return b;
+          const nostrId =
+            b.nostr?.boardId ||
+            (/^[0-9a-f-]{8}-[0-9a-f-]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(b.id)
+              ? b.id
+              : crypto.randomUUID());
+          const nb: Board = { ...b, nostr: { boardId: nostrId, relays } } as Board;
+          setTimeout(() => {
+            publishBoardMetadataRef.current?.(nb).catch(() => {});
+            tasks
+              .filter((t) => t.boardId === nb.id)
+              .forEach((t) => {
+                maybePublishTaskRef.current?.(t, nb, { skipBoardMetadata: true }).catch(() => {});
+              });
+            calendarEvents
+              .filter((ev) => ev.boardId === nb.id && !isExternalCalendarEvent(ev))
+              .forEach((ev) => {
+                maybePublishCalendarEventRef.current?.(ev, nb, { skipBoardMetadata: true }).catch(() => {});
+              });
+          }, 0);
+          return nb;
+        }),
+      );
+    },
+    [calendarEvents, defaultRelays, setBoards, tasks],
+  );
 
   function regenerateBoardId(id: string) {
     let updated: Board | null = null;
@@ -5342,9 +12156,167 @@ export default function App() {
         tasks
           .filter(t => t.boardId === updated!.id)
           .forEach(t => { maybePublishTask(t, updated!, { skipBoardMetadata: true }).catch(() => {}); });
+        calendarEvents
+          .filter((ev) => ev.boardId === updated!.id && !isExternalCalendarEvent(ev))
+          .forEach((ev) => { maybePublishCalendarEvent(ev, updated!, { skipBoardMetadata: true }).catch(() => {}); });
       }, 0);
     }
   }
+  const createTemplateShare = useCallback(
+    async (board: Board) => {
+      if (shareTemplateBusy) return;
+      const targetId = board.id;
+      setShareTemplateBusy(true);
+      setShareTemplateStatus(null);
+      try {
+        const relayList = normalizeRelayList(
+          board.nostr?.relays?.length
+            ? board.nostr.relays
+            : defaultRelays.length
+              ? defaultRelays
+              : Array.from(DEFAULT_NOSTR_RELAYS),
+        );
+        if (!relayList.length) {
+          throw new Error("Add at least one relay to share.");
+        }
+        const templateId = crypto.randomUUID();
+        const templateBoard: Board = { ...board, nostr: { boardId: templateId, relays: relayList } } as Board;
+        await publishBoardMetadataSnapshotRef.current?.(board, templateId, relayList);
+        const boardTasks = tasks.filter((t) => t.boardId === board.id);
+        const boardEvents = calendarEvents.filter((ev) => ev.boardId === board.id && !isExternalCalendarEvent(ev));
+        let taskError = false;
+        for (const task of boardTasks) {
+          try {
+            await maybePublishTaskRef.current?.(task, templateBoard, { skipBoardMetadata: true });
+          } catch (err) {
+            taskError = true;
+            console.warn("Template task publish failed", err);
+          }
+        }
+        for (const calendarEvent of boardEvents) {
+          try {
+            await maybePublishCalendarEventRef.current?.(calendarEvent, templateBoard, { skipBoardMetadata: true });
+          } catch (err) {
+            taskError = true;
+            console.warn("Template calendar event publish failed", err);
+          }
+        }
+        if (!shareBoardModalOpenRef.current || shareBoardTargetIdRef.current !== targetId) return;
+        setShareTemplateShare({ id: templateId, relays: relayList, boardId: targetId });
+        if (taskError) {
+          setShareTemplateStatus("Template created, but some tasks failed to publish.");
+        }
+      } catch (err: any) {
+        if (shareBoardModalOpenRef.current && shareBoardTargetIdRef.current === targetId) {
+          setShareTemplateStatus(err?.message || "Unable to create template share.");
+        }
+      } finally {
+        if (shareBoardModalOpenRef.current && shareBoardTargetIdRef.current === targetId) {
+          setShareTemplateBusy(false);
+        }
+      }
+    },
+    [
+      calendarEvents,
+      defaultRelays,
+      normalizeRelayList,
+      shareTemplateBusy,
+      tasks,
+    ],
+  );
+  const handleShareBoardToContact = useCallback(
+    async (contact: Contact) => {
+      if (!shareBoardTarget) {
+        setShareContactStatus("Select a board to share first.");
+        return;
+      }
+      const shareId =
+        shareBoardMode === "template"
+          ? shareTemplateShare?.id
+          : shareBoardTarget.nostr?.boardId;
+      if (!shareId) {
+        setShareContactStatus(
+          shareBoardMode === "template" ? "Generate a template share first." : "Enable sharing first.",
+        );
+        return;
+      }
+      const recipient = normalizeNostrPubkey(contact.npub);
+      if (!recipient) {
+        setShareContactStatus("Contact is missing a valid npub.");
+        return;
+      }
+      const relayList = normalizeRelayList(
+        shareBoardMode === "template"
+          ? shareTemplateShare?.relays
+          : shareBoardTarget.nostr?.relays?.length
+            ? shareBoardTarget.nostr.relays
+            : defaultRelays.length
+              ? defaultRelays
+              : Array.from(DEFAULT_NOSTR_RELAYS),
+      );
+      if (!relayList.length) {
+        setShareContactStatus("No relays configured for sharing.");
+        return;
+      }
+      let senderNpub: string | null = null;
+      try {
+        if (nostrPK) {
+          senderNpub = typeof (nip19 as any)?.npubEncode === "function" ? (nip19 as any).npubEncode(hexToBytes(nostrPK)) : null;
+        }
+      } catch {
+        senderNpub = null;
+      }
+      setShareContactBusy(true);
+      setShareContactStatus(null);
+      try {
+        const envelope = buildBoardShareEnvelope(
+          shareId,
+          shareBoardTarget.name,
+          relayList,
+          senderNpub ? { npub: senderNpub } : undefined,
+        );
+        await sendShareMessage(envelope, recipient, nostrSkHex, relayList);
+        setShareContactPickerOpen(false);
+        showToast(`Board sent to ${contactPrimaryName(contact)}`);
+      } catch (err: any) {
+        setShareContactStatus(err?.message || "Unable to share board.");
+      } finally {
+        setShareContactBusy(false);
+      }
+    },
+    [
+      defaultRelays,
+      normalizeRelayList,
+      nostrPK,
+      nostrSkHex,
+      shareBoardMode,
+      shareBoardTarget,
+      shareTemplateShare,
+      showToast,
+    ],
+  );
+  useEffect(() => {
+    if (!shareBoardModalOpen) return;
+    if (shareBoardMode !== "template") return;
+    if (!shareBoardTarget?.nostr?.boardId) return;
+    if (shareTemplateShare?.boardId === shareBoardTarget.id) return;
+    if (shareTemplateBusy) return;
+    void createTemplateShare(shareBoardTarget);
+  }, [
+    createTemplateShare,
+    shareBoardModalOpen,
+    shareBoardMode,
+    shareBoardTarget,
+    shareTemplateBusy,
+    shareTemplateShare,
+  ]);
+  useEffect(() => {
+    if (!shareBoardModalOpen || !shareBoardTargetId) return;
+    if (shareTemplateShare && shareTemplateShare.boardId !== shareBoardTargetId) {
+      setShareTemplateShare(null);
+      setShareTemplateStatus(null);
+    }
+  }, [shareBoardModalOpen, shareBoardTargetId, shareTemplateShare]);
   const applyBoardEvent = useCallback(async (ev: NostrEvent) => {
     const d = tagValue(ev, "d");
     if (!d) return;
@@ -5519,7 +12491,7 @@ export default function App() {
       working[targetIndex] = updatedBoard;
       return working;
     });
-  }, [setBoards, tagValue, defaultRelays]);
+  }, [setBoards, tagValue, defaultRelays, ensureMigrationState]);
   const applyTaskEvent = useCallback(async (ev: NostrEvent) => {
     const bTag = tagValue(ev, "b");
     const taskId = tagValue(ev, "d");
@@ -5543,12 +12515,10 @@ export default function App() {
     if (!nostrIdxRef.current.taskClock.has(bTag)) nostrIdxRef.current.taskClock.set(bTag, new Map());
     const m = nostrIdxRef.current.taskClock.get(bTag)!;
     const last = m.get(taskId) || 0;
-    const pendingTs = pendingTimestampForTask(bTag, taskId);
-    if (pendingTs && ev.created_at <= pendingTs) return;
+    const pendingKey = `${bTag}::${taskId}`;
+    const isPending = pendingNostrTasksRef.current.has(pendingKey);
     if (ev.created_at < last) return;
-    if (pendingTs && ev.created_at > pendingTs) {
-      dropStalePendingForTask(bTag, taskId, ev.created_at);
-    }
+    if (ev.created_at === last && isPending) return;
     // Accept equal timestamps so rapid consecutive updates still apply
     m.set(taskId, ev.created_at);
 
@@ -5561,15 +12531,30 @@ export default function App() {
     }
     const status = tagValue(ev, "status");
     const col = tagValue(ev, "col");
+    const eventCreatedAt = typeof ev.created_at === "number" ? ev.created_at * 1000 : undefined;
     const hasDueTimeField = Object.prototype.hasOwnProperty.call(payload, 'dueTimeEnabled');
     const incomingDueTime = hasDueTimeField
       ? (payload.dueTimeEnabled === null ? undefined : typeof payload.dueTimeEnabled === 'boolean' ? payload.dueTimeEnabled : undefined)
       : undefined;
+    const hasDueTimeZoneField = Object.prototype.hasOwnProperty.call(payload, 'dueTimeZone');
+    const incomingDueTimeZone = hasDueTimeZoneField
+      ? (typeof payload.dueTimeZone === "string" ? normalizeTimeZone(payload.dueTimeZone) ?? undefined : undefined)
+      : undefined;
+    const hasDueDateField = Object.prototype.hasOwnProperty.call(payload, 'dueDateEnabled');
+    const incomingDueDateEnabled = hasDueDateField
+      ? (payload.dueDateEnabled === null ? undefined : typeof payload.dueDateEnabled === 'boolean' ? payload.dueDateEnabled : undefined)
+      : undefined;
+    const hasPriorityField = Object.prototype.hasOwnProperty.call(payload, 'priority');
+    const incomingPriority = hasPriorityField
+      ? (payload.priority === null ? undefined : normalizeTaskPriority(payload.priority))
+      : undefined;
+    const incomingCreatedAt = normalizeTaskCreatedAt(payload.createdAt) ?? eventCreatedAt;
     // Reminders remain device-local, so ignore any reminder payloads from shared updates.
       const base: Task = {
         id: taskId,
         boardId: lb.id,
         createdBy: payload.createdBy,
+        createdAt: incomingCreatedAt,
         title: payload.title || "Untitled",
         note: payload.note || "",
       dueISO: payload.dueISO || isoForToday(),
@@ -5578,19 +12563,27 @@ export default function App() {
       completedBy: payload.completedBy,
       recurrence: payload.recurrence,
       hiddenUntilISO: payload.hiddenUntilISO,
-      order: typeof payload.order === 'number' ? payload.order : undefined,
       streak: typeof payload.streak === 'number' ? payload.streak : undefined,
       longestStreak: typeof payload.longestStreak === 'number' ? payload.longestStreak : undefined,
       seriesId: payload.seriesId,
       subtasks: Array.isArray(payload.subtasks) ? payload.subtasks : undefined,
     };
+    if (hasPriorityField) base.priority = incomingPriority;
+    if (hasDueDateField) base.dueDateEnabled = incomingDueDateEnabled;
     if (hasDueTimeField) base.dueTimeEnabled = incomingDueTime;
-    if (lb.kind === "week") base.column = col === "bounties" ? "bounties" : "day";
+    if (hasDueTimeZoneField) base.dueTimeZone = incomingDueTimeZone;
+    if (lb.kind === "week") {
+      base.column = "day";
+      if (col === "bounties") {
+        base.bountyLists = [PINNED_BOUNTY_LIST_KEY];
+      }
+    }
     else if (lb.kind === "lists") base.columnId = col || (lb.columns[0]?.id || "");
     setTasks(prev => {
       const idx = prev.findIndex(x => x.id === taskId && x.boardId === lb.id);
       if (status === "deleted") {
-        return idx >= 0 ? prev.filter((_,i)=>i!==idx) : prev;
+        if (idx < 0) return prev;
+        return dedupeRecurringInstances(prev.filter((_, i) => i !== idx));
       }
       // Improved bounty merge with clocks and auth; incoming may be null (explicit removal)
       const mergeBounty = (oldB?: Task["bounty"], incoming?: Task["bounty"] | null) => {
@@ -5654,7 +12647,14 @@ export default function App() {
             mergedDocuments = normalizedDocs ? normalizedDocs.map(ensureDocumentPreview) : undefined;
           }
         }
-        const newOrder = typeof base.order === 'number' ? base.order : current.order;
+        const newOrder =
+          typeof current.order === "number"
+            ? current.order
+            : nextOrderForBoard(base.boardId, prev, settings.newTaskPosition);
+        const newCreatedAt =
+          typeof current.createdAt === "number"
+            ? current.createdAt
+            : base.createdAt ?? Date.now();
         const incomingStreak: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'streak') ? payload.streak : undefined;
         const newStreak = incomingStreak === undefined ? current.streak : incomingStreak === null ? undefined : incomingStreak;
         const incomingLongest: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'longestStreak') ? payload.longestStreak : undefined;
@@ -5665,8 +12665,19 @@ export default function App() {
             : incomingLongest;
         const incomingSubs: Subtask[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'subtasks') ? payload.subtasks : undefined;
         const mergedSubs = incomingSubs === undefined ? current.subtasks : incomingSubs === null ? undefined : incomingSubs;
-        copy[idx] = { ...current, ...base, order: newOrder, images: mergedImages, documents: mergedDocuments, bounty: mergeBounty(current.bounty, incomingB as any), streak: newStreak, longestStreak: newLongest, subtasks: mergedSubs };
-        return copy;
+        copy[idx] = {
+          ...current,
+          ...base,
+          order: newOrder,
+          createdAt: newCreatedAt,
+          images: mergedImages,
+          documents: mergedDocuments,
+          bounty: mergeBounty(current.bounty, incomingB as any),
+          streak: newStreak,
+          longestStreak: newLongest,
+          subtasks: mergedSubs,
+        };
+        return dedupeRecurringInstances(copy);
       } else {
         const incomingB: Task["bounty"] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'bounty') ? payload.bounty : undefined;
         const incomingImgs: string[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'images') ? payload.images : undefined;
@@ -5687,12 +12698,26 @@ export default function App() {
         const longest = incomingLongest === null ? undefined : typeof incomingLongest === 'number' ? incomingLongest : undefined;
         const incomingSubs: Subtask[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'subtasks') ? payload.subtasks : undefined;
         const subs = incomingSubs === null ? undefined : Array.isArray(incomingSubs) ? incomingSubs : undefined;
-        const newOrder = typeof base.order === 'number' ? base.order : 0;
+        const newOrder = nextOrderForBoard(base.boardId, prev, settings.newTaskPosition);
+        const newCreatedAt = base.createdAt ?? Date.now();
         const normalizedIncoming = incomingB === null ? undefined : normalizeBounty(incomingB);
-        return [...prev, { ...base, order: newOrder, images: imgs, documents: docs, bounty: normalizedIncoming, streak: st, longestStreak: longest, subtasks: subs }];
+        return dedupeRecurringInstances([
+          ...prev,
+          {
+            ...base,
+            order: newOrder,
+            createdAt: newCreatedAt,
+            images: imgs,
+            documents: docs,
+            bounty: normalizedIncoming,
+            streak: st,
+            longestStreak: longest,
+            subtasks: subs,
+          },
+        ]);
       }
     });
-  }, [dropStalePendingForTask, ensureMigrationState, pendingTimestampForTask, setTasks, tagValue]);
+  }, [setTasks, settings.newTaskPosition, tagValue, ensureMigrationState]);
 
   const maybeMigrateBoardToDedicatedKey = useCallback(async (bTag: string) => {
     const state = ensureMigrationState(bTag);
@@ -5701,17 +12726,17 @@ export default function App() {
     if (!board || !board.nostr) return;
     state.migrationAttempted = true;
     try {
-      await publishBoardMetadata(board, { force: true });
+      await publishBoardMetadataRef.current?.(board);
       const boardTasks = tasksRef.current.filter((t) => t.boardId === board.id);
       for (const task of boardTasks) {
-        await maybePublishTask(task, board, { skipBoardMetadata: true });
+        await maybePublishTaskRef.current?.(task, board, { skipBoardMetadata: true });
       }
       state.dedicatedSeen = true;
     } catch (err) {
       state.migrationAttempted = false;
       console.warn("Failed to migrate board to dedicated nostr key", err);
     }
-  }, [ensureMigrationState, publishBoardMetadata, maybePublishTask]);
+  }, [ensureMigrationState]);
   const migrateBoardRef = useRef(maybeMigrateBoardToDedicatedKey);
   useEffect(() => { migrateBoardRef.current = maybeMigrateBoardToDedicatedKey; }, [maybeMigrateBoardToDedicatedKey]);
 
@@ -5770,18 +12795,60 @@ export default function App() {
     registration: ServiceWorkerRegistration,
     applicationServerKey: Uint8Array,
   ): Promise<PushSubscription> {
+    const subscribe = () =>
+      withTimeout(
+        registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey,
+        }),
+        PUSH_OPERATION_TIMEOUT_MS,
+        'Timed out while creating a push subscription.',
+      );
     try {
-      return await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey,
-      });
+      return await subscribe();
     } catch (err) {
       if (!isRecoverablePushError(err)) throw err;
       await purgeExistingPushSubscriptions();
-      return await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey,
-      });
+      return await subscribe();
+    }
+  }
+
+  async function resolvePushServiceWorkerRegistration(): Promise<ServiceWorkerRegistration> {
+    if (!('serviceWorker' in navigator)) {
+      throw new Error('Push notifications are not supported on this device.');
+    }
+
+    let registration: ServiceWorkerRegistration | null | undefined;
+    if (typeof navigator.serviceWorker.getRegistration === 'function') {
+      try {
+        registration = await withTimeout(
+          navigator.serviceWorker.getRegistration(),
+          PUSH_OPERATION_TIMEOUT_MS,
+          'Timed out while checking the service worker registration.',
+        );
+      } catch {}
+    }
+
+    if (!registration && typeof navigator.serviceWorker.register === 'function') {
+      try {
+        registration = await withTimeout(
+          navigator.serviceWorker.register('/sw.js'),
+          PUSH_OPERATION_TIMEOUT_MS,
+          'Timed out while registering the service worker.',
+        );
+      } catch {}
+    }
+
+    if (registration?.active) return registration;
+
+    try {
+      return await withTimeout(
+        navigator.serviceWorker.ready,
+        PUSH_OPERATION_TIMEOUT_MS,
+        'Timed out waiting for the service worker to become ready.',
+      );
+    } catch {
+      throw new Error('Service worker is not ready yet. Reload Taskify and try again.');
     }
   }
 
@@ -5808,9 +12875,13 @@ export default function App() {
         throw new Error('Notifications permission was not granted.');
       }
 
-      const registration = await navigator.serviceWorker.ready;
+      const registration = await resolvePushServiceWorkerRegistration();
       const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey.trim());
-      let subscription = await registration.pushManager.getSubscription();
+      let subscription = await withTimeout(
+        registration.pushManager.getSubscription(),
+        PUSH_OPERATION_TIMEOUT_MS,
+        'Timed out while checking the existing push subscription.',
+      );
       if (!subscription) {
         subscription = await subscribeWithRecovery(registration, applicationServerKey);
       }
@@ -5819,15 +12890,19 @@ export default function App() {
       const subscriptionJson = subscription.toJSON();
       const normalizedPlatform: PushPlatform = platform === 'android' ? 'android' : 'ios';
 
-      const res = await fetch(`${workerBaseUrl}/api/devices`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceId,
-          platform: normalizedPlatform,
-          subscription: subscriptionJson,
+      const res = await withTimeout(
+        fetch(`${workerBaseUrl}/api/devices`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deviceId,
+            platform: normalizedPlatform,
+            subscription: subscriptionJson,
+          }),
         }),
-      });
+        PUSH_OPERATION_TIMEOUT_MS,
+        'Timed out while registering this device for notifications.',
+      );
       if (!res.ok) {
         throw new Error(`Failed to register device (${res.status})`);
       }
@@ -5848,22 +12923,8 @@ export default function App() {
         permission,
       };
 
-      const reminderTasks = tasks.filter(taskHasReminders);
-      const remindersPayloadString = JSON.stringify(
-        reminderTasks
-          .map((task) => ({
-            taskId: task.id,
-            boardId: task.boardId,
-            dueISO: task.dueISO,
-            title: task.title,
-            minutesBefore: (task.reminders ?? []).map(reminderPresetToMinutes).sort((a, b) => a - b),
-          }))
-          .sort((a, b) => a.taskId.localeCompare(b.taskId)),
-      );
-      reminderPayloadRef.current = remindersPayloadString;
-      await syncRemindersToWorker(workerBaseUrl, updated, reminderTasks);
-
       setSettings({ pushNotifications: updated });
+      reminderPayloadRef.current = null;
     } catch (err) {
       const message = normalizePushError(err);
       setPushError(message);
@@ -5886,12 +12947,20 @@ export default function App() {
           let registration: ServiceWorkerRegistration | null | undefined = undefined;
           if (typeof navigator.serviceWorker.getRegistration === 'function') {
             try {
-              registration = await navigator.serviceWorker.getRegistration();
+              registration = await withTimeout(
+                navigator.serviceWorker.getRegistration(),
+                PUSH_OPERATION_TIMEOUT_MS,
+                'Timed out while checking the service worker registration.',
+              );
             } catch {}
           }
           if (!registration) {
             try {
-              registration = await navigator.serviceWorker.ready;
+              registration = await withTimeout(
+                navigator.serviceWorker.ready,
+                PUSH_OPERATION_TIMEOUT_MS,
+                'Timed out waiting for the service worker to become ready.',
+              );
             } catch {}
           }
           if (registration) {
@@ -5905,9 +12974,13 @@ export default function App() {
 
       if (workerBaseUrl && settings.pushNotifications.deviceId) {
         try {
-          await fetch(`${workerBaseUrl}/api/devices/${settings.pushNotifications.deviceId}`, {
-            method: 'DELETE',
-          });
+          await withTimeout(
+            fetch(`${workerBaseUrl}/api/devices/${settings.pushNotifications.deviceId}`, {
+              method: 'DELETE',
+            }),
+            PUSH_OPERATION_TIMEOUT_MS,
+            'Timed out while unregistering this device from notifications.',
+          );
         } catch {}
       }
 
@@ -5937,116 +13010,346 @@ export default function App() {
   }
 
   function sameSeries(a: Task, b: Task): boolean {
-    if (a.seriesId && b.seriesId) return a.seriesId === b.seriesId;
-    return (
-      a.boardId === b.boardId &&
-      a.title === b.title &&
-      a.note === b.note &&
-      a.recurrence && b.recurrence &&
-      JSON.stringify(a.recurrence) === JSON.stringify(b.recurrence)
-    );
+    return tasksInSameSeries(a, b);
   }
 
   function ensureWeekRecurrences(arr: Task[], sources?: Task[]): Task[] {
-    const sow = startOfWeek(new Date(), settings.weekStart).getTime();
-    const out = [...arr];
-    let changed = false;
-    const src = sources ?? arr;
-    for (const t of src) {
-      if (!t.recurrence) continue;
-      const seriesId = t.seriesId || t.id;
-      if (!t.seriesId) {
-        const idx = out.findIndex(x => x.id === t.id);
-        if (idx >= 0 && out[idx].seriesId !== seriesId) {
-          out[idx] = { ...out[idx], seriesId };
+    return ensureWeekRecurrencesForCurrentWeek({
+      tasks: arr,
+      sources,
+      weekStart: settings.weekStart,
+      newTaskPosition: settings.newTaskPosition,
+      dedupeRecurringInstances,
+      isFrequentRecurrence,
+      nextOccurrence,
+      startOfWeek,
+      recurringInstanceId,
+      isoDatePart,
+      taskDateKey,
+      nextOrderForBoard,
+      maybePublishTask,
+    });
+  }
+  const ensureWeekRecurrencesRef = useRef(ensureWeekRecurrences);
+  ensureWeekRecurrencesRef.current = ensureWeekRecurrences;
+
+  const ensureCalendarRecurrenceWindow = useCallback(() => {
+    const toPublish: CalendarEvent[] = [];
+    const toDelete: CalendarEvent[] = [];
+
+    setCalendarEvents((prev) => {
+      let changed = false;
+      const next = prev.slice();
+      const existingIds = new Set(next.map((event) => event.id));
+      const seriesMap = new Map<string, { seed: CalendarEvent; events: CalendarEvent[] }>();
+
+      for (let i = 0; i < next.length; i++) {
+        let ev = next[i];
+        if (!ev.recurrence || ev.recurrence.type === "none") continue;
+        const seriesId = ev.seriesId || ev.id;
+        if (!ev.seriesId) {
+          ev = { ...ev, seriesId };
+          next[i] = ev;
           changed = true;
         }
+        const group = seriesMap.get(seriesId) ?? { seed: ev, events: [] };
+        group.events.push(ev);
+        if (ev.id === seriesId) {
+          group.seed = ev;
+        }
+        seriesMap.set(seriesId, group);
       }
-      let nextISO = nextOccurrence(t.dueISO, t.recurrence, !!t.dueTimeEnabled);
-      while (nextISO) {
-        const nextDate = new Date(nextISO);
-        const nsow = startOfWeek(nextDate, settings.weekStart).getTime();
-        if (nsow > sow) break;
-        if (nsow === sow) {
-          const exists = out.some(x =>
-            sameSeries(x, { ...t, seriesId }) &&
-            startOfDay(new Date(x.dueISO)).getTime() === startOfDay(nextDate).getTime()
-          );
-          if (!exists) {
-            const clone: Task = {
-              ...t,
-              id: crypto.randomUUID(),
-              seriesId,
-              completed: false,
-              completedAt: undefined,
-              completedBy: undefined,
-              dueISO: nextISO,
-              hiddenUntilISO: undefined,
-              order: nextOrderForBoard(t.boardId, out, settings.newTaskPosition),
-              subtasks: t.subtasks?.map(s => ({ ...s, completed: false })),
-              dueTimeEnabled: typeof t.dueTimeEnabled === 'boolean' ? t.dueTimeEnabled : undefined,
-              reminders: Array.isArray(t.reminders) ? [...t.reminders] : undefined,
-            };
-            maybePublishTask(clone).catch(() => {});
-            out.push(clone);
+
+      const nowMs = Date.now();
+
+      for (const [seriesId, group] of seriesMap) {
+        const seed = group.seed;
+        const rule = seed.recurrence;
+        if (!rule || rule.type === "none") continue;
+        if (seed.readOnly) continue;
+        const limit = calendarRecurrenceLimit(rule);
+        if (limit <= 0) continue;
+
+        const boardKind = boards.find((b) => b.id === seed.boardId)?.kind ?? "week";
+        const timeZone = seed.kind === "time" ? normalizeTimeZone(seed.startTzid) ?? undefined : "UTC";
+        const baseStartISO = calendarEventStartISOForRecurrence(seed);
+        if (!baseStartISO) continue;
+
+        const durationMs = (() => {
+          if (seed.kind !== "time") return 0;
+          if (!seed.endISO) return 0;
+          const start = Date.parse(seed.startISO);
+          const end = Date.parse(seed.endISO);
+          if (Number.isNaN(start) || Number.isNaN(end)) return 0;
+          return Math.max(0, end - start);
+        })();
+
+        const durationDays = (() => {
+          if (seed.kind !== "date") return 1;
+          const endDate = seed.endDate && isDateKey(seed.endDate) ? seed.endDate : seed.startDate;
+          const startParts = parseDateKey(seed.startDate);
+          const endParts = parseDateKey(endDate);
+          if (!startParts || !endParts) return 1;
+          const startUtc = Date.UTC(startParts.year, startParts.month - 1, startParts.day);
+          const endUtc = Date.UTC(endParts.year, endParts.month - 1, endParts.day);
+          if (!Number.isFinite(startUtc) || !Number.isFinite(endUtc) || endUtc < startUtc) return 1;
+          return Math.round((endUtc - startUtc) / MS_PER_DAY) + 1;
+        })();
+
+        let seriesEvents = group.events
+          .filter((event) => existingIds.has(event.id))
+          .map((event) => {
+            const startISO = calendarEventStartISOForRecurrence(event);
+            const startMs = startISO ? Date.parse(startISO) : NaN;
+            const endMs = calendarEventEndMs(event);
+            return { event, startISO, startMs, endMs };
+          })
+          .filter((item) => item.startISO && Number.isFinite(item.startMs) && item.endMs !== null);
+
+        if (!seriesEvents.length) continue;
+
+        const sortedFuture = seriesEvents
+          .filter((item) => (item.endMs ?? 0) >= nowMs)
+          .sort((a, b) => a.startMs - b.startMs);
+
+        let futureCount = sortedFuture.length;
+
+        if (futureCount > limit) {
+          const extras = sortedFuture.slice(limit);
+          for (const extra of extras) {
+            const idx = next.findIndex((event) => event.id === extra.event.id);
+            if (idx < 0) continue;
+            toDelete.push(next[idx]);
+            next.splice(idx, 1);
+            existingIds.delete(extra.event.id);
             changed = true;
           }
+          futureCount = Math.min(futureCount, limit);
+          seriesEvents = seriesEvents.filter((item) => existingIds.has(item.event.id));
         }
-        nextISO = nextOccurrence(nextISO, t.recurrence, !!t.dueTimeEnabled);
+
+        if (futureCount >= limit) continue;
+
+        const latest = seriesEvents.reduce((acc, item) => (item.startMs > acc.startMs ? item : acc), seriesEvents[0]);
+        let cursorISO = latest.startISO || baseStartISO;
+        let guard = 0;
+        const maxGuard = Math.max(32, limit * 24);
+
+        while (futureCount < limit && guard++ < maxGuard) {
+          const nextISO = nextOccurrence(cursorISO, rule, seed.kind === "time", timeZone);
+          if (!nextISO) break;
+          cursorISO = nextISO;
+          const id = calendarRecurrenceInstanceId(seriesId, nextISO, rule, timeZone);
+          if (existingIds.has(id)) {
+            const existing = next.find((event) => event.id === id);
+            if (existing) {
+              const endMs = calendarEventEndMs(existing);
+              if (endMs != null && endMs >= nowMs) futureCount += 1;
+            }
+            continue;
+          }
+
+          const nextOrder = nextOrderForCalendarBoard(seed.boardId, next, settings.newTaskPosition);
+          const instanceBase: CalendarEventBase = {
+            ...(seed as any),
+            id,
+            order: nextOrder,
+            seriesId,
+            recurrence: rule,
+          };
+
+          const instance: CalendarEvent = seed.kind === "time"
+            ? {
+                ...instanceBase,
+                kind: "time",
+                startISO: nextISO,
+                ...(durationMs ? { endISO: new Date(Date.parse(nextISO) + durationMs).toISOString() } : {}),
+                ...(normalizeTimeZone(seed.startTzid) ? { startTzid: seed.startTzid } : {}),
+                ...(normalizeTimeZone(seed.endTzid) ? { endTzid: seed.endTzid } : {}),
+              }
+            : (() => {
+                const startDate = isoDatePart(nextISO, "UTC");
+                const endDate = durationDays > 1 ? addDaysToDateKey(startDate, durationDays - 1) : null;
+                return {
+                  ...instanceBase,
+                  kind: "date",
+                  startDate,
+                  ...(endDate ? { endDate } : {}),
+                } as CalendarEvent;
+              })();
+
+          const instanceEndMs = calendarEventEndMs(instance);
+          if (instanceEndMs != null && instanceEndMs < nowMs) {
+            continue;
+          }
+
+          const normalized = applyHiddenForCalendarEvent(instance, settings.weekStart, boardKind);
+          next.push(normalized);
+          existingIds.add(id);
+          toPublish.push(normalized);
+          changed = true;
+
+          if (instanceEndMs != null && instanceEndMs >= nowMs) {
+            futureCount += 1;
+          }
+        }
       }
+
+      return changed ? next : prev;
+    });
+
+    if (toPublish.length) {
+      toPublish.forEach((event) => {
+        maybePublishCalendarEventRef.current?.(event).catch(() => {});
+      });
     }
-    return changed ? out : arr;
-  }
+    if (toDelete.length) {
+      toDelete.forEach((event) => {
+        publishCalendarEventDeletedRef.current?.(event).catch(() => {});
+      });
+    }
+  }, [boards, setCalendarEvents, settings.newTaskPosition, settings.weekStart]);
+
+  useEffect(() => {
+    ensureCalendarRecurrenceWindow();
+  }, [calendarEvents, ensureCalendarRecurrenceWindow]);
+
+  useEffect(() => {
+    let timer: number | null = null;
+    const schedule = () => {
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+      const delay = Math.max(1000, next.getTime() - now.getTime());
+      timer = window.setTimeout(() => {
+        ensureCalendarRecurrenceWindow();
+        schedule();
+      }, delay);
+    };
+    schedule();
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [ensureCalendarRecurrenceWindow]);
   function buildImportedTask(raw: string, overrides: Partial<Task> = {}): Task | null {
     if (!currentBoard) return null;
     try {
       const parsed: any = JSON.parse(raw);
-      if (!(parsed && typeof parsed === "object" && parsed.title && parsed.dueISO)) return null;
+      const title = typeof parsed?.title === "string" ? parsed.title : "";
+      if (!title.trim()) return null;
       const baseBoardId = typeof overrides.boardId === "string" ? overrides.boardId : currentBoard.id;
       const nextOrder = nextOrderForBoard(baseBoardId, tasks, settings.newTaskPosition);
       const id = crypto.randomUUID();
-      const dueISO = typeof parsed.dueISO === 'string' ? parsed.dueISO : isoForToday();
+      const parsedDueISO = normalizeIsoTimestamp(parsed.dueISO);
+      const dueISO = parsedDueISO || isoForToday();
+      const dueDateEnabled = typeof parsed.dueDateEnabled === "boolean" ? parsed.dueDateEnabled : !!parsedDueISO;
       const dueTimeEnabled = typeof parsed.dueTimeEnabled === 'boolean' ? parsed.dueTimeEnabled : undefined;
+      const dueTimeZoneRaw = typeof parsed.dueTimeZone === "string" ? parsed.dueTimeZone : undefined;
+      const dueTimeZone = normalizeTimeZone(dueTimeZoneRaw) ?? undefined;
       const reminders = sanitizeReminderList(parsed.reminders);
+      const reminderTime = normalizeReminderTime(parsed.reminderTime);
+      const priority = normalizeTaskPriority(parsed.priority);
+      const createdAt = normalizeTaskCreatedAt(parsed.createdAt) ?? Date.now();
       const documents = normalizeDocumentList(parsed.documents);
       const imported: Task = {
         ...parsed,
         id,
         boardId: baseBoardId,
-        order: typeof parsed.order === "number" ? parsed.order : nextOrder,
+        order: nextOrder,
+        title,
         dueISO,
+        priority,
+        createdAt,
+        completed: false,
+        completedAt: undefined,
+        completedBy: undefined,
+        hiddenUntilISO: undefined,
+        streak: undefined,
+        longestStreak: undefined,
+        seriesId: undefined,
+        scriptureMemoryId: undefined,
+        scriptureMemoryStage: undefined,
+        scriptureMemoryPrevReviewISO: undefined,
+        scriptureMemoryScheduledAt: undefined,
+        inboxItem: undefined,
+        ...(typeof dueDateEnabled === 'boolean' ? { dueDateEnabled } : {}),
         ...(typeof dueTimeEnabled === 'boolean' ? { dueTimeEnabled } : {}),
+        ...(dueTimeZone ? { dueTimeZone } : {}),
         ...(reminders !== undefined ? { reminders } : {}),
+        ...(reminderTime ? { reminderTime } : {}),
         ...(documents ? { documents: documents.map(ensureDocumentPreview) } : {}),
         ...overrides,
       };
       imported.boardId = typeof imported.boardId === "string" ? imported.boardId : baseBoardId;
-      if (imported.recurrence) imported.seriesId = imported.seriesId || id;
+      if (imported.recurrence) imported.seriesId = id;
       else imported.seriesId = undefined;
       return imported;
     } catch {
       return null;
     }
   }
+  function openInlineTaskEditor(key: string) {
+    if (!currentBoard) return;
+
+    let targetBoardId = currentBoard.id;
+    let dueISO = isoForToday();
+    let column: Task["column"] | undefined;
+    let columnId: string | undefined;
+
+    if (currentBoard.kind === "week") {
+      column = "day";
+      dueISO = isoForWeekday(Number(key) as Weekday, {
+        weekStart: settings.weekStart,
+      });
+    } else {
+      const placement = resolveListPlacement(key);
+      if (!placement) {
+        showToast("Add a list to this board first.");
+        return;
+      }
+      targetBoardId = placement.boardId;
+      columnId = placement.columnId;
+    }
+
+    const nextOrder = nextOrderForBoard(targetBoardId, tasks, settings.newTaskPosition);
+    const dueDateEnabled = currentBoard.kind === "week";
+    const draft: Task = {
+      id: crypto.randomUUID(),
+      boardId: targetBoardId,
+      createdBy: nostrPK || undefined,
+      title: "",
+      createdAt: Date.now(),
+      dueISO,
+      dueDateEnabled,
+      completed: false,
+      order: nextOrder,
+    };
+
+    if (column) {
+      draft.column = column;
+    }
+    if (columnId) {
+      draft.columnId = columnId;
+    }
+
+    setEditing({ type: "task", originalType: "task", originalId: draft.id, task: draft });
+  }
   function addInlineTask(key: string) {
     if (!currentBoard) return;
     const raw = (inlineTitles[key] || "").trim();
-    if (!raw) return;
+    if (!raw) {
+      openInlineTaskEditor(key);
+      return;
+    }
 
     const originRect = inlineInputRefs.current.get(key)?.getBoundingClientRect() || null;
     const inlineOverrides: Partial<Task> = { createdBy: nostrPK || undefined };
 
     if (currentBoard?.kind === "week") {
-      if (key === "bounties") {
-        inlineOverrides.column = "bounties";
-        inlineOverrides.columnId = undefined;
-      } else {
-        inlineOverrides.column = "day";
-        inlineOverrides.columnId = undefined;
-        inlineOverrides.dueISO = isoForWeekday(Number(key) as Weekday, {
-          weekStart: settings.weekStart,
-        });
-      }
+      inlineOverrides.column = "day";
+      inlineOverrides.columnId = undefined;
+      inlineOverrides.dueISO = isoForWeekday(Number(key) as Weekday, {
+        weekStart: settings.weekStart,
+      });
     } else {
       const placement = resolveListPlacement(key);
       if (!placement) {
@@ -6061,8 +13364,8 @@ export default function App() {
     const imported = buildImportedTask(raw, inlineOverrides);
     if (imported) {
       let prepared = imported;
-      if (currentBoard?.kind === "week" && key === "bounties" && bountyListEnabled && activeBountyListKey) {
-        prepared = withTaskAddedToBountyList(prepared, activeBountyListKey);
+      if (currentBoard?.kind === "week") {
+        prepared = { ...prepared, dueDateEnabled: true };
       }
       applyHiddenForFuture(prepared, settings.weekStart, currentBoard.kind);
       animateTaskArrival(originRect, prepared, currentBoard);
@@ -6079,28 +13382,23 @@ export default function App() {
     const targetBoardId = inlineOverrides.boardId || currentBoard.id;
     const nextOrder = nextOrderForBoard(targetBoardId, tasks, settings.newTaskPosition);
     const id = crypto.randomUUID();
-    let t: Task = {
+    const t: Task = {
       id,
       boardId: targetBoardId,
       createdBy: nostrPK || undefined,
       title: raw,
+      createdAt: Date.now(),
       dueISO,
       completed: false,
       order: nextOrder,
     };
+    t.dueDateEnabled = currentBoard.kind === "week";
     if (currentBoard?.kind === "week") {
-      if (key === "bounties") {
-        t.column = "bounties";
-        if (bountyListEnabled && activeBountyListKey) {
-          t = withTaskAddedToBountyList(t, activeBountyListKey);
-        }
-      } else {
-        t.column = "day";
-        dueISO = isoForWeekday(Number(key) as Weekday, {
-          weekStart: settings.weekStart,
-        });
-        t.dueISO = dueISO;
-      }
+      t.column = "day";
+      dueISO = isoForWeekday(Number(key) as Weekday, {
+        weekStart: settings.weekStart,
+      });
+      t.dueISO = dueISO;
     } else {
       t.column = undefined;
       t.columnId = inlineOverrides.columnId;
@@ -6112,23 +13410,266 @@ export default function App() {
     setInlineTitles(prev => ({ ...prev, [key]: "" }));
   }
 
+  const addSharedBoardFromInbox = useCallback(
+    (payload: { boardId: string; boardName?: string; relays?: string[] | undefined }) => {
+      const boardId = (payload.boardId || "").trim();
+      if (!boardId) return;
+      const relayList = Array.from(
+        new Set((payload.relays && payload.relays.length ? payload.relays : inboxRelays).map((r) => r.trim()).filter(Boolean)),
+      );
+      const boardName = payload.boardName?.trim() || "Shared Board";
+      setBoards((prev) => {
+        const defaultCols: ListColumn[] = [{ id: crypto.randomUUID(), name: "Items" }];
+        const existingIndex = prev.findIndex(
+          (b) => b.id === boardId || b.nostr?.boardId === boardId,
+        );
+        if (existingIndex >= 0) {
+          const existing = prev[existingIndex];
+          const columns = existing.kind === "lists" ? existing.columns : defaultCols;
+          const updated: Board = {
+            ...existing,
+            id: existing.id,
+            name: existing.name || boardName,
+            kind: "lists",
+            columns,
+            nostr: {
+              boardId: existing.nostr?.boardId || boardId,
+              relays: existing.nostr?.relays?.length ? existing.nostr.relays : relayList,
+            },
+            archived: false,
+            hidden: false,
+            clearCompletedDisabled: existing.clearCompletedDisabled ?? false,
+            indexCardEnabled: existing.kind === "lists" ? existing.indexCardEnabled : false,
+          };
+          const copy = prev.slice();
+          copy[existingIndex] = updated;
+          return copy;
+        }
+        const nextBoard: Board = {
+          id: boardId,
+          name: boardName,
+          kind: "lists",
+          columns: defaultCols,
+          nostr: { boardId, relays: relayList },
+          archived: false,
+          hidden: false,
+          clearCompletedDisabled: false,
+          indexCardEnabled: false,
+        };
+        return [...prev, nextBoard];
+      });
+    },
+    [inboxRelays, setBoards],
+  );
+  const processedInboxBoardsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!tasks.length) return;
+    tasks.forEach((task) => {
+      const item = task.inboxItem;
+      if (!item || item.type !== "board" || item.status !== "accepted") return;
+      const boardId = (item.boardId || "").trim();
+      if (!boardId || processedInboxBoardsRef.current.has(boardId)) return;
+      const exists = boards.some((b) => b.id === boardId || b.nostr?.boardId === boardId);
+      if (exists) {
+        processedInboxBoardsRef.current.add(boardId);
+        return;
+      }
+      processedInboxBoardsRef.current.add(boardId);
+      addSharedBoardFromInbox({
+        boardId,
+        boardName: item.boardName,
+        relays: item.relays,
+      });
+    });
+  }, [addSharedBoardFromInbox, boards, tasks]);
+
+  const upsertSharedContact = useCallback((payload: SharedContactPayload) => {
+    const contacts = loadContactsFromStorage();
+    const normalized = normalizeContact({
+      id: makeContactId(),
+      kind: "nostr",
+      npub: payload.npub,
+      name: payload.name || payload.displayName || payload.username || "",
+      displayName: payload.displayName,
+      username: payload.username,
+      address: payload.lud16 || "",
+      nip05: payload.nip05,
+      relays: payload.relays,
+      picture: payload.picture,
+      about: payload.about,
+      source: "sync",
+      updatedAt: Date.now(),
+    });
+    if (!normalized) return null;
+    const normalizedNpub = formatContactNpub(normalized.npub);
+    const normalizedHex = normalizeNostrPubkey(normalized.npub || "");
+    let result: Contact = { ...normalized, npub: normalizedNpub };
+    const next = [...contacts];
+    const existingIndex = normalizedHex
+      ? contacts.findIndex((contact) => normalizeNostrPubkey(contact.npub || "") === normalizedHex)
+      : -1;
+    if (existingIndex >= 0) {
+      const merged: Contact = {
+        ...contacts[existingIndex],
+        ...result,
+        id: contacts[existingIndex].id,
+        name: result.name || contacts[existingIndex].name,
+        displayName: result.displayName || contacts[existingIndex].displayName,
+        address: result.address || contacts[existingIndex].address,
+        paymentRequest: contacts[existingIndex].paymentRequest,
+        relays: result.relays?.length ? result.relays : contacts[existingIndex].relays,
+        updatedAt: Date.now(),
+      };
+      result = merged;
+      next[existingIndex] = merged;
+    } else {
+      next.push(result);
+    }
+    saveContactsToStorage(next);
+    return result;
+  }, []);
+
+  const addSharedTaskFromInbox = useCallback(
+    (payload: SharedTaskPayload, sender?: InboxSender): Task | null => {
+      const title = payload?.title?.trim();
+      if (!title) return null;
+      const baseBoard = currentBoard ?? visibleBoards[0] ?? boards[0] ?? null;
+      if (!baseBoard) return null;
+      let boardId = baseBoard.id;
+      let column: Task["column"] | undefined;
+      let columnId: string | undefined;
+      let targetBoard = baseBoard;
+      if (baseBoard.kind === "week") {
+        column = "day";
+      } else if (isListLikeBoard(baseBoard)) {
+        const placement = resolveListPlacement();
+        if (!placement) {
+          showToast("Add a list to this board first.");
+          return null;
+        }
+        boardId = placement.boardId;
+        columnId = placement.columnId;
+        targetBoard = boards.find((b) => b.id === boardId) ?? baseBoard;
+      }
+      const parsedDueISO = normalizeIsoTimestamp(payload.dueISO);
+      const dueISO = parsedDueISO || isoForToday();
+      const payloadDueDateEnabled =
+        typeof payload.dueDateEnabled === "boolean" ? payload.dueDateEnabled : !!parsedDueISO;
+      const dueTimeZone =
+        payload.dueTimeEnabled && typeof payload.dueTimeZone === "string"
+          ? normalizeTimeZone(payload.dueTimeZone)
+          : undefined;
+      const reminders = payload.dueTimeEnabled ? sanitizeReminderList(payload.reminders) : undefined;
+      const subtasks = Array.isArray(payload.subtasks)
+        ? payload.subtasks
+            .map((subtask) => {
+              const subtaskTitle = subtask.title?.trim() || "";
+              if (!subtaskTitle) return null;
+              return {
+                id: crypto.randomUUID(),
+                title: subtaskTitle,
+                completed: !!subtask.completed,
+              };
+            })
+            .filter((subtask): subtask is Subtask => !!subtask)
+        : undefined;
+      const recurrence =
+        payload.recurrence && typeof payload.recurrence === "object" && typeof payload.recurrence.type === "string"
+          ? (payload.recurrence as Recurrence)
+          : undefined;
+      const priority = normalizeTaskPriority(payload.priority);
+      const senderLabel = sender ? formatSenderLabel(sender) : null;
+      const sharedNote = payload.note?.trim();
+      const note = [senderLabel ? `Shared by ${senderLabel}` : null, sharedNote].filter(Boolean).join("\n");
+      let created: Task | null = null;
+      setTasks((prev) => {
+        const order = nextOrderForBoard(boardId, prev, settings.newTaskPosition);
+        const nextTask: Task = {
+          id: crypto.randomUUID(),
+          boardId,
+          title,
+          note: note || undefined,
+          createdAt: Date.now(),
+          ...(priority ? { priority } : {}),
+          dueISO,
+          dueDateEnabled: targetBoard.kind === "week" ? true : payloadDueDateEnabled,
+          completed: false,
+          order,
+          createdBy: sender?.pubkey || nostrPK || undefined,
+          ...(payload.dueTimeEnabled ? { dueTimeEnabled: true } : {}),
+          ...(dueTimeZone ? { dueTimeZone } : {}),
+          ...(reminders ? { reminders } : {}),
+        };
+        if (column) nextTask.column = column;
+        if (columnId) nextTask.columnId = columnId;
+        if (subtasks?.length) nextTask.subtasks = subtasks;
+        if (recurrence) {
+          nextTask.recurrence = recurrence;
+          nextTask.seriesId = nextTask.seriesId || nextTask.id;
+        }
+        applyHiddenForFuture(nextTask, settings.weekStart, targetBoard.kind);
+        created = nextTask;
+        const updated = [...prev, nextTask];
+        return settings.showFullWeekRecurring && nextTask.recurrence
+          ? ensureWeekRecurrencesRef.current(updated, [nextTask])
+          : updated;
+      });
+      if (created) {
+        maybePublishTaskRef.current?.(created).catch(() => {});
+      }
+      return created;
+    },
+    [
+      boards,
+      currentBoard,
+      formatSenderLabel,
+      nostrPK,
+      resolveListPlacement,
+      setTasks,
+      settings.newTaskPosition,
+      settings.showFullWeekRecurring,
+      settings.weekStart,
+      showToast,
+      visibleBoards,
+    ],
+  );
+
   function completeTask(
     id: string,
-    options?: { skipScriptureMemoryUpdate?: boolean }
+    options?: { skipScriptureMemoryUpdate?: boolean; inboxAction?: "accept" | "dismiss" }
   ): CompleteTaskResult {
     let memoryUpdate: ScriptureMemoryUpdate | null = null;
     let scheduledUpdate: { entryId: string; scheduledAtISO: string } | null = null;
     const scriptureStateSnapshot = scriptureMemory;
     const scriptureBaseDays = scriptureMemoryFrequencyOption?.days ?? 1;
+    let inboxAction: { item: InboxItem; action: "accept" | "dismiss" } | null = null;
     setTasks(prev => {
       const cur = prev.find(t => t.id === id);
       if (!cur) return prev;
+      let working = cur;
+      if (
+        cur.inboxItem &&
+        cur.inboxItem.status !== "accepted" &&
+        cur.inboxItem.status !== "deleted"
+      ) {
+        const action = options?.inboxAction === "dismiss" ? "dismiss" : "accept";
+        const status = action === "dismiss" ? "deleted" : "accepted";
+        const inboxItem = { ...cur.inboxItem, status };
+        const statusLine = status === "accepted" ? "Action: Added" : "Action: Deleted";
+        const noteHasStatus = typeof cur.note === "string" && cur.note.includes("Action:");
+        working = {
+          ...cur,
+          inboxItem,
+          note: noteHasStatus ? cur.note : [cur.note, statusLine].filter(Boolean).join("\n"),
+        };
+        inboxAction = { item: inboxItem, action };
+      }
       const now = new Date().toISOString();
-      let newStreak = typeof cur.streak === "number" ? cur.streak : 0;
+      let newStreak = typeof working.streak === "number" ? working.streak : 0;
       if (
         settings.streaksEnabled &&
-        cur.recurrence &&
-        isFrequentRecurrence(cur.recurrence)
+        working.recurrence &&
+        isFrequentRecurrence(working.recurrence)
       ) {
         // Previously the streak only incremented when completing a task on the
         // same day it was due. This prevented users from keeping their streak
@@ -6137,14 +13678,14 @@ export default function App() {
         // regardless of the current timestamp.
         newStreak = newStreak + 1;
       }
-      const nextLongest = mergeLongestStreak(cur, newStreak);
+      const nextLongest = mergeLongestStreak(working, newStreak);
       const toPublish: Task[] = [];
       let nextId: string | null = null;
       if (
         settings.showFullWeekRecurring &&
         settings.streaksEnabled &&
-        cur.recurrence &&
-        isFrequentRecurrence(cur.recurrence)
+        working.recurrence &&
+        isFrequentRecurrence(working.recurrence)
       ) {
         nextId =
           prev
@@ -6153,8 +13694,8 @@ export default function App() {
                 t.id !== id &&
                 !t.completed &&
                 t.recurrence &&
-                sameSeries(t, cur) &&
-                new Date(t.dueISO) > new Date(cur.dueISO)
+                sameSeries(t, working) &&
+                new Date(t.dueISO) > new Date(working.dueISO)
             )
             .sort(
               (a, b) =>
@@ -6164,19 +13705,20 @@ export default function App() {
       const updated = prev.map(t => {
         if (t.id === id) {
           const done = {
-            ...t,
-            seriesId: t.seriesId || t.id,
+            ...working,
+            seriesId: working.seriesId || working.id,
             completed: true,
             completedAt: now,
             completedBy: (window as any).nostrPK || undefined,
+            bountyDeletedAt: undefined,
             streak: newStreak,
             longestStreak: nextLongest,
           };
-          if (cur.scriptureMemoryId) {
+          if (working.scriptureMemoryId) {
             memoryUpdate = {
-              entryId: cur.scriptureMemoryId,
+              entryId: working.scriptureMemoryId,
               completedAt: now,
-              stageBefore: typeof cur.scriptureMemoryStage === "number" ? cur.scriptureMemoryStage : cur.stage ?? 0,
+              stageBefore: typeof working.scriptureMemoryStage === "number" ? working.scriptureMemoryStage : working.stage ?? 0,
             };
           }
           toPublish.push(done);
@@ -6198,48 +13740,46 @@ export default function App() {
         maybePublishTask(t).catch(() => {});
       });
       const scriptureRecurrence =
-        (cur.seriesId === SCRIPTURE_MEMORY_SERIES_ID || cur.scriptureMemoryId)
-          ? cur.recurrence ?? scriptureFrequencyToRecurrence(scriptureBaseDays)
-          : cur.recurrence;
+        (working.seriesId === SCRIPTURE_MEMORY_SERIES_ID || working.scriptureMemoryId)
+          ? working.recurrence ?? scriptureFrequencyToRecurrence(scriptureBaseDays)
+          : working.recurrence;
       const nextISO = scriptureRecurrence
-        ? nextOccurrence(cur.dueISO, scriptureRecurrence, !!cur.dueTimeEnabled)
+        ? nextOccurrence(working.dueISO, scriptureRecurrence, !!working.dueTimeEnabled, working.dueTimeZone)
         : null;
       if (nextISO && scriptureRecurrence) {
         let shouldClone = true;
-        if (settings.showFullWeekRecurring) {
-          const nextDate = new Date(nextISO);
-          const nsow = startOfWeek(nextDate, settings.weekStart).getTime();
-          const csow = startOfWeek(new Date(), settings.weekStart).getTime();
-          if (nsow === csow) {
-            const exists = updated.some(x =>
-              sameSeries(x, cur) &&
-              startOfDay(new Date(x.dueISO)).getTime() === startOfDay(nextDate).getTime()
-            );
-            if (exists) shouldClone = false;
-          }
-        }
+        const seriesId = working.seriesId || working.id;
+        const seriesSeed = working.seriesId ? working : { ...working, seriesId };
+        const nextDateKey = isoDatePart(nextISO, working.dueTimeZone);
+        const exists = updated.some(x =>
+          sameSeries(x, seriesSeed) && taskDateKey(x) === nextDateKey
+        );
+        if (exists) shouldClone = false;
         if (shouldClone) {
-          const nextOrder = nextOrderForBoard(cur.boardId, updated, settings.newTaskPosition);
+          const nextOrder = nextOrderForBoard(working.boardId, updated, settings.newTaskPosition);
+          const cloneId = recurringInstanceId(seriesId, nextISO, scriptureRecurrence, working.dueTimeZone);
           let clone: Task = {
-            ...cur,
-            id: crypto.randomUUID(),
-            seriesId: cur.seriesId || cur.id,
+            ...working,
+            id: cloneId,
+            seriesId,
+            createdAt: Date.now(),
             completed: false,
             completedAt: undefined,
             completedBy: undefined,
+            bountyDeletedAt: undefined,
             dueISO: nextISO,
             hiddenUntilISO: hiddenUntilForNext(nextISO, scriptureRecurrence, settings.weekStart),
             order: nextOrder,
             streak: newStreak,
             longestStreak: nextLongest,
-            subtasks: cur.subtasks?.map(s => ({ ...s, completed: false })),
-            dueTimeEnabled: typeof cur.dueTimeEnabled === 'boolean' ? cur.dueTimeEnabled : undefined,
-            reminders: Array.isArray(cur.reminders) ? [...cur.reminders] : undefined,
+            subtasks: working.subtasks?.map(s => ({ ...s, completed: false })),
+            dueTimeEnabled: typeof working.dueTimeEnabled === 'boolean' ? working.dueTimeEnabled : undefined,
+            reminders: Array.isArray(working.reminders) ? [...working.reminders] : undefined,
           };
           if (!clone.recurrence || !recurrencesEqual(clone.recurrence, scriptureRecurrence)) {
             clone = { ...clone, recurrence: scriptureRecurrence };
           }
-          if (cur.seriesId === SCRIPTURE_MEMORY_SERIES_ID) {
+          if (working.seriesId === SCRIPTURE_MEMORY_SERIES_ID) {
             const previewState = memoryUpdate
               ? markScriptureEntryReviewed(
                   scriptureStateSnapshot,
@@ -6275,6 +13815,29 @@ export default function App() {
       }
       return updated;
     });
+    if (inboxAction && inboxAction.action === "accept") {
+      if (inboxAction.item.type === "board") {
+        addSharedBoardFromInbox({
+          boardId: inboxAction.item.boardId,
+          boardName: inboxAction.item.boardName,
+          relays: inboxAction.item.relays,
+        });
+      } else if (inboxAction.item.type === "contact") {
+        const added = upsertSharedContact(inboxAction.item.contact);
+        if (added) {
+          showToast("Contact added to your list");
+        } else {
+          showToast("Unable to add contact");
+        }
+      } else if (inboxAction.item.type === "task") {
+        const added = addSharedTaskFromInbox(inboxAction.item.task, inboxAction.item.sender);
+        if (added) {
+          showToast("Task added to your board");
+        } else {
+          showToast("Unable to add task");
+        }
+      }
+    }
     if (scheduledUpdate && memoryUpdate) {
       memoryUpdate = { ...memoryUpdate, nextScheduled: scheduledUpdate };
     }
@@ -6316,11 +13879,117 @@ export default function App() {
 
   completeTaskRef.current = completeTask;
 
-  function deleteTask(id: string) {
+  const acceptInboxMessage = (id: string) => completeTask(id, { inboxAction: "accept" });
+  const dismissInboxMessage = (id: string) => completeTask(id, { inboxAction: "dismiss" });
+  const markInboxMessagesRead = (dmEventIds: string[]) => {
+    if (!dmEventIds.length) return;
+    setTasks((prev) =>
+      prev.map((task) => {
+        if (task.boardId !== messagesBoardId) return task;
+        const dmId = task.inboxItem?.dmEventId?.trim();
+        if (!dmId || !dmEventIds.includes(dmId)) return task;
+        const status = task.inboxItem?.status;
+        if (status === "accepted" || status === "deleted" || status === "read") return task;
+        return {
+          ...task,
+          inboxItem: task.inboxItem ? { ...task.inboxItem, status: "read" } : task.inboxItem,
+        };
+      }),
+    );
+  };
+
+  function deleteTask(
+    id: string,
+    options?: { skipPrompt?: boolean; scope?: "single" | "future" }
+  ) {
     const t = tasks.find(x => x.id === id);
     if (!t) return;
+    const markRecoverableBountyDelete = (task: Task, deletedAtISO: string): Task => ({
+      ...task,
+      completed: true,
+      completedAt: task.completedAt || deletedAtISO,
+      completedBy: task.completedBy ?? ((window as any).nostrPK || undefined),
+      hiddenUntilISO: undefined,
+      bountyDeletedAt: deletedAtISO,
+    });
+    if (!options?.skipPrompt && t.recurrence) {
+      setRecurringDeleteTask(t);
+      return;
+    }
+    if (options?.scope === "future") {
+      const seriesId = t.seriesId || t.id;
+      const seriesSeed = t.seriesId ? t : { ...t, seriesId };
+      const cutoffDate = startOfDay(new Date(t.dueISO));
+      if (Number.isNaN(cutoffDate.getTime())) return;
+      const cutoffTime = cutoffDate.getTime();
+      const deletedAtISO = new Date().toISOString();
+      const nextUntil = new Date(cutoffTime - MS_PER_DAY).toISOString();
+      const toPublish: Task[] = [];
+      const toDelete: Task[] = [];
+      setTasks(prev => {
+        let changed = false;
+        const next: Task[] = [];
+        for (const task of prev) {
+          if (!task.recurrence || !sameSeries(task, seriesSeed)) {
+            next.push(task);
+            continue;
+          }
+          const dueTime = startOfDay(new Date(task.dueISO)).getTime();
+          if (Number.isNaN(dueTime)) {
+            next.push(task);
+            continue;
+          }
+          if (dueTime >= cutoffTime) {
+            if (task.bounty) {
+              const archived = markRecoverableBountyDelete(task, deletedAtISO);
+              next.push(archived);
+              toPublish.push(archived);
+            } else {
+              toDelete.push(task);
+            }
+            changed = true;
+            continue;
+          }
+          const untilTime = task.recurrence.untilISO
+            ? startOfDay(new Date(task.recurrence.untilISO)).getTime()
+            : null;
+          if (!untilTime || untilTime > cutoffTime - MS_PER_DAY) {
+            const updated: Task = {
+              ...task,
+              seriesId: task.seriesId || seriesId,
+              recurrence: { ...task.recurrence, untilISO: nextUntil },
+            };
+            next.push(updated);
+            toPublish.push(updated);
+            changed = true;
+            continue;
+          }
+          next.push(task);
+        }
+        return changed ? next : prev;
+      });
+      toPublish.forEach(task => maybePublishTask(task).catch(() => {}));
+      toDelete.forEach(task => publishTaskDeleted(task).catch(() => {}));
+      if (toPublish.some((task) => isRecoverableBountyTask(task))) {
+        showToast("Bounty tasks were moved to Completed. Restore to recover.", 3000);
+      }
+      return;
+    }
     if (t.bounty) {
-      alert('Tasks with an ecash bounty cannot be deleted. Remove the bounty first.');
+      const deletedAtISO = new Date().toISOString();
+      let updated: Task | null = null;
+      setTasks((prev) =>
+        prev.map((task) => {
+          if (task.id !== id) return task;
+          const recoverable = markRecoverableBountyDelete(task, deletedAtISO);
+          updated = recoverable;
+          return recoverable;
+        }),
+      );
+      if (updated) {
+        maybePublishTask(updated).catch(() => {});
+        showToast("Bounty task moved to Completed. Restore to recover.", 3000);
+      }
       return;
     }
     setUndoTask(t);
@@ -6395,6 +14064,7 @@ export default function App() {
           completed: false,
           completedAt: undefined,
           completedBy: undefined,
+          bountyDeletedAt: undefined,
           hiddenUntilISO: undefined,
           streak: newStreak,
           longestStreak: mergeLongestStreak(x, newStreak),
@@ -6452,28 +14122,15 @@ export default function App() {
       return;
     }
     const scope = currentBoard ? new Set(boardScopeIds(currentBoard, boards)) : null;
-    const deletable = tasksForBoard.filter(
-      (t) => t.completed && (!t.bounty || t.bounty.state === "claimed")
-    );
-    if (currentBoard?.nostr && deletable.length) {
-      const bTag = boardTag(currentBoard.nostr.boardId);
-      deletable.forEach((t) => setPendingTaskClock(bTag, t.id));
-      enqueuePendingJob({
-        id: crypto.randomUUID(),
-        type: "delete-batch",
-        boardId: currentBoard.id,
-        boardTag: bTag,
-        taskIds: deletable.map((t) => t.id),
-        nostrTimestamp: Math.floor(Date.now() / 1000),
-      });
-    } else {
-      deletable.forEach((t) => publishTaskDeleted(t).catch(() => {}));
-    }
+    for (const t of tasksForBoard)
+      if (t.completed && !isRecoverableBountyTask(t) && (!t.bounty || t.bounty.state === 'claimed'))
+        publishTaskDeleted(t).catch(() => {});
     setTasks(prev =>
       prev.filter(t =>
         !(
           scope?.has(t.boardId) &&
           t.completed &&
+          !isRecoverableBountyTask(t) &&
           (!t.bounty || t.bounty.state === 'claimed')
         )
       )
@@ -6486,10 +14143,13 @@ export default function App() {
       if (t.id !== id) return t;
       const nextDue = startOfDay(new Date(t.dueISO));
       nextDue.setDate(nextDue.getDate() + 7);
+      const boardKind = boards.find((board) => board.id === t.boardId)?.kind ?? "week";
+      const hiddenUntilISO = hiddenUntilForBoard(nextDue.toISOString(), boardKind, settings.weekStart);
       updated = {
         ...t,
         dueISO: nextDue.toISOString(),
-        hiddenUntilISO: startOfWeek(nextDue, settings.weekStart).toISOString(),
+        dueDateEnabled: true,
+        hiddenUntilISO,
       };
       return updated!;
     }));
@@ -6525,7 +14185,7 @@ export default function App() {
       if (!nextBounty) return;
       const updated = normalizeTaskBounty({ ...t, bounty: nextBounty });
       setTasks(prev => prev.map(x => x.id === id ? updated : x));
-      setEditing(prev => (prev && prev.id === id ? updated : prev));
+      setEditing((prev) => (prev && prev.type === "task" && prev.task.id === id ? { ...prev, task: updated } : prev));
       maybePublishTask(updated).catch(() => {});
     } catch (e) {
       alert('Decrypt failed: ' + (e as Error).message);
@@ -6592,7 +14252,7 @@ export default function App() {
     if (!nextBounty) return;
     const updated = normalizeTaskBounty({ ...t, bounty: nextBounty });
     setTasks(prev => prev.map(x => x.id === id ? updated : x));
-    setEditing(prev => (prev && prev.id === id ? updated : prev));
+    setEditing((prev) => (prev && prev.type === "task" && prev.task.id === id ? { ...prev, task: updated } : prev));
     maybePublishTask(updated).catch(() => {});
   }
 
@@ -6625,7 +14285,7 @@ export default function App() {
       if (!nextBounty) return;
       const updated = normalizeTaskBounty({ ...t, bounty: nextBounty });
       setTasks(prev => prev.map(x => x.id === id ? updated : x));
-      setEditing(prev => (prev && prev.id === id ? updated : prev));
+      setEditing((prev) => (prev && prev.type === "task" && prev.task.id === id ? { ...prev, task: updated } : prev));
       maybePublishTask(updated).catch(() => {});
     } catch (e) {
       alert('Redeem failed: ' + (e as Error).message);
@@ -6635,9 +14295,17 @@ export default function App() {
   function saveEdit(updated: Task) {
     setTasks(prev => {
       let edited: Task | null = null;
+      let found = false;
       const arr = prev.map(t => {
         if (t.id !== updated.id) return t;
+        found = true;
         let next = updated;
+        if (t.boardId !== updated.boardId) {
+          next = {
+            ...next,
+            order: nextOrderForBoard(updated.boardId, prev, settings.newTaskPosition),
+          };
+        }
         if (
           settings.streaksEnabled &&
           t.recurrence &&
@@ -6657,6 +14325,24 @@ export default function App() {
         edited = normalizedNext;
         return normalizedNext;
       });
+      if (!found) {
+        let next = updated;
+        if (next.recurrence) next = { ...next, seriesId: next.seriesId || next.id };
+        else next = { ...next, seriesId: undefined };
+        if (typeof next.order !== "number") {
+          next = {
+            ...next,
+            order: nextOrderForBoard(next.boardId, arr, settings.newTaskPosition),
+          };
+        }
+        const normalizedNext = normalizeTaskBounty(next);
+        maybePublishTask(normalizedNext).catch(() => {});
+        edited = normalizedNext;
+        const withNew = [...arr, normalizedNext];
+        return settings.showFullWeekRecurring && edited?.recurrence
+          ? ensureWeekRecurrences(withNew, [edited])
+          : withNew;
+      }
       return settings.showFullWeekRecurring && edited?.recurrence
         ? ensureWeekRecurrences(arr, [edited])
         : arr;
@@ -6664,12 +14350,1120 @@ export default function App() {
     setEditing(null);
   }
 
+  const calendarRecurrenceInstanceId = (seriesId: string, startISO: string, rule: Recurrence, timeZone?: string): string =>
+    recurringInstanceId(seriesId, startISO, rule, timeZone).replace(/:/g, "_");
+
+  const calendarRecurrenceLimit = (rule: Recurrence): number => {
+    switch (rule.type) {
+      case "weekly":
+        return 52;
+      case "monthlyDay": {
+        const interval = Math.max(1, rule.interval ?? 1);
+        return interval >= 12 ? 5 : 18;
+      }
+      case "every": {
+        if (rule.unit === "week") return 52;
+        if (rule.unit === "day") return 24;
+        return 24;
+      }
+      case "daily":
+        return 24;
+      default:
+        return 0;
+    }
+  };
+
+  function deleteTaskSilently(id: string) {
+    const task = tasksRef.current.find((t) => t.id === id);
+    if (!task) return;
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+    publishTaskDeleted(task).catch(() => {});
+  }
+
+  function deleteCalendarEvent(
+    id: string,
+    options?: { skipPrompt?: boolean; scope?: "single" | "future" },
+  ) {
+    const existing = calendarEventsRef.current.find((event) => event.id === id);
+    if (!existing) return;
+    if (!options?.skipPrompt && existing.recurrence) {
+      setRecurringDeleteEvent(existing);
+      return;
+    }
+
+    if (options?.scope === "future") {
+      const seriesId = existing.seriesId || existing.id;
+      const startKeyForEvent = (event: CalendarEvent): string | null => {
+        if (event.kind === "date") {
+          return ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : null;
+        }
+        const key = isoDatePart(event.startISO, event.startTzid);
+        return ISO_DATE_PATTERN.test(key) ? key : null;
+      };
+      const cutoffKey = startKeyForEvent(existing);
+      if (!cutoffKey) return;
+      const cutoffDate = startOfDay(new Date(`${cutoffKey}T00:00:00`));
+      if (Number.isNaN(cutoffDate.getTime())) return;
+      const cutoffTime = cutoffDate.getTime();
+      const nextUntil = new Date(cutoffTime - MS_PER_DAY).toISOString();
+      const toPublish: CalendarEvent[] = [];
+      const toDelete: CalendarEvent[] = [];
+
+      setCalendarEvents((prev) => {
+        let changed = false;
+        const next: CalendarEvent[] = [];
+        for (const event of prev) {
+          const eventSeriesId = event.seriesId || event.id;
+          if (!event.recurrence || eventSeriesId !== seriesId) {
+            next.push(event);
+            continue;
+          }
+          const startKey = startKeyForEvent(event);
+          if (!startKey) {
+            next.push(event);
+            continue;
+          }
+          if (startKey >= cutoffKey) {
+            toDelete.push(event);
+            changed = true;
+            continue;
+          }
+          const untilTime = event.recurrence.untilISO
+            ? startOfDay(new Date(event.recurrence.untilISO)).getTime()
+            : null;
+          if (!untilTime || untilTime > cutoffTime - MS_PER_DAY) {
+            const updated: CalendarEvent = {
+              ...event,
+              seriesId: event.seriesId || seriesId,
+              recurrence: { ...event.recurrence, untilISO: nextUntil },
+            };
+            next.push(updated);
+            toPublish.push(updated);
+            changed = true;
+            continue;
+          }
+          next.push(event);
+        }
+        return changed ? next : prev;
+      });
+
+      toPublish.forEach((event) => maybePublishCalendarEvent(event).catch(() => {}));
+      toDelete.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
+      return;
+    }
+
+    setCalendarEvents((prev) => prev.filter((event) => event.id !== id));
+    publishCalendarEventDeleted(existing).catch(() => {});
+  }
+
+  const parseCalendarAddressForKind = (coord: string, kind: number): { kind: number; pubkey: string; d: string } | null => {
+    const parsed = parseCalendarAddress(coord);
+    if (!parsed || parsed.kind !== kind) return null;
+    return parsed;
+  };
+
+  function setCalendarInviteStatus(coord: string, status: CalendarInviteStatus) {
+    const normalized = (coord || "").trim();
+    if (!normalized) return;
+    setCalendarInvites((prev) =>
+      prev.map((invite) => (invite.canonical === normalized ? { ...invite, status } : invite)),
+    );
+  }
+
+  const addAcceptedInviteToCalendar = useCallback(
+    async (invite: CalendarInvite, status: CalendarRsvpStatus): Promise<CalendarEvent | null> => {
+      if (status !== "accepted" && status !== "tentative") return null;
+      const viewCoord = parseCalendarAddressForKind(invite.view, TASKIFY_CALENDAR_VIEW_KIND);
+      if (!viewCoord) return null;
+      const existingMatch = calendarEventsRef.current.find(
+        (event) => event.id === invite.eventId && event.viewAddress === invite.view,
+      );
+      const hasInviteRelays = !!invite.relays?.length;
+      const existingHasRelays = !!existingMatch?.inviteRelays?.length;
+      if (
+        existingMatch
+        && existingMatch.eventKey === invite.eventKey
+        && existingMatch.inviteToken === invite.inviteToken
+        && (!hasInviteRelays || existingHasRelays)
+      ) {
+        return existingMatch ?? null;
+      }
+
+      const eligibleBoards = boards.filter(
+        (board) => !board.archived && !board.hidden && board.kind !== "bible" && board.kind !== "compound",
+      );
+      const defaultBoard =
+        eligibleBoards.find((board) => board.id === "week-default" && board.kind === "week")
+        ?? eligibleBoards.find((board) => board.kind === "week")
+        ?? eligibleBoards.find((board) => board.kind === "lists")
+        ?? eligibleBoards[0]
+        ?? boards.find((board) => !board.archived && !board.hidden)
+        ?? boards[0]
+        ?? null;
+      if (!defaultBoard) return null;
+
+      const relayCandidates = [
+        ...(invite.relays?.length ? invite.relays : []),
+        ...(defaultRelays.length ? defaultRelays : []),
+        ...(inboxRelays.length ? inboxRelays : []),
+        ...Array.from(DEFAULT_NOSTR_RELAYS),
+      ];
+      const relayList = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+      if (!relayList.length) {
+        showToast("No relays available to load this event.");
+        return null;
+      }
+
+      let viewEvent: NostrEvent | null = null;
+      try {
+        if (typeof pool.list === "function") {
+          const events = await pool.list(relayList, [
+            { kinds: [TASKIFY_CALENDAR_VIEW_KIND], authors: [viewCoord.pubkey], "#d": [viewCoord.d] },
+          ]);
+          if (Array.isArray(events) && events.length) {
+            viewEvent = events.reduce((latest, candidate) => {
+              if (!latest) return candidate;
+              const nextCreated = typeof candidate.created_at === "number" ? candidate.created_at : 0;
+              const lastCreated = typeof latest.created_at === "number" ? latest.created_at : 0;
+              return nextCreated >= lastCreated ? candidate : latest;
+            }, null as NostrEvent | null);
+          }
+        }
+        if (!viewEvent && typeof pool.get === "function") {
+          viewEvent = await pool.get(relayList, {
+            kinds: [TASKIFY_CALENDAR_VIEW_KIND],
+            authors: [viewCoord.pubkey],
+            "#d": [viewCoord.d],
+          });
+        }
+      } catch (err) {
+        console.warn("Failed to fetch invited calendar event", err);
+      }
+
+      const canonicalParsed = parseCalendarAddressForKind(invite.canonical, TASKIFY_CALENDAR_EVENT_KIND);
+      const boardPubkey =
+        canonicalParsed?.pubkey
+          ? normalizeNostrPubkeyHex(canonicalParsed.pubkey) ?? canonicalParsed.pubkey
+          : undefined;
+
+      const resolveOriginBoardId = async (): Promise<string | null> => {
+        if (!canonicalParsed) return null;
+        const nostrBoards = boards.filter((board) => board.nostr?.boardId);
+        for (const board of nostrBoards) {
+          try {
+            const keys = await deriveBoardNostrKeys(board.nostr!.boardId);
+            if (keys.pk === canonicalParsed.pubkey) return board.id;
+          } catch {}
+        }
+        return null;
+      };
+
+      const originBoardId = await resolveOriginBoardId();
+      const isExternal = !originBoardId;
+      const readOnly = isExternal;
+      if (isExternal && !boardPubkey) {
+        showToast("Invite event data was incomplete.");
+        return null;
+      }
+      const order = nextOrderForCalendarBoard(defaultBoard.id, calendarEventsRef.current, settings.newTaskPosition);
+      const columnId =
+        defaultBoard.kind === "lists" && defaultBoard.columns.length ? defaultBoard.columns[0].id : undefined;
+
+      let viewPayload: ReturnType<typeof parseCalendarViewPayload> | null = null;
+      if (viewEvent) {
+        try {
+          const raw = await decryptCalendarPayloadWithEventKey(viewEvent.content, invite.eventKey);
+          viewPayload = parseCalendarViewPayload(raw);
+        } catch (err) {
+          console.warn("Failed to decrypt invite view", err);
+        }
+      }
+      if (viewPayload?.deleted) {
+        showToast("This event was deleted.");
+        return null;
+      }
+
+      const resolvedEventId = viewPayload?.eventId || viewCoord.d || invite.eventId;
+      if (viewPayload && viewPayload.eventId !== viewCoord.d) {
+        showToast("Invite event data was incomplete.");
+        return null;
+      }
+
+      const inviteRelays = invite.relays?.length ? invite.relays : existingMatch?.inviteRelays;
+      const tokenPatch = {
+        ...(originBoardId ? { originBoardId } : {}),
+        ...(readOnly ? { readOnly: true } : {}),
+        ...(isExternal ? { external: true, boardPubkey, rsvpStatus: status } : {}),
+        eventKey: invite.eventKey,
+        viewAddress: invite.view,
+        canonicalAddress: invite.canonical,
+        inviteToken: invite.inviteToken,
+        inviteRelays,
+      };
+
+      const updateExistingTokens = () => {
+        if (!existingMatch) return;
+        setCalendarEvents((prev) => {
+          const idx = prev.findIndex((event) => event.id === existingMatch.id && event.viewAddress === invite.view);
+          if (idx < 0) return prev;
+          const existing = prev[idx];
+          const updated: CalendarEvent = {
+            ...existing,
+            ...tokenPatch,
+            ...(readOnly ? { readOnly: true } : { readOnly: existing.readOnly }),
+          } as CalendarEvent;
+          const copy = prev.slice();
+          copy[idx] = updated;
+          return copy;
+        });
+      };
+
+      const toCommon = (details: {
+        title?: string;
+        summary?: string;
+        description?: string;
+        documents?: unknown[];
+        image?: string;
+        locations?: string[];
+        geohash?: string;
+        hashtags?: string[];
+        references?: string[];
+      }): Omit<CalendarEventBase, "kind" | "startDate" | "endDate" | "startISO" | "endISO"> => {
+        const parsedDocuments = normalizeDocumentList(details.documents);
+        return {
+          id: resolvedEventId,
+          boardId: defaultBoard.id,
+          columnId,
+          order,
+          title: details.title || invite.title || "Untitled",
+          summary: details.summary,
+          description: details.description || "",
+          documents: parsedDocuments ? parsedDocuments.map(ensureDocumentPreview) : undefined,
+          image: details.image,
+          locations: details.locations?.length ? details.locations : undefined,
+          geohash: details.geohash,
+          hashtags: details.hashtags?.length ? details.hashtags : undefined,
+          references: details.references?.length ? details.references : undefined,
+          ...tokenPatch,
+        };
+      };
+
+      const nextEvent: CalendarEvent | null = (() => {
+        if (viewPayload) {
+          if (viewPayload.kind === "date") {
+            const startDate = viewPayload.startDate || "";
+            if (!isDateKey(startDate)) return null;
+            const endDate = (() => {
+              const rawEnd = viewPayload.endDate || "";
+              if (!rawEnd || !isDateKey(rawEnd)) return undefined;
+              return rawEnd >= startDate ? rawEnd : undefined;
+            })();
+            return {
+              ...toCommon({
+                title: viewPayload.title,
+                summary: viewPayload.summary,
+                description: viewPayload.description,
+                documents: viewPayload.documents,
+                image: viewPayload.image,
+                locations: viewPayload.locations,
+                geohash: viewPayload.geohash,
+                hashtags: viewPayload.hashtags,
+                references: viewPayload.references,
+              }),
+              kind: "date",
+              startDate,
+              ...(endDate ? { endDate } : {}),
+            };
+          }
+          const startISO = typeof viewPayload.startISO === "string" ? viewPayload.startISO.trim() : "";
+          if (!startISO) return null;
+          const startMs = Date.parse(startISO);
+          if (Number.isNaN(startMs)) return null;
+          const endISO = typeof viewPayload.endISO === "string" ? viewPayload.endISO.trim() : "";
+          const normalizedEnd = endISO && Date.parse(endISO) > startMs ? endISO : undefined;
+          const startTzid = normalizeTimeZone(viewPayload.startTzid) ?? undefined;
+          const endTzid = normalizeTimeZone(viewPayload.endTzid) ?? undefined;
+          return {
+            ...toCommon({
+                title: viewPayload.title,
+                summary: viewPayload.summary,
+                description: viewPayload.description,
+                documents: viewPayload.documents,
+                image: viewPayload.image,
+                locations: viewPayload.locations,
+                geohash: viewPayload.geohash,
+                hashtags: viewPayload.hashtags,
+                references: viewPayload.references,
+            }),
+            kind: "time",
+            startISO,
+            ...(normalizedEnd ? { endISO: normalizedEnd } : {}),
+            ...(startTzid ? { startTzid } : {}),
+            ...(endTzid ? { endTzid } : {}),
+          };
+        }
+        if (existingMatch) {
+          updateExistingTokens();
+          return existingMatch ?? null;
+        }
+        const startRaw = invite.start?.trim() || "";
+        if (isDateKey(startRaw)) {
+          const endRaw = invite.end?.trim() || "";
+          const endDate = endRaw && isDateKey(endRaw) && endRaw >= startRaw ? endRaw : undefined;
+          return {
+            ...toCommon({ title: invite.title }),
+            kind: "date",
+            startDate: startRaw,
+            ...(endDate ? { endDate } : {}),
+          };
+        }
+        const startMs = startRaw ? Date.parse(startRaw) : NaN;
+        if (!startRaw || Number.isNaN(startMs)) {
+          updateExistingTokens();
+          return existingMatch ?? null;
+        }
+        const endRaw = invite.end?.trim() || "";
+        const endMs = endRaw ? Date.parse(endRaw) : NaN;
+        const endISO = !Number.isNaN(endMs) && endMs > startMs ? new Date(endMs).toISOString() : undefined;
+        return {
+          ...toCommon({ title: invite.title }),
+          kind: "time",
+          startISO: new Date(startMs).toISOString(),
+          ...(endISO ? { endISO } : {}),
+        };
+      })();
+
+      if (!nextEvent) {
+        if (!existingMatch) {
+          showToast("Invite event could not be parsed.");
+        }
+        return existingMatch ?? null;
+      }
+
+      const normalizedEvent = applyHiddenForCalendarEvent(nextEvent, settings.weekStart, defaultBoard.kind);
+      setCalendarEvents((prev) => {
+        const idx = prev.findIndex((event) => event.id === normalizedEvent.id && event.viewAddress === invite.view);
+        if (idx < 0) return [...prev, normalizedEvent];
+        const existing = prev[idx];
+        const merged: CalendarEvent = {
+          ...normalizedEvent,
+          ...(Array.isArray(existing.reminders) && existing.reminders.length ? { reminders: existing.reminders } : {}),
+          ...(existing.reminderTime ? { reminderTime: existing.reminderTime } : {}),
+          ...(existing.recurrence ? { recurrence: existing.recurrence } : {}),
+          ...(existing.seriesId ? { seriesId: existing.seriesId } : {}),
+          ...(existing.hiddenUntilISO ? { hiddenUntilISO: existing.hiddenUntilISO } : {}),
+          ...(typeof existing.order === "number" && typeof normalizedEvent.order !== "number" ? { order: existing.order } : {}),
+        } as CalendarEvent;
+        const copy = prev.slice();
+        copy[idx] = merged;
+        return copy;
+      });
+      return normalizedEvent;
+    },
+    [boards, defaultRelays, inboxRelays, pool, setCalendarEvents, settings.newTaskPosition, settings.weekStart, showToast],
+  );
+
+  async function publishCalendarRsvp(
+    canonical: string,
+    eventId: string,
+    inviteToken: string | null | undefined,
+    relays: string[],
+    status: CalendarRsvpStatus,
+    options?: { fb?: CalendarRsvpFb; note?: string; boardId?: string },
+  ): Promise<void> {
+    const relayList = Array.from(new Set((relays || []).map((relay) => relay.trim()).filter(Boolean)));
+    if (!relayList.length) throw new Error("No relays configured for RSVP.");
+    if (!nostrSkHex || !nostrPK) throw new Error("Connect a Nostr key to RSVP.");
+    const parsedCoord = parseCalendarAddressForKind(canonical, TASKIFY_CALENDAR_EVENT_KIND);
+    if (!parsedCoord) throw new Error("Invalid calendar event address.");
+    const canonicalAddr = calendarAddress(parsedCoord.kind, parsedCoord.pubkey, parsedCoord.d);
+    let resolvedToken = typeof inviteToken === "string" ? inviteToken.trim() : "";
+    if (!resolvedToken && options?.boardId) {
+      resolvedToken = deriveBoardRsvpToken(options.boardId, nostrPK);
+    }
+    if (!resolvedToken) throw new Error("Missing invite token for RSVP.");
+    const rsvpId = `${eventId}:${nostrPK}`;
+    const payload = {
+      v: 1,
+      eventId,
+      status,
+      inviteToken: resolvedToken,
+      ...(options?.fb ? { fb: options.fb } : {}),
+      ...(options?.note ? { note: options.note } : {}),
+    };
+    const content = await encryptCalendarRsvpPayload(payload, nostrSkHex, parsedCoord.pubkey);
+    const template: EventTemplate = {
+      kind: TASKIFY_CALENDAR_RSVP_KIND,
+      tags: [["d", rsvpId], ["a", canonicalAddr]],
+      content,
+      created_at: Math.floor(Date.now() / 1000),
+    };
+    const { createdAt } = await nostrPublish(relayList, template, { returnEvent: true });
+    setCalendarEvents((prev) => {
+      let changed = false;
+      const next = prev.map((event) => {
+        if (!event.external) return event;
+        if (event.id !== eventId || event.canonicalAddress !== canonicalAddr) return event;
+        if (event.rsvpCreatedAt && event.rsvpCreatedAt > createdAt) return event;
+        changed = true;
+        return {
+          ...event,
+          rsvpStatus: status,
+          rsvpCreatedAt: createdAt,
+          ...(options?.fb ? { rsvpFb: options.fb } : { rsvpFb: undefined }),
+        };
+      });
+      return changed ? next : prev;
+    });
+    if (activeEventRsvpCoord === canonicalAddr) {
+      const next: CalendarRsvpEnvelope = {
+        eventId,
+        authorPubkey: nostrPK,
+        createdAt,
+        status,
+        ...(options?.fb ? { fb: options.fb } : {}),
+        inviteToken,
+      };
+      const existing = activeEventRsvpMapRef.current.get(next.authorPubkey);
+      if (!existing || next.createdAt >= existing.createdAt) {
+        activeEventRsvpMapRef.current.set(next.authorPubkey, next);
+        setActiveEventRsvps(
+          Array.from(activeEventRsvpMapRef.current.values()).sort((a, b) => b.createdAt - a.createdAt),
+        );
+      }
+    }
+  }
+
+  async function handleCalendarInviteRsvp(invite: CalendarInvite, status: CalendarRsvpStatus): Promise<void> {
+    try {
+      let boardNostrId: string | null = null;
+      const canonicalParsed = parseCalendarAddressForKind(invite.canonical, TASKIFY_CALENDAR_EVENT_KIND);
+      const viewParsed = parseCalendarAddressForKind(invite.view, TASKIFY_CALENDAR_VIEW_KIND);
+      const resolvedEventId = canonicalParsed?.d || viewParsed?.d || invite.eventId;
+      if (!resolvedEventId) {
+        showToast("Invite is missing event details.");
+        return;
+      }
+      if (canonicalParsed) {
+        const nostrBoards = boards.filter((board) => board.nostr?.boardId);
+        for (const board of nostrBoards) {
+          try {
+            const keys = await deriveBoardNostrKeys(board.nostr!.boardId);
+            if (keys.pk === canonicalParsed.pubkey) {
+              boardNostrId = board.nostr.boardId;
+              break;
+            }
+          } catch {}
+        }
+      }
+      const resolvedInvite = resolvedEventId === invite.eventId ? invite : { ...invite, eventId: resolvedEventId };
+      const materialized =
+        status === "accepted" || status === "tentative"
+          ? await addAcceptedInviteToCalendar(resolvedInvite, status)
+          : null;
+      const canonicalAddress = materialized?.canonicalAddress || invite.canonical;
+      const eventId = materialized?.id || resolvedEventId;
+      const inviteRelays = materialized?.inviteRelays ?? invite.relays;
+      const relayCandidates = [
+        ...(inviteRelays?.length ? inviteRelays : []),
+        ...defaultRelays,
+        ...inboxRelays,
+        ...Array.from(DEFAULT_NOSTR_RELAYS),
+      ];
+      const fallbackRelays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+      const inviteToken = boardNostrId ? "" : (materialized?.inviteToken || invite.inviteToken);
+      const options = boardNostrId ? { boardId: boardNostrId } : undefined;
+      await publishCalendarRsvp(canonicalAddress, eventId, inviteToken, fallbackRelays, status, options);
+      setCalendarInviteStatus(invite.canonical, status);
+      showToast(`RSVP sent: ${status}`);
+    } catch (err) {
+      console.warn("RSVP publish failed", err);
+      showToast("Failed to send RSVP.");
+    }
+  }
+
+  function dismissCalendarInvite(invite: CalendarInvite): void {
+    setCalendarInviteStatus(invite.canonical, "dismissed");
+  }
+
+  async function maybeSendCalendarEventInvites(
+    event: CalendarEvent,
+    options?: { previousParticipants?: CalendarEventParticipant[]; forceAll?: boolean; board?: Board },
+  ): Promise<void> {
+    if (!nostrSkHex) return;
+    if (event.readOnly) return;
+    const targetBoardId = event.originBoardId ?? event.boardId;
+    const board =
+      options?.board && options.board.id === targetBoardId
+        ? options.board
+        : boards.find((b) => b.id === targetBoardId);
+    if (!board?.nostr?.boardId) return;
+    const boardRelays = getBoardRelays(board);
+    if (!boardRelays.length) return;
+    const fallbackRelays = Array.from(
+      new Set(
+        (defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS))
+          .map((relay) => relay.trim())
+          .filter(Boolean),
+      ),
+    );
+
+    const normalizedParticipants = (event.participants ?? [])
+      .map((participant) => normalizeNostrPubkeyHex(participant.pubkey))
+      .filter((pubkey): pubkey is string => !!pubkey);
+    if (!normalizedParticipants.length) return;
+
+    const previousSet = new Set(
+      (options?.previousParticipants ?? [])
+        .map((participant) => normalizeNostrPubkeyHex(participant.pubkey))
+        .filter((pubkey): pubkey is string => !!pubkey),
+    );
+    const nextSet = new Set(normalizedParticipants);
+    const recipients = options?.forceAll
+      ? Array.from(nextSet)
+      : Array.from(nextSet).filter((pubkey) => !previousSet.has(pubkey));
+    if (!recipients.length) return;
+
+    const boardKeys = await deriveBoardNostrKeys(board.nostr.boardId);
+    const canonicalAddr = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, event.id);
+    const viewAddr = calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, boardKeys.pk, event.id);
+    const merged = mergeInviteTokens(event, recipients);
+    const updatedEvent = merged.changed ? { ...event, eventKey: merged.eventKey, inviteTokens: merged.inviteTokens } : event;
+    if (merged.changed) {
+      setCalendarEvents((prev) => prev.map((ev) => (ev.id === event.id ? updatedEvent : ev)));
+      try {
+        await maybePublishCalendarEvent(updatedEvent, board, { skipBoardMetadata: true });
+      } catch (err) {
+        console.warn("Failed to publish updated calendar invite tokens", err);
+      }
+    }
+    const eventKey = updatedEvent.eventKey || merged.eventKey;
+    const inviteTokens = updatedEvent.inviteTokens ?? {};
+
+    let senderNpub: string | null = null;
+    try {
+      if (nostrPK && typeof (nip19 as any)?.npubEncode === "function") {
+        senderNpub = (nip19 as any).npubEncode(hexToBytes(nostrPK));
+      }
+    } catch {
+      senderNpub = null;
+    }
+    const senderInfo = senderNpub ? { npub: senderNpub } : undefined;
+
+    const sendRelays = Array.from(new Set([...boardRelays, ...fallbackRelays])).filter(Boolean);
+    for (const recipient of recipients) {
+      if (recipient === nostrPK) continue;
+      const inviteToken = inviteTokens[recipient];
+      if (!inviteToken || !eventKey) continue;
+      try {
+        const envelope = buildCalendarEventInviteEnvelope({
+          eventId: updatedEvent.id,
+          canonical: canonicalAddr,
+          view: viewAddr,
+          eventKey,
+          inviteToken,
+          title: updatedEvent.title,
+          start: updatedEvent.kind === "date" ? updatedEvent.startDate : updatedEvent.startISO,
+          end: updatedEvent.kind === "date" ? updatedEvent.endDate : updatedEvent.endISO,
+          relays: boardRelays,
+        }, senderInfo);
+        await sendShareMessage(envelope, recipient, nostrSkHex, sendRelays);
+      } catch (err) {
+        console.warn("Failed to send calendar invite", err);
+      }
+    }
+  }
+
+	  const convertTaskToCalendarEvent = (task: Task): CalendarEvent => {
+	    const board = boards.find((b) => b.id === task.boardId) ?? null;
+	    const order =
+	      typeof task.order === "number"
+	        ? task.order
+	        : nextOrderForCalendarBoard(task.boardId, calendarEventsRef.current, settings.newTaskPosition);
+	    const systemTimeZone = resolveSystemTimeZone();
+	    const taskTimeZone = normalizeTimeZone(task.dueTimeZone) ?? systemTimeZone;
+      const reminderTime = normalizeReminderTime(task.reminderTime);
+	    const base: CalendarEventBase = {
+	      id: task.id,
+	      boardId: task.boardId,
+	      columnId: board && isListLikeBoard(board) ? task.columnId : undefined,
+	      order,
+	      title: task.title,
+	      description: task.note,
+	      documents: task.documents?.length ? task.documents.map(ensureDocumentPreview) : undefined,
+	      locations: undefined,
+	      geohash: undefined,
+	      participants: undefined,
+	      hashtags: undefined,
+	      references: undefined,
+	      ...(Array.isArray(task.reminders) && task.reminders.length ? { reminders: [...task.reminders] } : {}),
+	      ...(!task.dueTimeEnabled && reminderTime ? { reminderTime } : {}),
+	      ...(task.recurrence ? { recurrence: task.recurrence, seriesId: task.seriesId || task.id } : {}),
+	    };
+
+    const todayKey = isoDatePart(new Date().toISOString());
+	    if (task.dueDateEnabled === false) {
+	      const startISO = new Date().toISOString();
+	      const startMs = Date.parse(startISO);
+	      const endISO = Number.isNaN(startMs) ? undefined : new Date(startMs + 60 * 60 * 1000).toISOString();
+	      const nextEvent: CalendarEvent = {
+	        ...base,
+	        kind: "time",
+	        startISO,
+	        ...(endISO ? { endISO } : {}),
+	        ...(taskTimeZone ? { startTzid: taskTimeZone, endTzid: taskTimeZone } : {}),
+	      };
+	      return applyHiddenForCalendarEvent(nextEvent, settings.weekStart, board?.kind ?? "week");
+	    }
+
+	    const dateKey = isoDatePart(task.dueISO, taskTimeZone) || todayKey;
+	    if (task.dueTimeEnabled) {
+	      const startISO = task.dueISO;
+	      const startMs = Date.parse(startISO);
+	      const endISO = Number.isNaN(startMs) ? undefined : new Date(startMs + 60 * 60 * 1000).toISOString();
+	      const nextEvent: CalendarEvent = {
+	        ...base,
+	        kind: "time",
+	        startISO,
+	        ...(endISO ? { endISO } : {}),
+	        ...(taskTimeZone ? { startTzid: taskTimeZone, endTzid: taskTimeZone } : {}),
+	      };
+	      return applyHiddenForCalendarEvent(nextEvent, settings.weekStart, board?.kind ?? "week");
+	    }
+
+	    const defaultStartTime = (() => {
+	      try {
+	        const now = new Date();
+	        const todayInTz = isoDatePart(now.toISOString(), taskTimeZone);
+	        if (todayInTz && todayInTz === dateKey) {
+	          const time = isoTimePart(now.toISOString(), taskTimeZone);
+	          const [hhRaw, mmRaw] = time.split(":");
+	          const hh = Number(hhRaw);
+	          const mm = Number(mmRaw);
+	          if (Number.isFinite(hh) && Number.isFinite(mm)) {
+	            const nextHour = (mm > 0 ? hh + 1 : hh) % 24;
+	            return `${String(nextHour).padStart(2, "0")}:00`;
+	          }
+	        }
+	      } catch {}
+	      return "09:00";
+	    })();
+	    const startISO = isoFromDateTime(dateKey, defaultStartTime, taskTimeZone);
+	    const startMs = Date.parse(startISO);
+	    const endISO = Number.isNaN(startMs) ? undefined : new Date(startMs + 60 * 60 * 1000).toISOString();
+	    const nextEvent: CalendarEvent = {
+	      ...base,
+	      kind: "time",
+	      startISO,
+	      ...(endISO ? { endISO } : {}),
+	      ...(taskTimeZone ? { startTzid: taskTimeZone, endTzid: taskTimeZone } : {}),
+	    };
+	    return applyHiddenForCalendarEvent(nextEvent, settings.weekStart, board?.kind ?? "week");
+	  };
+
+	  const convertCalendarEventToTask = (event: CalendarEvent): Task => {
+	    const board = boards.find((b) => b.id === event.boardId) ?? null;
+	    const order =
+	      typeof event.order === "number"
+	        ? event.order
+	        : nextOrderForBoard(event.boardId, tasksRef.current, settings.newTaskPosition);
+      const reminderTime = normalizeReminderTime(event.reminderTime);
+	    const base: Task = {
+	      id: event.id,
+	      boardId: event.boardId,
+	      createdBy: nostrPK || undefined,
+	      title: event.title,
+	      note: event.description,
+	      documents: event.documents?.length ? event.documents.map(ensureDocumentPreview) : undefined,
+	      createdAt: Date.now(),
+	      dueISO: isoForToday(),
+      dueDateEnabled: true,
+      completed: false,
+      order,
+    };
+
+    if (board?.kind === "week") {
+      base.column = "day";
+      base.dueDateEnabled = true;
+	    } else if (board && isListLikeBoard(board)) {
+	      base.columnId = event.columnId || (board.kind === "lists" ? board.columns[0]?.id : undefined);
+	    }
+      if (Array.isArray(event.reminders) && event.reminders.length) {
+        base.reminders = [...event.reminders];
+      }
+
+	    if (event.kind === "date") {
+	      base.dueISO = isoFromDateTime(event.startDate);
+	      base.dueTimeEnabled = false;
+	      base.dueTimeZone = undefined;
+        if (base.reminders?.length || reminderTime) {
+          base.reminderTime = reminderTime ?? DEFAULT_DATE_REMINDER_TIME;
+        }
+	    } else {
+	      base.dueISO = event.startISO;
+	      base.dueTimeEnabled = true;
+	      base.dueTimeZone = normalizeTimeZone(event.startTzid) ?? undefined;
+        base.reminderTime = undefined;
+	    }
+
+    if (event.recurrence) {
+      base.recurrence = event.recurrence;
+      base.seriesId = event.seriesId || base.id;
+    }
+
+    return base;
+  };
+
+  function saveCalendarEdit(updated: CalendarEvent) {
+    const original = editing;
+    const prior = calendarEventsRef.current.find((event) => event.id === updated.id) ?? null;
+    const priorParticipants = prior?.participants ?? [];
+    const priorPublishBoardId = prior?.originBoardId ?? prior?.boardId;
+    const publishBoardId = updated.originBoardId ?? updated.boardId;
+    const forceInviteAll = !!prior && (priorPublishBoardId !== publishBoardId || prior.kind !== updated.kind);
+    const boardForUpdate = boards.find((b) => b.id === publishBoardId) ?? null;
+    const shouldSendInvites = (updated.participants?.length ?? 0) > 0;
+    let inviteBoard = boardForUpdate;
+    if (shouldSendInvites && boardForUpdate && !boardForUpdate.nostr?.boardId) {
+      const relayFallback = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
+      const relays = Array.from(new Set(relayFallback.map((relay) => relay.trim()).filter(Boolean)));
+      if (relays.length) {
+        const nostrId =
+          boardForUpdate.nostr?.boardId ||
+          (BOARD_ID_REGEX.test(boardForUpdate.id) ? boardForUpdate.id : crypto.randomUUID());
+        inviteBoard = { ...boardForUpdate, nostr: { boardId: nostrId, relays } } as Board;
+        setBoards((prev) => prev.map((b) => (b.id === boardForUpdate.id ? inviteBoard! : b)));
+        showToast("Sharing enabled for this board to send invites.", 3000);
+      }
+    }
+    let publishBatch: CalendarEvent[] = [];
+    const prunedDeletes: CalendarEvent[] = [];
+    setCalendarEvents((prev) => {
+      const existing = prev.find((event) => event.id === updated.id) ?? null;
+      let next: CalendarEvent = updated;
+
+      if (existing && existing.boardId !== updated.boardId) {
+        next = {
+          ...next,
+          order: nextOrderForCalendarBoard(updated.boardId, prev, settings.newTaskPosition),
+        };
+      } else if (typeof next.order !== "number") {
+        next = {
+          ...next,
+          order: nextOrderForCalendarBoard(updated.boardId, prev, settings.newTaskPosition),
+        };
+      }
+
+      if (next.recurrence && next.recurrence.type !== "none") {
+        next = { ...next, seriesId: next.seriesId || next.id };
+      } else {
+        next = { ...next, recurrence: undefined, seriesId: undefined };
+      }
+      const visibilityBoard = boards.find((b) => b.id === next.boardId) ?? boardForUpdate ?? null;
+      next = applyHiddenForCalendarEvent(next, settings.weekStart, visibilityBoard?.kind ?? "week");
+
+      const idx = prev.findIndex((event) => event.id === next.id);
+      let nextState = idx >= 0
+        ? prev.map((event) => (event.id === next.id ? next : event))
+        : [...prev, next];
+
+      publishBatch = [next];
+
+      const shouldGenerate =
+        next.recurrence &&
+        next.recurrence.type !== "none" &&
+        (next.seriesId || next.id) === next.id;
+
+      if (!shouldGenerate) {
+        return nextState;
+      }
+
+      const seriesId = next.seriesId || next.id;
+      const rule = next.recurrence!;
+      const timeZone = next.kind === "time" ? normalizeTimeZone(next.startTzid) ?? undefined : "UTC";
+      const baseStartISO = next.kind === "time"
+        ? next.startISO
+        : isoFromDateTime(next.startDate, "00:00", "UTC");
+
+      const limitKey = rule.untilISO ? isoDatePart(rule.untilISO, timeZone) : null;
+      if (limitKey && ISO_DATE_PATTERN.test(limitKey)) {
+        const startKeyForSeriesEvent = (event: CalendarEvent): string | null => {
+          if (!event.recurrence) return null;
+          const eventSeriesId = event.seriesId || event.id;
+          if (eventSeriesId !== seriesId) return null;
+          if (event.kind === "date") {
+            return ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : null;
+          }
+          const dateKey = isoDatePart(event.startISO, timeZone);
+          return ISO_DATE_PATTERN.test(dateKey) ? dateKey : null;
+        };
+
+        const pruned: CalendarEvent[] = [];
+        for (const event of nextState) {
+          if (event.id === next.id) {
+            pruned.push(event);
+            continue;
+          }
+          const startKey = startKeyForSeriesEvent(event);
+          if (!startKey) {
+            pruned.push(event);
+            continue;
+          }
+          if (startKey > limitKey) {
+            prunedDeletes.push(event);
+            continue;
+          }
+          pruned.push(event);
+        }
+        nextState = pruned;
+      }
+
+      const existingIds = new Set(nextState.map((event) => event.id));
+      const durationMs = (() => {
+        if (next.kind !== "time") return 0;
+        if (!next.endISO) return 0;
+        const start = Date.parse(next.startISO);
+        const end = Date.parse(next.endISO);
+        if (Number.isNaN(start) || Number.isNaN(end)) return 0;
+        return Math.max(0, end - start);
+      })();
+
+      const durationDays = (() => {
+        if (next.kind !== "date") return 1;
+        const endDate = next.endDate && isDateKey(next.endDate) ? next.endDate : next.startDate;
+        const startParts = parseDateKey(next.startDate);
+        const endParts = parseDateKey(endDate);
+        if (!startParts || !endParts) return 1;
+        const startUtc = Date.UTC(startParts.year, startParts.month - 1, startParts.day);
+        const endUtc = Date.UTC(endParts.year, endParts.month - 1, endParts.day);
+        if (!Number.isFinite(startUtc) || !Number.isFinite(endUtc) || endUtc < startUtc) return 1;
+        return Math.round((endUtc - startUtc) / 86400000) + 1;
+      })();
+
+      let cursorISO = baseStartISO;
+      const maxInstances = Math.max(1, calendarRecurrenceLimit(rule));
+      const generated: CalendarEvent[] = [];
+
+      for (let i = 1; i < maxInstances; i++) {
+        const nextISO = nextOccurrence(cursorISO, rule, next.kind === "time", timeZone);
+        if (!nextISO) break;
+        cursorISO = nextISO;
+        const id = calendarRecurrenceInstanceId(seriesId, nextISO, rule, timeZone);
+        if (existingIds.has(id)) continue;
+
+        const nextOrder = nextOrderForCalendarBoard(next.boardId, nextState, settings.newTaskPosition);
+        const instanceBase: CalendarEventBase = {
+          ...(next as any),
+          id,
+          order: nextOrder,
+          seriesId,
+          recurrence: rule,
+          eventKey: undefined,
+          inviteTokens: undefined,
+          canonicalAddress: undefined,
+          viewAddress: undefined,
+          inviteToken: undefined,
+          inviteRelays: undefined,
+        };
+
+        const instance: CalendarEvent = next.kind === "time"
+          ? {
+              ...instanceBase,
+              kind: "time",
+              startISO: nextISO,
+              ...(durationMs ? { endISO: new Date(Date.parse(nextISO) + durationMs).toISOString() } : {}),
+              ...(normalizeTimeZone(next.startTzid) ? { startTzid: next.startTzid } : {}),
+              ...(normalizeTimeZone(next.endTzid) ? { endTzid: next.endTzid } : {}),
+            }
+          : (() => {
+              const startDate = isoDatePart(nextISO, "UTC");
+              const endDate = durationDays > 1 ? addDaysToDateKey(startDate, durationDays - 1) : null;
+              return {
+                ...instanceBase,
+                kind: "date",
+                startDate,
+                ...(endDate ? { endDate } : {}),
+              } as CalendarEvent;
+            })();
+
+        const normalizedInstance = applyHiddenForCalendarEvent(
+          instance,
+          settings.weekStart,
+          visibilityBoard?.kind ?? "week",
+        );
+        existingIds.add(id);
+        generated.push(normalizedInstance);
+        nextState = [...nextState, normalizedInstance];
+      }
+
+      if (generated.length) {
+        publishBatch = [next, ...generated];
+      }
+
+      return nextState;
+    });
+
+    try {
+      publishBatch.forEach((event) => {
+        maybePublishCalendarEventRef.current?.(event, inviteBoard ?? undefined).catch(() => {});
+      });
+    } catch {}
+    prunedDeletes.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
+
+    try {
+      maybeSendCalendarEventInvites(updated, {
+        previousParticipants: priorParticipants,
+        forceAll: forceInviteAll,
+        board: inviteBoard ?? undefined,
+      }).catch(() => {});
+    } catch {}
+
+    if (original?.originalType === "task") {
+      deleteTaskSilently(original.originalId);
+    }
+
+    setEditing(null);
+  }
+
+  const applyCalendarEvent = useCallback(async (ev: NostrEvent) => {
+    if (!ev || ev.kind !== TASKIFY_CALENDAR_EVENT_KIND) return;
+    const bTag = tagValue(ev, "b");
+    const eventId = tagValue(ev, "d");
+    if (!bTag || !eventId) return;
+    const lb = boardsRef.current.find((b) => b.nostr?.boardId && boardTag(b.nostr.boardId) === bTag);
+    if (!lb || !lb.nostr) return;
+    const boardId = lb.nostr.boardId;
+    let boardKeys: BoardNostrKeyPair;
+    try {
+      boardKeys = await deriveBoardNostrKeys(boardId);
+    } catch {
+      return;
+    }
+    if (ev.pubkey !== boardKeys.pk) return;
+    if (!nostrIdxRef.current.calendarClock.has(bTag)) nostrIdxRef.current.calendarClock.set(bTag, new Map());
+    const m = nostrIdxRef.current.calendarClock.get(bTag)!;
+    const last = m.get(eventId) || 0;
+    const pendingKey = `${bTag}::${eventId}`;
+    const isPending = pendingNostrCalendarRef.current.has(pendingKey);
+    const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
+    if (createdAt < last) return;
+    if (createdAt === last && isPending) return;
+    m.set(eventId, createdAt);
+
+    let payload: ReturnType<typeof parseCalendarCanonicalPayload> | null = null;
+    try {
+      const raw = await decryptCalendarPayloadForBoard(ev.content, boardKeys.skHex, boardKeys.pk);
+      payload = parseCalendarCanonicalPayload(raw);
+    } catch (err) {
+      console.warn("Failed to decrypt calendar event", err);
+      return;
+    }
+    if (!payload || payload.eventId !== eventId) return;
+    if (payload.deleted) {
+      setCalendarEvents((prev) => prev.filter((event) => event.id !== eventId));
+      return;
+    }
+
+    const colTag = tagValue(ev, "col");
+    const orderRaw = tagValue(ev, "order");
+    const order = orderRaw && Number.isFinite(Number(orderRaw)) ? Number(orderRaw) : undefined;
+    const canonicalAddr = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, eventId);
+    const viewAddr = calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, boardKeys.pk, eventId);
+
+    const parsedDocuments = normalizeDocumentList(payload.documents);
+    const toCommon = (): Omit<CalendarEventBase, "kind" | "startDate" | "endDate" | "startISO" | "endISO"> => ({
+      id: eventId,
+      boardId: lb.id,
+      columnId: (() => {
+        if (!isListLikeBoard(lb)) return undefined;
+        const col = colTag || "";
+        return col ? col : (lb.kind === "lists" ? lb.columns[0]?.id : undefined);
+      })(),
+      order,
+      title: payload.title || "Untitled",
+      summary: payload.summary,
+      description: payload.description || "",
+      documents: parsedDocuments ? parsedDocuments.map(ensureDocumentPreview) : undefined,
+      image: payload.image,
+      locations: payload.locations?.length ? payload.locations : undefined,
+      geohash: payload.geohash,
+      participants: payload.participants?.length
+        ? payload.participants.map((p) => ({
+            pubkey: p.pubkey,
+            relay: p.relay,
+            role: p.role,
+          }))
+        : undefined,
+      hashtags: payload.hashtags?.length ? payload.hashtags : undefined,
+      references: payload.references?.length ? payload.references : undefined,
+      eventKey: payload.eventKey,
+      inviteTokens: payload.inviteTokens,
+      canonicalAddress: canonicalAddr,
+      viewAddress: viewAddr,
+    });
+
+    const nextEvent: CalendarEvent | null = (() => {
+      if (payload.kind === "date") {
+        if (!payload.startDate || !isDateKey(payload.startDate)) return null;
+        const startDate = payload.startDate;
+        const endDate = payload.endDate && isDateKey(payload.endDate) && payload.endDate >= startDate
+          ? payload.endDate
+          : undefined;
+        return {
+          ...toCommon(),
+          kind: "date",
+          startDate,
+          ...(endDate ? { endDate } : {}),
+        };
+      }
+      if (payload.kind !== "time") return null;
+      const startISO = payload.startISO || "";
+      const startMs = Date.parse(startISO);
+      if (!startISO || Number.isNaN(startMs)) return null;
+      const endISO = payload.endISO && Date.parse(payload.endISO) > startMs ? payload.endISO : undefined;
+      const startTzid = normalizeTimeZone(payload.startTzid) ?? undefined;
+      const endTzid = normalizeTimeZone(payload.endTzid) ?? undefined;
+      return {
+        ...toCommon(),
+        kind: "time",
+        startISO,
+        ...(endISO ? { endISO } : {}),
+        ...(startTzid ? { startTzid } : {}),
+        ...(endTzid ? { endTzid } : {}),
+      };
+    })();
+
+    if (!nextEvent) return;
+
+    setCalendarEvents((prev) => {
+      const idx = prev.findIndex((existing) => existing.id === nextEvent.id);
+      const existing = idx >= 0 ? prev[idx] : null;
+      let merged: CalendarEvent = {
+        ...nextEvent,
+        ...(Array.isArray(existing?.reminders) && existing.reminders.length ? { reminders: existing.reminders } : {}),
+        ...(existing?.reminderTime ? { reminderTime: existing.reminderTime } : {}),
+        ...(existing?.recurrence ? { recurrence: existing.recurrence } : {}),
+        ...(existing?.seriesId ? { seriesId: existing.seriesId } : {}),
+        ...(existing?.hiddenUntilISO ? { hiddenUntilISO: existing.hiddenUntilISO } : {}),
+        ...(typeof existing?.order === "number" && typeof nextEvent.order !== "number" ? { order: existing.order } : {}),
+      } as CalendarEvent;
+      if (!existing) {
+        merged = applyHiddenForCalendarEvent(merged, settings.weekStart, lb.kind);
+      }
+      if (idx >= 0) {
+        const copy = prev.slice();
+        copy[idx] = merged;
+        return copy;
+      }
+      return [...prev, merged];
+    });
+  }, [setCalendarEvents, settings.weekStart, tagValue]);
+
   /* ---------- Drag & Drop: move or reorder ---------- */
   function moveTask(
     id: string,
     target:
       | { type: "day"; day: Weekday }
-      | { type: "bounties" }
       | { type: "list"; columnId: string },
     beforeId?: string
   ) {
@@ -6682,11 +15476,11 @@ export default function App() {
 
       const updated: Task = { ...task };
       const prevDue = startOfDay(new Date(task.dueISO));
-      const originalTime = task.dueTimeEnabled ? isoTimePart(task.dueISO) : "";
+      const taskTimeZone = normalizeTimeZone(task.dueTimeZone) ?? undefined;
+      const originalTime = task.dueTimeEnabled ? isoTimePart(task.dueISO, taskTimeZone) : "";
       const baseWeekday = Number.isNaN(prevDue.getTime()) ? undefined : prevDue;
       const sourceBoardId = task.boardId;
       let targetBoardId = sourceBoardId;
-      const wasPinned = taskHasBountyList(task, activeBountyListKey);
       if (target.type === "day") {
         updated.column = "day";
         updated.columnId = undefined;
@@ -6694,19 +15488,7 @@ export default function App() {
           base: baseWeekday,
           weekStart: settings.weekStart,
         });
-      } else if (target.type === "bounties") {
-        updated.column = "bounties";
-        updated.columnId = undefined;
-        updated.dueISO = isoForWeekday(0, {
-          base: baseWeekday,
-          weekStart: settings.weekStart,
-        });
-        if (bountyListEnabled && activeBountyListKey) {
-          const lists = Array.isArray(updated.bountyLists) ? updated.bountyLists : [];
-          if (!lists.includes(activeBountyListKey)) {
-            updated.bountyLists = [...lists, activeBountyListKey];
-          }
-        }
+        updated.dueDateEnabled = true;
       } else {
         if (!isListLikeBoard(currentBoard)) return prev;
         const source = listColumnSources.get(target.columnId);
@@ -6715,11 +15497,10 @@ export default function App() {
         updated.columnId = source.columnId;
         updated.boardId = source.boardId;
         targetBoardId = source.boardId;
-        updated.dueISO = isoForWeekday(0);
       }
       if (originalTime) {
         const nextDatePart = isoDatePart(updated.dueISO);
-        const withTime = isoFromDateTime(nextDatePart, originalTime);
+        const withTime = isoFromDateTime(nextDatePart, originalTime, taskTimeZone);
         if (withTime) updated.dueISO = withTime;
       }
       const newDue = startOfDay(new Date(updated.dueISO));
@@ -6740,10 +15521,6 @@ export default function App() {
         updated.completed = false;
         updated.completedAt = undefined;
         updated.completedBy = undefined;
-      }
-      if (target.type !== "bounties" && wasPinned && activeBountyListKey && updated.bountyLists) {
-        const filtered = updated.bountyLists.filter((value) => value !== activeBountyListKey);
-        updated.bountyLists = filtered.length ? filtered : undefined;
       }
 
       // remove original
@@ -6909,28 +15686,69 @@ export default function App() {
     let parsed: Array<{id:string; relays:string}> = [];
     try { parsed = JSON.parse(nostrBoardsKey || "[]"); } catch {}
     const unsubs: Array<() => void> = [];
+    const syncTimeoutByBoard = new Map<string, number>();
+    const clearSyncTimeout = (bTag: string) => {
+      const timeoutId = syncTimeoutByBoard.get(bTag);
+      if (timeoutId == null) return;
+      window.clearTimeout(timeoutId);
+      syncTimeoutByBoard.delete(bTag);
+    };
+    setPendingNostrInitialSyncByBoardTag((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const item of parsed) {
+        if (completedNostrInitialSyncRef.current.has(item.id) || next[item.id]) continue;
+        next[item.id] = true;
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
     for (const it of parsed) {
       const rls = it.relays.split(",").filter(Boolean);
       if (!rls.length) continue;
+      if (!completedNostrInitialSyncRef.current.has(it.id)) {
+        const timeoutId = window.setTimeout(() => {
+          markNostrBoardInitialSyncComplete(it.id);
+        }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
+        syncTimeoutByBoard.set(it.id, timeoutId);
+      }
       pool.setRelays(rls);
       ensureMigrationState(it.id);
       const filters = [
         { kinds: [30300, 30301], "#b": [it.id], limit: 500 },
         { kinds: [30300], "#d": [it.id], limit: 1 },
+        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], limit: 500 },
       ];
       const unsub = pool.subscribe(rls, filters, (ev) => {
         if (ev.kind === 30300) enqueueNostrApply(() => applyBoardEvent(ev)).catch(() => {});
         else if (ev.kind === 30301) enqueueNostrApply(() => applyTaskEvent(ev)).catch(() => {});
+        else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueNostrApply(() => applyCalendarEvent(ev)).catch(() => {});
       }, () => {
         // After initial sync, migrate legacy authors to the per-board key if needed.
         nostrApplyQueue.current.catch(() => {}).then(() => {
+          clearSyncTimeout(it.id);
+          markNostrBoardInitialSyncComplete(it.id);
           setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
         });
       });
       unsubs.push(unsub);
     }
-    return () => { unsubs.forEach(u => u()); };
-  }, [nostrBoardsKey, pool, applyBoardEvent, applyTaskEvent, nostrRefresh, ensureMigrationState, migrateBoardRef, enqueueNostrApply]);
+    return () => {
+      unsubs.forEach((u) => u());
+      syncTimeoutByBoard.forEach((timeoutId) => window.clearTimeout(timeoutId));
+    };
+  }, [
+    nostrBoardsKey,
+    pool,
+    applyBoardEvent,
+    applyTaskEvent,
+    applyCalendarEvent,
+    nostrRefresh,
+    ensureMigrationState,
+    migrateBoardRef,
+    enqueueNostrApply,
+    markNostrBoardInitialSyncComplete,
+  ]);
 
   // horizontal scroller ref to enable iOS momentum scrolling
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -6940,7 +15758,7 @@ export default function App() {
     const autoCenteredSet = autoCenteredWeekRef.current;
     const prevActive = activeWeekBoardRef.current;
 
-    if (view !== "board") {
+    if (activePage !== "boards" || view !== "board") {
       if (prevActive) {
         autoCenteredSet.delete(prevActive);
         activeWeekBoardRef.current = null;
@@ -6961,11 +15779,11 @@ export default function App() {
     }
 
     activeWeekBoardRef.current = currentBoardId;
-  }, [currentBoardId, currentBoard?.kind, view]);
+  }, [activePage, currentBoardId, currentBoard?.kind, view]);
 
   // reset dayChoice when board/view changes and center current day for week boards
   useEffect(() => {
-    if (!currentBoard || view !== "board") return;
+    if (!currentBoard || view !== "board" || activePage !== "boards") return;
     if (currentBoard.kind === "bible") {
       return;
     }
@@ -7011,7 +15829,7 @@ export default function App() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentBoardId, currentBoard?.id, currentBoard?.kind, dayChoice, listColumnSources, listColumns, view]);
+  }, [activePage, currentBoardId, currentBoard?.id, currentBoard?.kind, dayChoice, listColumnSources, listColumns, view]);
 
   useEffect(() => {
     const board = currentBoard;
@@ -7025,7 +15843,7 @@ export default function App() {
     }
   }, [currentBoard, dayChoice, listColumnSources, view]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const board = currentBoard;
     if (view !== "board") return;
     if (!isListLikeBoard(board)) return;
@@ -7052,6 +15870,7 @@ export default function App() {
           const clamped = Math.min(Math.max(latest.scrollLeft, 0), maxScroll);
           scrollStore.set(boardId, clamped);
         });
+        nudgeHorizontalScroller(latest);
         return;
       }
       const target = stored == null ? 0 : Math.min(Math.max(stored, 0), maxScroll);
@@ -7060,6 +15879,7 @@ export default function App() {
       } else {
         latest.scrollLeft = target;
       }
+      nudgeHorizontalScroller(latest);
     };
 
     applyInitialScroll();
@@ -7067,6 +15887,13 @@ export default function App() {
     let timeout: number | undefined;
     if (typeof window !== "undefined") {
       timeout = window.setTimeout(applyInitialScroll, 150);
+    }
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => {
+        applyInitialScroll();
+      });
+      resizeObserver.observe(scroller);
     }
 
     const handleScroll = () => {
@@ -7081,6 +15908,7 @@ export default function App() {
       if (typeof timeout === "number") {
         window.clearTimeout(timeout);
       }
+      resizeObserver?.disconnect();
       cancelAnimationFrame(raf);
       const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
       const clamped = Math.min(Math.max(scroller.scrollLeft, 0), maxScroll);
@@ -7141,184 +15969,344 @@ export default function App() {
     };
   }, [currentBoard?.id, currentBoard?.kind, view]);
 
-  const currentTutorial = tutorialStep != null ? tutorialSteps[tutorialStep] : null;
-  const totalTutorialSteps = tutorialSteps.length;
-  const activeView = !settings.completedTab && view === "completed" ? "board" : view;
+  const activeView =
+    !settings.completedTab && (view === "completed" || view === "board-upcoming") ? "board" : view;
+  const shareBoardId =
+    shareBoardMode === "template"
+      ? shareTemplateShare?.id ?? null
+      : shareBoardTarget?.nostr?.boardId ?? null;
+  const shareBoardQrPayload = useMemo(() => {
+    if (!shareBoardId || !shareBoardTarget) return null;
+    const relayList = normalizeRelayList(
+      shareBoardMode === "template"
+        ? shareTemplateShare?.relays
+        : shareBoardTarget.nostr?.relays?.length
+          ? shareBoardTarget.nostr.relays
+          : defaultRelays.length
+            ? defaultRelays
+            : Array.from(DEFAULT_NOSTR_RELAYS),
+    );
+    try {
+      return JSON.stringify(buildBoardShareEnvelope(shareBoardId, shareBoardTarget.name, relayList));
+    } catch {
+      return shareBoardId;
+    }
+  }, [
+    defaultRelays,
+    normalizeRelayList,
+    shareBoardId,
+    shareBoardMode,
+    shareBoardTarget,
+    shareTemplateShare,
+  ]);
+  const shareBoardDisplayName = shareBoardTarget?.name || "Board";
+  const canShareBoard = !!currentBoard && currentBoard.kind !== "bible";
+  const boardSelectOptions = visibleBoards.length === 0 ? (
+    <>
+      <option value="">No boards</option>
+      <option value={ADD_BOARD_OPTION_ID}>+</option>
+    </>
+  ) : (
+    <>
+      {visibleBoards.map((b) => (
+        <option key={b.id} value={b.id}>
+          {b.name}
+        </option>
+      ))}
+      <option value={ADD_BOARD_OPTION_ID}>+</option>
+    </>
+  );
 
   return (
-    <div className="min-h-screen px-4 py-4 sm:px-6 lg:px-8 text-primary">
-      <div className="mx-auto max-w-7xl space-y-5">
-        {/* Header */}
-        <header className="relative space-y-3">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="flex flex-col gap-1 justify-end -translate-y-[2px]">
-              <h1 className="text-3xl font-semibold tracking-tight">
-                Taskify
-              </h1>
-              <div
-                ref={boardDropContainerRef}
-                className="relative min-w-0 sm:min-w-[12rem]"
-                style={{ maxWidth: 'min(28rem, calc(100vw - 7.5rem))' }}
-                onDragOver={e => {
-                  if (!draggingTaskId) return;
-                  e.preventDefault();
-                  cancelBoardDropClose();
-                  if (!boardDropOpen && !boardDropTimer.current) {
-                    boardDropTimer.current = window.setTimeout(() => {
-                      const rect = boardDropContainerRef.current?.getBoundingClientRect();
-                      if (rect) {
-                        setBoardDropPos({ top: rect.top, left: rect.right });
+    <div className="min-h-screen text-primary">
+      <div className="app-shell mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        {(activePage === "boards" || activePage === "upcoming" || activePage === "wallet-bounties" || activePage === "settings") && (
+          <header className="app-header">
+            {activePage === "boards" && (
+              <>
+                <div className="app-header__left">
+                  <div
+                    ref={boardDropContainerRef}
+                    className="board-select board-select--compact relative min-w-0 max-w-full sm:min-w-[12rem]"
+                    style={{ maxWidth: "clamp(10rem, calc(100vw - 10rem), 28rem)" }}
+                    onDragOver={(e) => {
+                      if (!draggingTaskId) return;
+                      e.preventDefault();
+                      cancelBoardDropClose();
+                      if (!boardDropOpen && !boardDropTimer.current) {
+                        boardDropTimer.current = window.setTimeout(() => {
+                          const rect = boardDropContainerRef.current?.getBoundingClientRect();
+                          if (rect) {
+                            setBoardDropPos({ top: rect.top, left: rect.right });
+                          }
+                          setBoardDropOpen(true);
+                          boardDropTimer.current = undefined;
+                        }, 500);
                       }
-                      setBoardDropOpen(true);
-                      boardDropTimer.current = undefined;
-                    }, 500);
-                  }
-                }}
-                onDragLeave={() => {
-                  if (!draggingTaskId) return;
-                  if (boardDropTimer.current) {
-                    window.clearTimeout(boardDropTimer.current);
-                    boardDropTimer.current = undefined;
-                  }
-                  scheduleBoardDropClose();
-                }}
-              >
-                <select
-                  ref={boardSelectorRef}
-                  value={currentBoardId}
-                  onChange={handleBoardSelect}
-                  className="pill-select w-full min-w-0 truncate sm:w-auto sm:min-w-[12rem]"
-                  style={{ textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                  title="Boards"
-                >
-                  {visibleBoards.length === 0 ? (
-                    <option value="">No boards</option>
-                  ) : (
-                    visibleBoards.map(b => <option key={b.id} value={b.id}>{b.name}</option>)
-                  )}
-                </select>
-                {boardDropOpen && boardDropPos &&
-                  createPortal(
-                    <div
-                      ref={boardDropListRef}
-                      className="glass-panel fixed z-50 w-56 p-2"
-                      style={{ top: boardDropPos.top, left: boardDropPos.left }}
-                      onDragOver={e => {
-                        if (!draggingTaskId) return;
-                        e.preventDefault();
-                        cancelBoardDropClose();
-                      }}
-                      onDragLeave={() => {
-                        if (!draggingTaskId) return;
-                        scheduleBoardDropClose();
-                      }}
+                    }}
+                    onDragLeave={() => {
+                      if (!draggingTaskId) return;
+                      if (boardDropTimer.current) {
+                        window.clearTimeout(boardDropTimer.current);
+                        boardDropTimer.current = undefined;
+                      }
+                      scheduleBoardDropClose();
+                    }}
+                  >
+                    <select
+                      ref={boardSelectorRef}
+                      value={currentBoardId}
+                      onChange={handleBoardSelect}
+                      className={`pill-select pill-select--compact pill-select--no-arrow w-full min-w-0 truncate sm:w-auto sm:min-w-[12rem]${
+                        canShareBoard ? " pill-select--with-action" : ""
+                      }`}
+                      style={{ textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                      title="Boards"
                     >
-                      {visibleBoards.filter(b => b.kind !== "bible").length === 0 ? (
-                        <div className="rounded-xl px-3 py-2 text-sm text-secondary">
-                          No boards
-                        </div>
-                      ) : (
-                        visibleBoards
-                          .filter(b => b.kind !== "bible")
-                          .map(b => (
-                            <div
-                              key={b.id}
-                              className="rounded-xl px-3 py-2 text-primary hover:bg-surface-muted"
-                              onDragOver={e => { if (draggingTaskId) e.preventDefault(); }}
-                              onDrop={e => {
-                                if (!draggingTaskId) return;
-                                e.preventDefault();
-                                moveTaskToBoard(draggingTaskId, b.id);
-                                handleDragEnd();
-                              }}
-                            >
-                              {b.name}
-                            </div>
-                          ))
+                      {boardSelectOptions}
+                    </select>
+                    {canShareBoard && (
+                      <button
+                        type="button"
+                        className="pill-select-action pressable"
+                        onClick={openShareBoard}
+                        title="Share board"
+                        aria-label="Share board"
+                      >
+                        <ShareBoardIcon className="pill-select-action__icon" />
+                      </button>
+                    )}
+                    {boardDropOpen &&
+                      boardDropPos &&
+                      createPortal(
+                        <div
+                          ref={boardDropListRef}
+                          className="glass-panel fixed z-50 w-56 p-2"
+                          style={{ top: boardDropPos.top, left: boardDropPos.left }}
+                          onDragOver={(e) => {
+                            if (!draggingTaskId) return;
+                            e.preventDefault();
+                            cancelBoardDropClose();
+                          }}
+                          onDragLeave={() => {
+                            if (!draggingTaskId) return;
+                            scheduleBoardDropClose();
+                          }}
+                        >
+                          {visibleBoards.filter((b) => b.kind !== "bible").length === 0 ? (
+                            <div className="rounded-xl px-3 py-2 text-sm text-secondary">No boards</div>
+                          ) : (
+                            visibleBoards
+                              .filter((b) => b.kind !== "bible")
+                              .map((b) => {
+                                return (
+                                  <div
+                                    key={b.id}
+                                    className="rounded-xl px-3 py-2 text-primary hover:bg-surface-muted"
+                                    onDragOver={(e) => {
+                                      if (draggingTaskId) e.preventDefault();
+                                    }}
+                                    onDrop={(e) => {
+                                      if (!draggingTaskId) return;
+                                      e.preventDefault();
+                                      moveTaskToBoard(draggingTaskId, b.id);
+                                      handleDragEnd();
+                                    }}
+                                  >
+                                    {b.name}
+                                  </div>
+                                );
+                              })
+                          )}
+                        </div>,
+                        document.body
                       )}
-                    </div>,
-                    document.body
-                  )}
-              </div>
-            </div>
-            <div className="ml-auto">
-              <div className="control-matrix glass-panel">
-                <button
-                  ref={walletButtonRef}
-                  className="control-matrix__btn pressable"
-                  onClick={openWallet}
-                  title="Wallet"
-                  aria-label="Open Cashu wallet"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-[18px] w-[18px]"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="#fff"
-                    strokeWidth={2.4}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <line x1="12" y1="4" x2="12" y2="20" />
-                    <line x1="8" y1="8" x2="16" y2="8" />
-                    <line x1="7" y1="12" x2="17" y2="12" />
-                    <line x1="8" y1="16" x2="16" y2="16" />
-                    <line x1="12" y1="2.75" x2="12" y2="5.25" />
-                    <line x1="12" y1="18.75" x2="12" y2="21.25" />
-                  </svg>
-                </button>
-                <button
-                  className="control-matrix__btn pressable"
-                  onClick={openSettings}
-                  title="Settings"
-                  aria-label="Open settings"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-[18px] w-[18px]"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="#fff"
-                    strokeWidth={1.8}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <circle cx="12" cy="12" r="3" />
-                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2h-.34a2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2h.34a2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                  </svg>
-                </button>
-                {settings.completedTab ? (
+                  </div>
+                </div>
+                <div className="app-header__right">
+                  {settings.completedTab ? (
+                    <button
+                      ref={completedTabRef}
+                      className="app-header__icon-btn pressable"
+                      data-active={view === "completed"}
+                      onClick={() => setView((prev) => (prev === "completed" ? "board" : "completed"))}
+                      aria-pressed={view === "completed"}
+                      aria-label={view === "completed" ? "Show board" : "Show completed tasks"}
+                      title={view === "completed" ? "Show board" : "Show completed tasks"}
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-[18px] w-[18px]"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.8}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M6 12.5l3.75 3.75L18 8.5" />
+                      </svg>
+                    </button>
+	                  ) : currentBoard?.kind !== "bible" && !currentBoard?.clearCompletedDisabled ? (
+	                    <button
+	                      ref={completedTabRef}
+	                      className="app-header__icon-btn pressable"
+                      onClick={clearCompleted}
+                      disabled={completed.length === 0}
+                      aria-label="Clear completed tasks"
+                      title="Clear completed tasks"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-[18px] w-[18px]"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.8}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M4 6h16" />
+                        <path d="M6 6v12a1 1 0 001 1h10a1 1 0 001-1V6" />
+                        <path d="M9 6V4h6v2" />
+                        <path d="M10 11l4 4" />
+	                        <path d="M14 11l-4 4" />
+	                      </svg>
+	                    </button>
+	                  ) : null}
+                  {settings.completedTab && currentBoard?.kind !== "bible" ? (
+                    <button
+                      type="button"
+                      className="app-header__icon-btn pressable"
+                      data-active={view === "board-upcoming"}
+                      onClick={() => setView((prev) => (prev === "board-upcoming" ? "board" : "board-upcoming"))}
+                      aria-pressed={view === "board-upcoming"}
+                      aria-label={view === "board-upcoming" ? "Show board" : "Show board upcoming"}
+                      title={view === "board-upcoming" ? "Show board" : "Show board upcoming"}
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-[18px] w-[18px]"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.7}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <rect x="4" y="5" width="16" height="15" rx="2" />
+                        <path d="M8 3v4" />
+                        <path d="M16 3v4" />
+                        <path d="M4 11h16" />
+                        <path d="M12 14v3l2 1" />
+                      </svg>
+                    </button>
+                  ) : null}
+	                  <button
+	                    type="button"
+	                    className="app-header__icon-btn pressable"
+	                    onClick={() => setBoardSortSheetOpen(true)}
+	                    title="Filter and sort"
+	                    aria-label="Filter and sort"
+	                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-[18px] w-[18px]"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <line x1="8" y1="17" x2="8" y2="7" />
+                      <polyline points="5 10 8 7 11 10" />
+                      <line x1="16" y1="7" x2="16" y2="17" />
+                      <polyline points="13 14 16 17 19 14" />
+	                    </svg>
+	                  </button>
+		                </div>
+		              </>
+		            )}
+            {activePage === "upcoming" && (
+              <>
+                <div className="app-header__title">Upcoming</div>
+                <div className="app-header__right">
+	                  <button
+	                    type="button"
+	                    className="app-header__icon-btn pressable"
+	                    onClick={() => handleUpcomingViewChange(upcomingView === "list" ? "details" : "list")}
+	                    title="Change upcoming view"
+	                    aria-label="Change upcoming view"
+	                    data-active={upcomingView === "list"}
+	                  >
+                    {upcomingView === "list" ? (
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-[18px] w-[18px]"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.8}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <rect x="4" y="5" width="16" height="15" rx="2" />
+                        <path d="M8 3v4" />
+                        <path d="M16 3v4" />
+                        <path d="M4 11h16" />
+                        <path d="M12 14v3l2 1" />
+                      </svg>
+                    ) : (
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-[18px] w-[18px]"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={1.8}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <line x1="5" y1="6" x2="21" y2="6" />
+                        <line x1="5" y1="12" x2="21" y2="12" />
+                        <line x1="5" y1="18" x2="21" y2="18" />
+                        <circle cx="3" cy="6" r="1" />
+                        <circle cx="3" cy="12" r="1" />
+                        <circle cx="3" cy="18" r="1" />
+                      </svg>
+                    )}
+                  </button>
                   <button
-                    ref={completedTabRef}
-                    className="control-matrix__btn pressable"
-                    data-active={view === "completed"}
-                    onClick={() => setView((prev) => (prev === "completed" ? "board" : "completed"))}
-                    aria-pressed={view === "completed"}
-                    aria-label={view === "completed" ? "Show board" : "Show completed tasks"}
-                    title={view === "completed" ? "Show board" : "Show completed tasks"}
+                    type="button"
+                    className="app-header__icon-btn pressable"
+                    onClick={() => setUpcomingSortSheetOpen(true)}
+                    title="Sort upcoming tasks"
+                    aria-label="Sort upcoming tasks"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
                       className="h-[18px] w-[18px]"
                       fill="none"
                       viewBox="0 0 24 24"
-                      stroke="#fff"
-                      strokeWidth={1.8}
+                      stroke="currentColor"
+                      strokeWidth={2}
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     >
-                      <path d="M6 12.5l3.75 3.75L18 8.5" />
+                      <line x1="8" y1="17" x2="8" y2="7" />
+                      <polyline points="5 10 8 7 11 10" />
+                      <line x1="16" y1="7" x2="16" y2="17" />
+                      <polyline points="13 14 16 17 19 14" />
                     </svg>
                   </button>
-                ) : currentBoard?.kind !== "bible" && !currentBoard?.clearCompletedDisabled ? (
                   <button
-                    ref={completedTabRef}
-                    className="control-matrix__btn pressable"
-                    onClick={clearCompleted}
-                    disabled={completed.length === 0}
-                    aria-label="Clear completed tasks"
-                    title="Clear completed tasks"
+                    type="button"
+                    className="app-header__icon-btn pressable"
+                    onClick={openUpcomingSearch}
+                    title="Search upcoming tasks"
+                    aria-label="Search upcoming tasks"
+                    data-active={showUpcomingSearch}
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
@@ -7330,71 +16318,50 @@ export default function App() {
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     >
-                      <path d="M4 6h16" />
-                      <path d="M6 6v12a1 1 0 001 1h10a1 1 0 001-1V6" />
-                      <path d="M9 6V4h6v2" />
-                      <path d="M10 11l4 4" />
-                      <path d="M14 11l-4 4" />
+                      <circle cx="11" cy="11" r="7" />
+                      <line x1="16.65" y1="16.65" x2="21" y2="21" />
                     </svg>
                   </button>
-                ) : null}
-                <button
-                  ref={upcomingButtonRef}
-                  className="control-matrix__btn pressable"
-                  onClick={openUpcoming}
-                  title={`Upcoming tasks${upcoming.length ? ` (${upcoming.length})` : ""}`}
-                  aria-label={`Open upcoming tasks (${upcoming.length})`}
-                  data-hovered={upcomingHover}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setUpcomingHover(true);
-                  }}
-                  onDragLeave={() => setUpcomingHover(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    const id = e.dataTransfer.getData("text/task-id");
-                    if (id) postponeTaskOneWeek(id);
-                    setUpcomingHover(false);
-                    handleDragEnd();
-                  }}
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-[18px] w-[18px]"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="#fff"
-                    strokeWidth={1.8}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
+                  <button
+                    type="button"
+                    className="app-header__icon-btn app-header__icon-btn--accent pressable"
+                    onClick={openUpcomingTaskEditor}
+                    title="Add task"
+                    aria-label="Add task"
                   >
-                    <rect x="4" y="5" width="16" height="15" rx="2" />
-                    <path d="M8 3v4" />
-                    <path d="M16 3v4" />
-                    <path d="M4 11h16" />
-                    <path d="M12 14v3l2 1" />
-                  </svg>
-                  <span className="sr-only">Upcoming tasks</span>
-                </button>
-              </div>
-              {!settings.completedTab && currentBoard?.kind !== "bible" && !currentBoard?.clearCompletedDisabled && (
-                <button
-                  className="ghost-button button-sm pressable mt-2 w-full disabled:opacity-50"
-                  onClick={clearCompleted}
-                  disabled={completed.length === 0}
-                >
-                  Clear completed
-                </button>
-              )}
-            </div>
-          </div>
-        </header>
+                    <span aria-hidden="true">+</span>
+                  </button>
+                </div>
+              </>
+            )}
+            {activePage === "wallet-bounties" && (
+              <>
+                <div className="app-header__title">Bounties</div>
+                <div className="app-header__right">
+                  <button
+                    type="button"
+                    className="ghost-button button-sm pressable"
+                    onClick={openWallet}
+                  >
+                    Wallet
+                  </button>
+                </div>
+              </>
+            )}
+            {activePage === "settings" && <div className="app-header__title">Settings</div>}
+          </header>
+        )}
 
         {/* Animation overlay for fly effects (coins, etc.) */}
         <div ref={flyLayerRef} className="pointer-events-none fixed inset-0 z-[9999]" />
 
+        <div
+          className={`app-content${activePage === "upcoming" && upcomingView === "list" ? " app-content--locked" : ""}`}
+          ref={appContentRef}
+        >
+        {activePage === "boards" && (
+        <div className="relative flex min-h-0 flex-1 flex-col">
         {/* Board/Completed */}
-        <div className="relative">
           {activeView === "bible" ? (
             settings.bibleTrackerEnabled ? (
               <div
@@ -7411,6 +16378,8 @@ export default function App() {
                         onToggleChapter={handleToggleBibleChapter}
                         onUpdateChapterVerses={handleUpdateBibleChapterVerses}
                         onReset={handleResetBibleTracker}
+                        onOpenPrint={handleOpenBiblePrint}
+                        onOpenScan={handleOpenBibleScan}
                         onDeleteArchive={handleDeleteBibleArchive}
                         onRestoreArchive={handleRestoreBibleArchive}
                         onCompleteBook={handleCompleteBibleBook}
@@ -7447,10 +16416,10 @@ export default function App() {
               {/* HORIZONTAL board: single row, side-scroll */}
               <div
                 ref={scrollerRef}
-                className="overflow-x-auto pb-4 w-full"
+                className="flex-1 min-h-0 overflow-x-auto pb-0 w-full"
                 style={{ WebkitOverflowScrolling: "touch" }} // fluid momentum scroll on iOS
               >
-                <div className="flex gap-4 min-w-max">
+                <div className="flex gap-4 min-w-max h-full items-stretch">
                   {Array.from({ length: 7 }, (_, i) => i as Weekday).map((day) => (
                     <DroppableColumn
                       ref={el => setColumnRef(`week-day-${day}`, el)}
@@ -7483,19 +16452,28 @@ export default function App() {
                         </button>
                       </form>
                     )}
-                  >
-                        {(byDay.get(day) || []).map((t) => (
-                        <Card
-                          key={t.id}
-                          task={t}
-                          onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
+	                  >
+	                        {(calendarByDay.get(day) || []).map((ev) => (
+		                          <EventCard
+		                            key={`${ev.id}-${day}`}
+		                            event={ev}
+		                            showDate={false}
+		                            onOpenDocument={(_event, doc) => handleOpenEventDocument(doc)}
+		                            onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
+		                          />
+	                        ))}
+	                        {(byDay.get(day) || []).map((t) => (
+	                        <Card
+	                          key={t.id}
+	                          task={t}
+	                          onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
                           onComplete={(from) => {
                             if (!t.completed) completeTask(t.id);
                             else if (t.bounty && t.bounty.state === 'locked') revealBounty(t.id);
                             else if (t.bounty && t.bounty.state === 'unlocked' && t.bounty.token) claimBounty(t.id, from);
                             else restoreTask(t.id);
                           }}
-                          onEdit={() => setEditing(t)}
+                          onEdit={() => setEditing({ type: "task", originalType: "task", originalId: t.id, task: t })}
                           onDropBefore={(dragId) => moveTask(dragId, { type: "day", day }, t.id)}
                           showStreaks={settings.streaksEnabled}
                           onToggleSubtask={(subId) => toggleSubtask(t.id, subId)}
@@ -7503,66 +16481,13 @@ export default function App() {
                           onDragEnd={handleDragEnd}
                           hideCompletedSubtasks={settings.hideCompletedSubtasks}
                           onOpenDocument={handleOpenDocument}
+                          onDismissInbox={
+                            t.inboxItem ? () => completeTask(t.id, { inboxAction: "dismiss" }) : undefined
+                          }
                         />
                       ))}
                     </DroppableColumn>
                   ))}
-
-                  {/* Bounties */}
-                  {bountyListEnabled && (
-                    <DroppableColumn
-                      ref={el => setColumnRef("week-bounties", el)}
-                      title="Bounties"
-                      onTitleClick={() => setDayChoice("bounties")}
-                      onDropCard={(payload) => moveTask(payload.id, { type: "bounties" }, payload.beforeId)}
-                      onDropEnd={handleDragEnd}
-                      scrollable
-                      footer={(
-                        <form
-                          className="mt-2 flex gap-1"
-                          onSubmit={(e) => { e.preventDefault(); addInlineTask("bounties"); }}
-                        >
-                          <input
-                            ref={el => setInlineInputRef("bounties", el)}
-                            value={inlineTitles["bounties"] || ""}
-                            onChange={(e) => setInlineTitles(prev => ({ ...prev, bounties: e.target.value }))}
-                            className="pill-input pill-input--compact flex-1 min-w-0"
-                            placeholder="Add task"
-                          />
-                          <button
-                            type="submit"
-                            className="accent-button accent-button--circle pressable shrink-0"
-                            aria-label="Add task"
-                          >
-                            <span aria-hidden="true">+</span>
-                            <span className="sr-only">Add task</span>
-                          </button>
-                        </form>
-                      )}
-                    >
-                        {bounties.map((t) => (
-                          <Card
-                            key={t.id}
-                            task={t}
-                            onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
-                            onComplete={(from) => {
-                              if (!t.completed) completeTask(t.id);
-                              else if (t.bounty && t.bounty.state === 'locked') revealBounty(t.id);
-                              else if (t.bounty && t.bounty.state === 'unlocked' && t.bounty.token) claimBounty(t.id, from);
-                              else restoreTask(t.id);
-                            }}
-                            onEdit={() => setEditing(t)}
-                            onDropBefore={(dragId) => moveTask(dragId, { type: "bounties" }, t.id)}
-                            showStreaks={settings.streaksEnabled}
-                            onToggleSubtask={(subId) => toggleSubtask(t.id, subId)}
-                            onDragStart={(id) => setDraggingTaskId(id)}
-                            onDragEnd={handleDragEnd}
-                            hideCompletedSubtasks={settings.hideCompletedSubtasks}
-                            onOpenDocument={handleOpenDocument}
-                          />
-                        ))}
-                      </DroppableColumn>
-                  )}
                 </div>
               </div>
             </>
@@ -7581,6 +16506,8 @@ export default function App() {
                       onToggleChapter={handleToggleBibleChapter}
                       onUpdateChapterVerses={handleUpdateBibleChapterVerses}
                       onReset={handleResetBibleTracker}
+                      onOpenPrint={handleOpenBiblePrint}
+                      onOpenScan={handleOpenBibleScan}
                       onDeleteArchive={handleDeleteBibleArchive}
                       onRestoreArchive={handleRestoreBibleArchive}
                       onCompleteBook={handleCompleteBibleBook}
@@ -7608,17 +16535,17 @@ export default function App() {
               // LISTS board (multiple custom columns) — still a horizontal row
               <div
                 ref={scrollerRef}
-                className="overflow-x-auto pb-4 w-full"
+                className="flex-1 min-h-0 overflow-x-auto pb-0 w-full"
                 style={{ WebkitOverflowScrolling: "touch" }}
             >
-              <div className="flex gap-4 min-w-max">
+              <div className="flex gap-4 min-w-max h-full items-stretch">
                 {currentBoard.indexCardEnabled && (
                   <div
                     ref={el => setColumnRef("list-index", el)}
-                    className="board-column surface-panel w-[325px] shrink-0 p-3"
+                    className="board-column surface-panel w-[325px] shrink-0 p-3 flex h-full flex-col"
                   >
                     <div className="mb-3 text-sm font-semibold tracking-wide text-secondary">Index</div>
-                    <div className="flex flex-col gap-1.5 max-h-[calc(100vh-15rem)] overflow-y-auto pr-1">
+                    <div className="flex flex-1 min-h-0 flex-col gap-1.5 overflow-y-auto pr-1">
                       {listColumns.length === 0 ? (
                         <div className="rounded-lg border border-dashed border-surface bg-surface-muted px-3 py-6 text-center text-sm text-secondary">
                           No lists yet.
@@ -7761,11 +16688,20 @@ export default function App() {
                           </button>
                         </form>
                       )}
-                    >
-                      {(itemsByColumn.get(col.id) || []).map((t) => (
-                        <Card
-                          key={t.id}
-                          task={t}
+	                    >
+	                      {(calendarItemsByColumn.get(col.id) || []).map((ev) => (
+		                        <EventCard
+		                          key={ev.id}
+		                          event={ev}
+		                          showDate
+		                          onOpenDocument={(_event, doc) => handleOpenEventDocument(doc)}
+		                          onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
+		                        />
+	                      ))}
+	                      {(itemsByColumn.get(col.id) || []).map((t) => (
+	                        <Card
+	                          key={t.id}
+	                          task={t}
                           onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
                           onComplete={(from) => {
                             if (!t.completed) completeTask(t.id);
@@ -7773,7 +16709,7 @@ export default function App() {
                             else if (t.bounty && t.bounty.state === 'unlocked' && t.bounty.token) claimBounty(t.id, from);
                             else restoreTask(t.id);
                           }}
-                          onEdit={() => setEditing(t)}
+                          onEdit={() => setEditing({ type: "task", originalType: "task", originalId: t.id, task: t })}
                           onDropBefore={(dragId) => moveTask(dragId, { type: "list", columnId: col.id }, t.id)}
                           showStreaks={settings.streaksEnabled}
                           onToggleSubtask={(subId) => toggleSubtask(t.id, subId)}
@@ -7781,13 +16717,16 @@ export default function App() {
                           onDragEnd={handleDragEnd}
                           hideCompletedSubtasks={settings.hideCompletedSubtasks}
                           onOpenDocument={handleOpenDocument}
+                          onDismissInbox={
+                            t.inboxItem ? () => completeTask(t.id, { inboxAction: "dismiss" }) : undefined
+                          }
                         />
                       ))}
                     </DroppableColumn>
                   );
                 })}
-                {settings.listAddButtonEnabled && currentBoard.kind === "lists" && (
-                  <div className="board-column surface-panel w-[325px] shrink-0 p-4 flex flex-col gap-4">
+                {currentBoard.kind === "lists" && (
+                  <div className="board-column surface-panel w-[325px] shrink-0 p-4 flex h-full flex-col gap-4">
                     <div className="flex-1 rounded-3xl border border-white/5 bg-white/5 backdrop-blur-sm shadow-inner flex flex-col items-center justify-center gap-3 text-center p-6">
                       <div className="text-base font-semibold">Add list</div>
                       <button
@@ -7807,6 +16746,27 @@ export default function App() {
               </div>
             </div>
           )
+        ) : activeView === "board-upcoming" ? (
+          <div className="surface-panel board-column p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="text-lg font-semibold">Upcoming</div>
+            </div>
+            {boardUpcomingCount === 0 ? (
+              <div className="text-secondary text-sm">No upcoming items on this board.</div>
+            ) : (
+              <div className="upcoming-list space-y-4">
+                {boardUpcomingGroups.map((group) => (
+                  <div key={group.dateKey} className="upcoming-day" data-upcoming-date={group.dateKey}>
+                    <div className="upcoming-day__label">{group.label}</div>
+                    <div className="space-y-2">
+                      {group.events.map((ev) => renderUpcomingEventCard(ev))}
+                      {group.tasks.map((task) => renderUpcomingTaskCard(task))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         ) : (
           // Completed view
           <div className="surface-panel board-column p-4">
@@ -7857,12 +16817,18 @@ export default function App() {
             ) : (
               <ul className="space-y-1.5">
                 {completed.map((t) => {
+                  const recoverableBounty = isRecoverableBountyTask(t);
                   const hasDetail =
                     !!t.note?.trim() ||
                     (t.images && t.images.length > 0) ||
                     (t.documents && t.documents.length > 0) ||
                     (t.subtasks && t.subtasks.length > 0) ||
                     !!t.bounty;
+                  const scheduledWeekday = taskWeekday(t) ?? (new Date().getDay() as Weekday);
+                  const scheduledDayLabel = WD_SHORT[scheduledWeekday];
+                  const scheduledTimeLabel = t.dueTimeEnabled
+                    ? ` at ${formatTimeLabel(t.dueISO)}`
+                    : "";
                   const bountyLabel = t.bounty ? bountyStateLabel(t.bounty) : "";
                   return (
                     <li key={t.id} className="task-card space-y-2" data-state="completed" data-form={hasDetail ? 'stacked' : 'pill'}>
@@ -7873,7 +16839,7 @@ export default function App() {
                           </div>
                           <div className="text-xs text-secondary">
                             {currentBoard?.kind === "week"
-                              ? `Scheduled ${WD_SHORT[new Date(t.dueISO).getDay() as Weekday]}${t.dueTimeEnabled ? ` at ${formatTimeLabel(t.dueISO)}` : ""}`
+                              ? `Scheduled ${scheduledDayLabel}${scheduledTimeLabel}`
                               : "Completed item"}
                             {t.completedAt ? ` • Completed ${new Date(t.completedAt).toLocaleString()}` : ""}
                             {settings.streaksEnabled &&
@@ -7882,8 +16848,15 @@ export default function App() {
                               typeof t.streak === "number" && t.streak > 0
                                 ? ` • 🔥 ${t.streak}`
                                 : ""}
+                            {recoverableBounty ? " • Recoverable bounty task" : ""}
                           </div>
                           <TaskMedia task={t} onOpenDocument={handleOpenDocument} />
+                          {t.inboxItem && (
+                            <div className="mt-1 text-xs text-secondary">
+                              Shared {t.inboxItem.type === "board" ? "board" : t.inboxItem.type === "contact" ? "contact" : "task"} •{" "}
+                              {t.inboxItem.status === "deleted" ? "Deleted" : "Added"}
+                            </div>
+                          )}
                           {t.subtasks?.length ? (
                             <ul className="mt-1 space-y-1 text-xs">
                               {t.subtasks.map(st => (
@@ -7903,8 +16876,10 @@ export default function App() {
                           )}
                         </div>
                         <div className="flex gap-1">
-                          <IconButton label="Restore" onClick={() => restoreTask(t.id)} intent="success">↩︎</IconButton>
-                          <IconButton label="Delete" onClick={() => deleteTask(t.id)} intent="danger">✕</IconButton>
+                          <IconButton label={recoverableBounty ? "Recover" : "Restore"} onClick={() => restoreTask(t.id)} intent="success">↩︎</IconButton>
+                          {!recoverableBounty && (
+                            <IconButton label="Delete" onClick={() => deleteTask(t.id)} intent="danger">✕</IconButton>
+                          )}
                         </div>
                       </div>
                     </li>
@@ -7915,88 +16890,957 @@ export default function App() {
           </div>
         )}
         </div>
+      )}
+      {activePage === "upcoming" && (
+        <>
+          {showUpcomingSearch && (
+            <div className="upcoming-search">
+              <div className="upcoming-search__field">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="upcoming-search__icon"
+                  aria-hidden="true"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <line x1="16.65" y1="16.65" x2="21" y2="21" />
+                </svg>
+                <input
+                  ref={upcomingSearchInputRef}
+                  type="search"
+                  className="upcoming-search__input"
+                  placeholder="Search title or notes"
+                  value={upcomingSearch}
+                  onChange={(event) => setUpcomingSearch(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      closeUpcomingSearch();
+                    }
+                  }}
+                  aria-label="Search tasks by title or notes"
+                />
+                <button
+                  type="button"
+                  className="upcoming-search__clear pressable"
+                  onClick={closeUpcomingSearch}
+                  aria-label={upcomingSearch ? "Clear search" : "Close search"}
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          )}
+          {upcomingView === "list" ? (
+            <div className="upcoming-list-view">
+              <div className="surface-panel upcoming-list-view__calendar">
+                <div className="upcoming-calendar">
+                  <div className="upcoming-calendar__header">
+                    <button
+                      type="button"
+                      className="ghost-button button-sm pressable"
+                      onClick={() => moveUpcomingListMonth(-1)}
+                      aria-label="Previous month"
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      className="upcoming-calendar__title upcoming-calendar__title-button"
+                      onClick={handleUpcomingListMonthLabelClick}
+                      onTouchStart={(event) => {
+                        event.preventDefault();
+                        handleUpcomingListMonthLabelClick();
+                      }}
+                      aria-label="Select month and year"
+                      aria-expanded={upcomingListMonthPickerOpen}
+                    >
+                      {upcomingListMonthLabel}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button button-sm pressable"
+                      onClick={() => moveUpcomingListMonth(1)}
+                      aria-label="Next month"
+                    >
+                      ›
+                    </button>
+                  </div>
+                  {upcomingListMonthPickerOpen && (
+                    <div className="edit-month-picker">
+                      <div
+                        className="edit-month-picker__column"
+                        ref={upcomingListMonthPickerMonthColumnRef}
+                        onScroll={handleUpcomingListMonthPickerMonthScroll}
+                        role="listbox"
+                        aria-label="Select month"
+                      >
+                        {MONTH_NAMES.map((name, idx) => (
+                          <div
+                            key={name}
+                            className={`edit-month-picker__option ${upcomingListMonthPickerMonth === idx ? "is-active" : ""}`}
+                            data-picker-index={idx}
+                            role="option"
+                            aria-selected={upcomingListMonthPickerMonth === idx}
+                          >
+                            {name.slice(0, 3)}
+                          </div>
+                        ))}
+                      </div>
+                      <div
+                        className="edit-month-picker__column"
+                        ref={upcomingListMonthPickerYearColumnRef}
+                        onScroll={handleUpcomingListMonthPickerYearScroll}
+                        role="listbox"
+                        aria-label="Select year"
+                      >
+                        {upcomingListMonthPickerYears.map((year, idx) => (
+                          <div
+                            key={year}
+                            className={`edit-month-picker__option ${upcomingListMonthPickerYear === year ? "is-active" : ""}`}
+                            data-picker-index={idx}
+                            role="option"
+                            aria-selected={upcomingListMonthPickerYear === year}
+                          >
+                            {year}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="upcoming-calendar__weekdays">
+                    {WD_SHORT.map((label) => (
+                      <span key={label}>{label}</span>
+                    ))}
+                  </div>
+                  <div
+                    className="upcoming-calendar__grid"
+                    onTouchStart={handleUpcomingCalendarTouchStart}
+                    onTouchEnd={handleUpcomingCalendarTouchEnd}
+                  >
+                    {upcomingListCalendar.cells.map((cell, idx) => {
+                      if (!cell) {
+                        return (
+                          <span
+                            key={`empty-${idx}`}
+                            className="upcoming-calendar__day upcoming-calendar__day--muted"
+                          />
+	                      );
+	                    }
+	                    const currentViewDate = new Date(
+	                      upcomingListCalendar.year,
+	                      upcomingListCalendar.month,
+	                      cell,
+	                    );
+	                    const dateKey = isoDatePart(currentViewDate.toISOString());
+	                    const hasItems = upcomingListDayMap.has(dateKey);
+	                    const isSelected =
+	                      !!upcomingListSelectedDate &&
+	                      upcomingListSelectedDate.getFullYear() === upcomingListCalendar.year &&
+	                      upcomingListSelectedDate.getMonth() === upcomingListCalendar.month &&
+                        upcomingListSelectedDate.getDate() === cell;
+                      const isToday =
+                        !isSelected &&
+                        upcomingListToday.getFullYear() === currentViewDate.getFullYear() &&
+                        upcomingListToday.getMonth() === currentViewDate.getMonth() &&
+                        upcomingListToday.getDate() === currentViewDate.getDate();
+	                    const dayCls = [
+	                      "upcoming-calendar__day",
+	                      hasItems ? "upcoming-calendar__day--has-dot" : "",
+	                      isSelected ? "upcoming-calendar__day--selected" : "",
+	                      isToday ? "upcoming-calendar__day--today" : "",
+	                    ]
+	                      .filter(Boolean)
+                        .join(" ");
+                      return (
+                        <button
+                          key={`day-${idx}-${cell}`}
+                          type="button"
+                          className={dayCls}
+                          onClick={() => handleUpcomingListDaySelect(cell)}
+                        >
+                          <span className="upcoming-calendar__day-number">{cell}</span>
+                          <span className="upcoming-calendar__dot" aria-hidden="true" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+	            </div>
+	            <div className="upcoming-list-view__tasks">
+	              {upcomingListTasks.length + upcomingListEvents.length === 0 ? (
+	                <div className="text-sm text-secondary">
+	                  {filteredUpcomingCount === 0 ? "No upcoming items." : "No items scheduled for this day."}
+	                </div>
+	              ) : (
+	                <div className="space-y-2">
+	                  {upcomingListEvents.map((ev) => renderUpcomingEventCard(ev))}
+	                  {upcomingListTasks.map((task) => renderUpcomingTaskCard(task))}
+	                </div>
+	              )}
+	            </div>
+	          </div>
+	        ) : filteredUpcomingCount === 0 ? (
+	          <div className="surface-panel p-6 text-center text-sm text-secondary">No upcoming items.</div>
+	        ) : (
+	          <div className="upcoming-list space-y-4" ref={upcomingListRef}>
+	            {upcomingGroups.map((group) => (
+	              <div key={group.dateKey} className="upcoming-day" data-upcoming-date={group.dateKey}>
+	                <div className="upcoming-day__label">{group.label}</div>
+	                <div className="space-y-2">
+	                  {group.events.map((ev) => renderUpcomingEventCard(ev))}
+	                  {group.tasks.map((task) => renderUpcomingTaskCard(task))}
+	                </div>
+	              </div>
+	            ))}
+	          </div>
+	        )}
+        </>
+      )}
+      {activePage === "wallet-bounties" && (
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <div className="wallet-section space-y-3">
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={walletBountiesTab === "pinned" ? "accent-button button-sm pressable" : "ghost-button button-sm pressable"}
+                onClick={() => setWalletBountiesTab("pinned")}
+              >
+                Pinned
+              </button>
+              <button
+                type="button"
+                className={walletBountiesTab === "funded" ? "accent-button button-sm pressable" : "ghost-button button-sm pressable"}
+                onClick={() => setWalletBountiesTab("funded")}
+              >
+                Funded
+              </button>
+              <button
+                type="button"
+                className={walletBountiesTab === "open" ? "accent-button button-sm pressable" : "ghost-button button-sm pressable"}
+                onClick={() => setWalletBountiesTab("open")}
+              >
+                Open
+              </button>
+            </div>
+            <div className="text-xs text-secondary">
+              {walletBountiesTab === "open"
+                ? "All tasks with an active bounty."
+                : walletBountiesTab === "funded"
+                  ? "Tasks where you funded the bounty."
+                  : "Tasks you pinned for quick access."}
+            </div>
+          </div>
+          <div className="surface-panel board-column p-4">
+            {walletBountiesVisibleTasks.length === 0 ? (
+              <div className="text-sm text-secondary">
+                No {walletBountiesTab === "open" ? "open bounties" : walletBountiesTab === "funded" ? "funded bounties" : "pinned tasks"} yet.
+              </div>
+            ) : (
+              <ul className="space-y-2">
+                {walletBountiesVisibleTasks.map((task) => {
+                  const boardName = boardMap.get(task.boardId)?.name || "Board";
+                  const bounty = task.bounty;
+                  const parsedDue = new Date(task.dueISO);
+                  const dueLabel = Number.isNaN(parsedDue.getTime())
+                    ? ""
+                    : parsedDue.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+                  const amountLabel =
+                    bounty && typeof bounty.amount === "number"
+                      ? `${bounty.amount} sats`
+                      : "Amount unknown";
+                  return (
+                    <li key={task.id} className="task-card space-y-2" data-form="stacked">
+                      <div className="flex items-start gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium leading-[1.2]">
+                            <TaskTitle task={task} />
+                          </div>
+                          <div className="text-xs text-secondary">
+                            {boardName}
+                            {dueLabel ? ` • ${dueLabel}` : ""}
+                          </div>
+                          {bounty ? (
+                            <div className="mt-1 text-xs text-secondary">
+                              {amountLabel} • {bountyStateLabel(bounty)}
+                            </div>
+                          ) : (
+                            <div className="mt-1 text-xs text-secondary">No bounty attached yet.</div>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-1 justify-end">
+                          <button
+                            type="button"
+                            className="ghost-button button-sm pressable"
+                            onClick={() => setEditing({ type: "task", originalType: "task", originalId: task.id, task })}
+                          >
+                            Open task
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button button-sm pressable"
+                            onClick={() => {
+                              if (taskHasBountyList(task, PINNED_BOUNTY_LIST_KEY)) {
+                                removeTaskFromBountyList(task.id);
+                              } else {
+                                addTaskToBountyList(task.id);
+                              }
+                            }}
+                          >
+                            {taskHasBountyList(task, PINNED_BOUNTY_LIST_KEY) ? "Unpin" : "Pin"}
+                          </button>
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+      {activePage === "settings" && (
+        <SettingsModal
+          embedded
+          settings={settings}
+          boards={boards}
+          currentBoardId={currentBoardId}
+          setSettings={setSettings}
+          setBoards={setBoards}
+          setTasks={setTasks}
+          changeBoard={changeBoard}
+          shouldReloadForNavigation={shouldReloadForNavigation}
+          defaultRelays={defaultRelays}
+          setDefaultRelays={setDefaultRelays}
+          pubkeyHex={nostrPK}
+          onGenerateKey={rotateNostrKey}
+          onSetKey={setCustomNostrKey}
+          pushWorkState={pushWorkState}
+          pushError={pushError}
+          onEnablePush={enablePushNotifications}
+          onDisablePush={disablePushNotifications}
+          workerBaseUrl={workerBaseUrl}
+          vapidPublicKey={vapidPublicKey}
+          onResetWalletTokenTracking={handleResetWalletTokenTracking}
+          onShareBoard={enableBoardSharing}
+          onJoinBoard={joinSharedBoard}
+          onRegenerateBoardId={regenerateBoardId}
+          onBoardChanged={handleBoardChanged}
+          onClose={closeSettings}
+        />
+      )}
       </div>
 
-      {/* Upcoming Drawer */}
-      {activeView === "board" && currentBoard?.kind !== "bible" && showUpcoming && (
-      <SideDrawer title="Upcoming" onClose={() => setShowUpcomingState(false)}>
-          {upcoming.length === 0 ? (
-            <div className="text-sm text-secondary">No upcoming tasks.</div>
-          ) : (
-            <ul className="space-y-1.5">
-              {upcoming.map((t) => {
-                const visibleSubtasks = settings.hideCompletedSubtasks
-                  ? (t.subtasks?.filter((st) => !st.completed) ?? [])
-                  : (t.subtasks ?? []);
-                const bountyLabel = t.bounty ? bountyStateLabel(t.bounty) : "";
-                return (
-                  <li key={t.id} className="task-card space-y-2" data-form="stacked">
-                    <div className="flex items-start gap-2">
-                      <div className="flex-1">
-                        <div className="text-sm font-medium leading-[1.15]"><TaskTitle task={t} /></div>
-                        <div className="text-xs text-secondary">
-                          {currentBoard?.kind === "week"
-                            ? `Scheduled ${WD_SHORT[new Date(t.dueISO).getDay() as Weekday]}${t.dueTimeEnabled ? ` at ${formatTimeLabel(t.dueISO)}` : ""}`
-                            : "Hidden item"}
-                          {t.hiddenUntilISO ? ` • Reveals ${new Date(t.hiddenUntilISO).toLocaleDateString()}` : ""}
-                        </div>
-                        <TaskMedia task={t} onOpenDocument={handleOpenDocument} />
-                        {visibleSubtasks.length ? (
-                          <ul className="mt-1 space-y-1 text-xs">
-                            {visibleSubtasks.map((st) => (
-                              <li key={st.id} className="subtask-row">
-                                <input type="checkbox" checked={!!st.completed} disabled className="subtask-row__checkbox" />
-                                <span className={`subtask-row__text ${st.completed ? 'line-through text-secondary' : ''}`}>{st.title}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : null}
-                        {t.bounty && (
-                          <div className="mt-1">
-                            <span className={`text-[0.6875rem] px-2 py-0.5 rounded-full border ${t.bounty.state==='unlocked' ? 'bg-emerald-700/30 border-emerald-700' : t.bounty.state==='locked' ? 'bg-neutral-700/40 border-neutral-600' : t.bounty.state==='revoked' ? 'bg-rose-700/30 border-rose-700' : 'bg-surface-muted border-surface'}`}>
-                              Bounty {typeof t.bounty.amount==='number' ? `• ${t.bounty.amount} sats` : ''} • {bountyLabel}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex gap-1">
-                        <IconButton label="Restore" onClick={() => restoreTask(t.id)} intent="success">↩︎</IconButton>
-                        <IconButton label="Delete" onClick={() => deleteTask(t.id)} intent="danger">✕</IconButton>
-                      </div>
-                    </div>
-                    <div className="mt-2 flex gap-2">
-                      <button
-                        className="accent-button button-sm pressable"
-                        onClick={() =>
-                          setTasks((prev) =>
-                            prev.map((x) =>
-                              x.id === t.id ? { ...x, hiddenUntilISO: undefined } : x
-                            )
-                          )
-                        }
-                      >
-                        Reveal now
-                      </button>
-                      <button
-                        className="ghost-button button-sm pressable"
-                        onClick={() => { setEditing(t); setShowUpcomingState(false); }}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className="ghost-button button-sm pressable text-rose-400"
-                        onClick={() => deleteTask(t.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </SideDrawer>
+      {activePage === "upcoming" && (
+        <div className="upcoming-controls">
+          <div className="upcoming-controls__left">
+            <button
+              type="button"
+              className="upcoming-controls__today pressable"
+              onClick={handleUpcomingToday}
+              disabled={upcomingView === "details" && upcomingGroups.length === 0}
+              title="Jump to today"
+              aria-label="Jump to today"
+            >
+              Today
+            </button>
+          </div>
+          <div className="upcoming-controls__right">
+            <button
+              type="button"
+              className="app-header__icon-btn pressable"
+              onClick={() => setUpcomingFilterOpen(true)}
+              title={`Filter upcoming tasks (${upcomingFilterLabel})`}
+              aria-label={`Filter upcoming tasks (${upcomingFilterLabel})`}
+              data-active={upcomingFilter !== null || upcomingFilterOpen}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-[18px] w-[18px]"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="4" y1="6" x2="20" y2="6" />
+                <line x1="4" y1="12" x2="20" y2="12" />
+                <line x1="4" y1="18" x2="20" y2="18" />
+                <circle cx="9" cy="6" r="2" />
+                <circle cx="15" cy="12" r="2" />
+                <circle cx="11" cy="18" r="2" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="app-header__icon-btn pressable"
+              onClick={() => setInboxOpen(true)}
+              title="Inbox"
+              aria-label={`Inbox${inboxPendingCount ? ` (${inboxPendingCount})` : ""}`}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-[18px] w-[18px]"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M4 4h16v12H4z" />
+                <path d="M4 12l4 4h8l4-4" />
+              </svg>
+              {inboxPendingCount > 0 && (
+                <span className="app-header__badge">{inboxPendingCount}</span>
+              )}
+            </button>
+          </div>
+        </div>
       )}
+
+      <div className="app-tab-switcher">
+        <div className="app-tab-switcher__pill">
+          <div className="relative flex-1 min-w-0">
+            <button
+              type="button"
+              className={`app-tab-switcher__btn pressable w-full${activePage === "boards" ? " app-tab-switcher__btn--active" : ""}`}
+              onClick={openBoardsPage}
+              aria-label="Boards"
+            >
+              <div className="app-tab-switcher__icon">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="app-tab-switcher__icon-svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.7}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="3" y="3" width="7" height="7" rx="2" />
+                  <rect x="14" y="3" width="7" height="7" rx="2" />
+                  <rect x="3" y="14" width="7" height="7" rx="2" />
+                  <rect x="14" y="14" width="7" height="7" rx="2" />
+                </svg>
+              </div>
+              <div className="app-tab-switcher__label">Boards</div>
+            </button>
+            <select
+              ref={boardSelectorBottomRef}
+              value={currentBoardId}
+              onChange={handleBoardSelect}
+              className={`absolute left-0 top-0 h-full w-full opacity-0${activePage === "boards" ? " pointer-events-auto" : " pointer-events-none"}`}
+              style={{ fontSize: "max(16px, 0.88rem)", lineHeight: "1.35" }}
+              aria-hidden="true"
+              tabIndex={-1}
+            >
+              {boardSelectOptions}
+            </select>
+          </div>
+          <button
+            ref={upcomingButtonRef}
+	            type="button"
+	            className={`app-tab-switcher__btn pressable${activePage === "upcoming" ? " app-tab-switcher__btn--active" : ""}`}
+	            onClick={openUpcoming}
+	            title={`Upcoming${upcomingItemCount ? ` (${upcomingItemCount})` : ""}`}
+	            aria-label={`Upcoming${upcomingItemCount ? ` (${upcomingItemCount})` : ""}`}
+	            data-hovered={upcomingHover}
+	            onDragOver={(e) => {
+	              e.preventDefault();
+	              setUpcomingHover(true);
+            }}
+            onDragLeave={() => setUpcomingHover(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              const id = e.dataTransfer.getData("text/task-id");
+              if (id) postponeTaskOneWeek(id);
+              setUpcomingHover(false);
+              handleDragEnd();
+            }}
+          >
+            <div className="app-tab-switcher__icon">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="app-tab-switcher__icon-svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.7}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect x="4" y="5" width="16" height="15" rx="2" />
+                <path d="M8 3v4" />
+                <path d="M16 3v4" />
+                <path d="M4 11h16" />
+                <path d="M12 14v3l2 1" />
+              </svg>
+            </div>
+            <div className="app-tab-switcher__label">Upcoming</div>
+          </button>
+          <button
+            ref={walletButtonRef}
+            type="button"
+            className={`app-tab-switcher__btn pressable${activePage === "wallet" || activePage === "wallet-bounties" ? " app-tab-switcher__btn--active" : ""}`}
+            onClick={openWallet}
+            onPointerEnter={prefetchWalletModal}
+            onFocus={prefetchWalletModal}
+            aria-label="Wallet"
+          >
+            <div className="app-tab-switcher__icon">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="app-tab-switcher__icon-svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2.2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="12" y1="4" x2="12" y2="20" />
+                <line x1="8" y1="8" x2="16" y2="8" />
+                <line x1="7" y1="12" x2="17" y2="12" />
+                <line x1="8" y1="16" x2="16" y2="16" />
+                <line x1="12" y1="2.75" x2="12" y2="5.25" />
+                <line x1="12" y1="18.75" x2="12" y2="21.25" />
+              </svg>
+            </div>
+            <div className="app-tab-switcher__label">Wallet</div>
+          </button>
+          <button
+            type="button"
+            className={`app-tab-switcher__btn pressable${activePage === "contacts" ? " app-tab-switcher__btn--active" : ""}`}
+            onClick={openContactsPage}
+            aria-label="Contacts"
+          >
+            <div className="app-tab-switcher__icon">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="app-tab-switcher__icon-svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.7}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M16 14c2.2 0 4 1.8 4 4v2H4v-2c0-2.2 1.8-4 4-4" />
+                <circle cx="12" cy="8" r="4" />
+              </svg>
+            </div>
+            <div className="app-tab-switcher__label">Contacts</div>
+          </button>
+          <button
+            type="button"
+            className={`app-tab-switcher__btn pressable${activePage === "settings" ? " app-tab-switcher__btn--active" : ""}`}
+            onClick={openSettings}
+            aria-label="Settings"
+          >
+            <div className="app-tab-switcher__icon">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="app-tab-switcher__icon-svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.7}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2h-.34a2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2h.34a2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </div>
+            <div className="app-tab-switcher__label">Settings</div>
+          </button>
+        </div>
+      </div>
+
+      <ActionSheet
+        open={boardSortSheetOpen}
+        onClose={() => setBoardSortSheetOpen(false)}
+        title="Filter and sort"
+      >
+        <div className="wallet-section space-y-3 text-sm">
+          <div className="text-xs uppercase tracking-wide text-secondary">Sort tasks by</div>
+          <div className="flex flex-wrap gap-2">
+            {boardSortOptions.map((option) => {
+              const active = boardSort.mode === option.id;
+              const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
+              const showArrow = active && option.supportsDirection;
+              const invertArrow = option.id === "due" || option.id === "alpha";
+              const arrow =
+                boardSort.direction === "asc"
+                  ? (invertArrow ? "↓" : "↑")
+                  : (invertArrow ? "↑" : "↓");
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={cls}
+                  onClick={() => handleBoardSortSelect(option.id)}
+                >
+                  <span>{option.label}</span>
+                  {showArrow && <span className="ml-1 text-xs">{arrow}</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </ActionSheet>
+
+      <ActionSheet
+        open={upcomingSortSheetOpen}
+        onClose={() => setUpcomingSortSheetOpen(false)}
+        title="Sort"
+      >
+        <div className="wallet-section space-y-3 text-sm">
+          <div className="text-xs uppercase tracking-wide text-secondary">Sort tasks by</div>
+          <div className="flex flex-wrap gap-2">
+            {boardSortOptions.map((option) => {
+              const active = upcomingSort.mode === option.id;
+              const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
+              const showArrow = active && option.supportsDirection;
+              const invertArrow = option.id === "due" || option.id === "alpha";
+              const arrow =
+                upcomingSort.direction === "asc"
+                  ? (invertArrow ? "↓" : "↑")
+                  : (invertArrow ? "↑" : "↓");
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={cls}
+                  onClick={() => handleUpcomingSortSelect(option.id)}
+                  aria-pressed={active}
+                >
+                  <span>{option.label}</span>
+                  {showArrow && <span className="ml-1 text-xs">{arrow}</span>}
+                </button>
+              );
+            })}
+          </div>
+          <div className="text-xs uppercase tracking-wide text-secondary">Boards</div>
+          <div className="flex flex-wrap gap-2">
+            {upcomingBoardGroupingOptions.map((option) => {
+              const active = upcomingBoardGrouping === option.id;
+              const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={cls}
+                  onClick={() => setUpcomingBoardGrouping(option.id)}
+                  aria-pressed={active}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </ActionSheet>
+
+      <ActionSheet
+        open={upcomingViewSheetOpen}
+        onClose={() => setUpcomingViewSheetOpen(false)}
+        title="View"
+      >
+        <div className="overflow-hidden rounded-2xl border border-border bg-elevated">
+          {[
+            { id: "details", label: "Details" },
+            { id: "list", label: "List" },
+          ].map((option) => {
+            const active = upcomingView === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface"
+	                onClick={() => {
+	                  handleUpcomingViewChange(option.id as "details" | "list");
+	                }}
+	                aria-pressed={active}
+	              >
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-primary">{option.label}</div>
+                </div>
+                {active && <span className="text-accent text-sm font-semibold">✓</span>}
+              </button>
+            );
+          })}
+        </div>
+      </ActionSheet>
+
+      <ActionSheet
+        open={upcomingFilterOpen}
+        onClose={() => setUpcomingFilterOpen(false)}
+        title="Calendars"
+        panelClassName="sheet-panel--tall"
+      >
+        <div className="upcoming-filter">
+          <div className="upcoming-filter__controls">
+            <button
+              type="button"
+              className="ghost-button button-sm pressable"
+              onClick={() => {
+                setUpcomingFilter(null);
+                setUpcomingUsHolidaysEnabled(true);
+              }}
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              className="ghost-button button-sm pressable"
+              onClick={() => {
+                setUpcomingFilter([]);
+                setUpcomingUsHolidaysEnabled(false);
+              }}
+            >
+              Clear all
+            </button>
+            {upcomingFilterPresets.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                className="ghost-button button-sm pressable"
+                onClick={(e) => {
+                  if (upcomingPresetHoldTriggeredRef.current) {
+                    upcomingPresetHoldTriggeredRef.current = false;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                  }
+                  applyUpcomingFilterPreset(preset);
+                }}
+                onPointerDown={(e) => startUpcomingPresetHold(preset, e)}
+                onPointerUp={cancelUpcomingPresetHold}
+                onPointerCancel={cancelUpcomingPresetHold}
+                onPointerLeave={cancelUpcomingPresetHold}
+                onPointerMove={maybeCancelUpcomingPresetHold}
+                onContextMenu={(e) => e.preventDefault()}
+                title="Press and hold to delete"
+              >
+                {preset.name}
+              </button>
+            ))}
+          </div>
+          <div className="upcoming-filter__list">
+            {upcomingFilterGroups.length === 0 ? (
+              <div className="text-sm text-secondary">No boards yet.</div>
+            ) : (
+              upcomingFilterGroups.map((group) => (
+                <div key={group.id} className="upcoming-filter__group">
+                  <button
+                    type="button"
+                    className="upcoming-filter__row pressable"
+                    onClick={() => toggleUpcomingFilter(group.boardOption.id)}
+                    role="checkbox"
+                    aria-checked={upcomingFilterSelection.has(group.boardOption.id)}
+                  >
+                    <span
+                      className={`upcoming-filter__check${upcomingFilterSelection.has(group.boardOption.id) ? " is-checked" : ""}`}
+                      aria-hidden="true"
+                    >
+                      {upcomingFilterSelection.has(group.boardOption.id) && (
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M5 12l4 4 10-10" />
+                        </svg>
+                      )}
+                    </span>
+                    <span className="upcoming-filter__label">{group.label}</span>
+                  </button>
+                  {group.listOptions.length > 0 && (
+                    <div className="upcoming-filter__sublist">
+                      {group.listOptions.map((option) => {
+                        const checked = upcomingFilterSelection.has(option.id);
+                        return (
+                          <button
+                            key={option.id}
+                            type="button"
+                            className="upcoming-filter__row upcoming-filter__row--child pressable"
+                            onClick={() => toggleUpcomingFilter(option.id)}
+                            role="checkbox"
+                            aria-checked={checked}
+                          >
+                            <span
+                              className={`upcoming-filter__check${checked ? " is-checked" : ""}`}
+                              aria-hidden="true"
+                            >
+                              {checked && (
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M5 12l4 4 10-10" />
+                                </svg>
+                              )}
+                            </span>
+                            <span className="upcoming-filter__label">{option.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+            <div className="upcoming-filter__group">
+              <button
+                type="button"
+                className="upcoming-filter__row pressable"
+                onClick={() => setUpcomingUsHolidaysEnabled((prev) => !prev)}
+                role="checkbox"
+                aria-checked={upcomingUsHolidaysEnabled}
+              >
+                <span
+                  className={`upcoming-filter__check${upcomingUsHolidaysEnabled ? " is-checked" : ""}`}
+                  aria-hidden="true"
+                >
+                  {upcomingUsHolidaysEnabled && (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M5 12l4 4 10-10" />
+                    </svg>
+                  )}
+                </span>
+                <span className="upcoming-filter__label">{SPECIAL_CALENDAR_US_HOLIDAYS_LABEL}</span>
+              </button>
+            </div>
+            <div>
+              <button
+                type="button"
+                className="ghost-button button-sm pressable"
+                onClick={saveUpcomingFilterPreset}
+              >
+                Save as preset
+              </button>
+            </div>
+          </div>
+        </div>
+      </ActionSheet>
+
+      <ActionSheet open={inboxOpen} onClose={() => setInboxOpen(false)} title="Inbox">
+        {inboxPendingItems.length === 0 && pendingCalendarInvites.length === 0 ? (
+          <div className="text-sm text-secondary">No shared items.</div>
+        ) : (
+          <div className="space-y-4">
+            {pendingCalendarInvites.length > 0 && (
+              <div>
+                <div className="text-xs text-secondary mb-2">Event invites</div>
+                <ul className="space-y-2">
+                  {pendingCalendarInvites.map((invite) => {
+                    const senderName =
+                      invite.sender?.name ||
+                      invite.sender?.npub ||
+                      (invite.sender?.pubkey ? shortenNpub(toNpub(invite.sender.pubkey)) : "Someone");
+                    const whenLabel = formatCalendarInviteWhen(invite);
+                    return (
+                      <li key={invite.id} className="task-card space-y-2" data-form="stacked">
+                        <div className="flex items-start gap-2">
+                          <div className="flex-1">
+                            <div className="text-sm font-medium leading-[1.15]">{invite.title || "Event invite"}</div>
+                            <div className="text-xs text-secondary">
+                              {whenLabel ? `${whenLabel} • ` : ""}From {senderName}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            className="accent-button button-sm pressable"
+                            onClick={() => void handleCalendarInviteRsvp(invite, "accepted")}
+                          >
+                            Accept
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button button-sm pressable"
+                            onClick={() => void handleCalendarInviteRsvp(invite, "tentative")}
+                          >
+                            Tentative
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button button-sm pressable text-rose-400"
+                            onClick={() => void handleCalendarInviteRsvp(invite, "declined")}
+                          >
+                            Decline
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button button-sm pressable"
+                            onClick={() => dismissCalendarInvite(invite)}
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
+            {inboxPendingItems.length > 0 && (
+              <div>
+                <div className="text-xs text-secondary mb-2">Shared items</div>
+                <ul className="space-y-2">
+                  {inboxPendingItems.map((item) => {
+                    const senderName = item.sender?.name || item.sender?.npub || "Someone";
+                    const typeLabel =
+                      item.type === "board"
+                        ? `Board • ${item.boardName || "Shared board"}`
+                        : item.type === "contact"
+                          ? "Contact"
+                          : "Task";
+                    return (
+                      <li key={item.id} className="task-card space-y-2" data-form="stacked">
+                        <div className="flex items-start gap-2">
+                          <div className="flex-1">
+                            <div className="text-sm font-medium leading-[1.15]">{item.title}</div>
+                            <div className="text-xs text-secondary">
+                              {typeLabel} • From {senderName}
+                            </div>
+                            {item.note && (
+                              <div className="text-xs text-secondary whitespace-pre-wrap">{item.note}</div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            className="accent-button button-sm pressable"
+                            onClick={() => acceptInboxMessage(item.id)}
+                          >
+                            Add
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button button-sm pressable text-rose-400"
+                            onClick={() => dismissInboxMessage(item.id)}
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </ActionSheet>
 
       {/* Drag trash can */}
       {draggingTaskId && (
@@ -8039,6 +17883,66 @@ export default function App() {
         </div>
       )}
 
+      {recurringDeleteTask && (
+        <Modal onClose={() => setRecurringDeleteTask(null)} title="Delete recurring task">
+          <div className="space-y-4">
+            <div className="text-sm text-secondary">
+              This task repeats. Do you want to delete just this event or all future events in the series?
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="ghost-button button-sm pressable"
+                onClick={() => {
+                  deleteTask(recurringDeleteTask.id, { skipPrompt: true });
+                  setRecurringDeleteTask(null);
+                }}
+              >
+                Delete this event
+              </button>
+              <button
+                className="ghost-button button-sm pressable text-rose-400"
+                onClick={() => {
+                  deleteTask(recurringDeleteTask.id, { skipPrompt: true, scope: "future" });
+                  setRecurringDeleteTask(null);
+                }}
+              >
+                Delete all future
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {recurringDeleteEvent && (
+        <Modal onClose={() => setRecurringDeleteEvent(null)} title="Delete recurring event">
+          <div className="space-y-4">
+            <div className="text-sm text-secondary">
+              This event repeats. Do you want to delete just this event or all future events in the series?
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="ghost-button button-sm pressable"
+                onClick={() => {
+                  deleteCalendarEvent(recurringDeleteEvent.id, { skipPrompt: true });
+                  setRecurringDeleteEvent(null);
+                }}
+              >
+                Delete this event
+              </button>
+              <button
+                className="ghost-button button-sm pressable text-rose-400"
+                onClick={() => {
+                  deleteCalendarEvent(recurringDeleteEvent.id, { skipPrompt: true, scope: "future" });
+                  setRecurringDeleteEvent(null);
+                }}
+              >
+                Delete all future
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {updateToastVisible && (
         <div className="fixed bottom-4 left-1/2 z-[10001] w-[calc(100%-2rem)] max-w-md -translate-x-1/2">
           <div className="rounded-xl border border-neutral-700 bg-neutral-900/95 p-4 text-sm text-white shadow-lg">
@@ -8068,26 +17972,115 @@ export default function App() {
         </div>
       )}
 
-      {/* Edit Modal (with Advanced recurrence) */}
-      {editing && (
+      {/* Edit Modals */}
+      {editing?.type === "task" && (
         <EditModal
-          task={editing}
+          task={editing.task}
           onCancel={() => setEditing(null)}
-          onDelete={() => { deleteTask(editing.id); setEditing(null); }}
-          onSave={saveEdit}
+          onDelete={() => {
+            if (editing.originalType === "event") deleteCalendarEvent(editing.originalId);
+            else deleteTask(editing.originalId);
+            setEditing(null);
+          }}
+          onSave={(updated) => {
+            if (editing.originalType === "event") deleteCalendarEvent(editing.originalId);
+            saveEdit(updated);
+          }}
+          onSwitchToEvent={(draftTask) => {
+            const nextEvent = convertTaskToCalendarEvent(draftTask);
+            setEditing({
+              type: "event",
+              originalType: editing.originalType,
+              originalId: editing.originalId,
+              event: nextEvent,
+            });
+          }}
           weekStart={settings.weekStart}
           boardKind={editingBoard?.kind ?? currentBoard?.kind ?? "week"}
-          onRedeemCoins={(rect)=>flyCoinsToWallet(rect)}
+          boards={boards}
+          onRedeemCoins={(rect) => flyCoinsToWallet(rect)}
           onRevealBounty={revealBounty}
           onTransferBounty={transferBounty}
           onPreviewDocument={handleOpenDocument}
           walletConversionEnabled={settings.walletConversionEnabled}
           walletPrimaryCurrency={settings.walletPrimaryCurrency}
           bountyListEnabled={bountyListEnabled}
-          bountyListLabel={activeBountyListLabel}
           bountyListKey={activeBountyListKey}
           onAddToBountyList={addTaskToBountyList}
           onRemoveFromBountyList={removeTaskFromBountyList}
+          defaultRelays={defaultRelays}
+          nostrPK={nostrPK}
+          nostrSkHex={nostrSkHex}
+        />
+      )}
+
+      {editing?.type === "event" && (
+	        <EventEditModal
+	          event={editing.event}
+          onCancel={() => setEditing(null)}
+          onDelete={() => {
+            if (editing.originalType === "task") deleteTask(editing.originalId);
+            else deleteCalendarEvent(editing.originalId);
+            setEditing(null);
+          }}
+          onSave={saveCalendarEdit}
+          onSwitchToTask={(draftEvent) => {
+            const nextTask = convertCalendarEventToTask(draftEvent);
+            setEditing({
+              type: "task",
+              originalType: editing.originalType,
+              originalId: editing.originalId,
+              task: nextTask,
+            });
+          }}
+          boards={boards}
+          contacts={shareableContacts}
+          rsvps={activeEventRsvps}
+          nostrPK={nostrPK}
+          nostrSkHex={nostrSkHex}
+	          defaultRelays={defaultRelays}
+	          onPreviewDocument={(_event, doc) => handleOpenEventDocument(doc)}
+		          onRsvp={
+	            activeEventRsvpCoord
+	              ? async (status, options) => {
+	                  try {
+                    const relayCandidates = activeEventRsvpRelays.length
+                      ? activeEventRsvpRelays
+                      : [
+                          ...defaultRelays,
+                          ...inboxRelays,
+                          ...Array.from(DEFAULT_NOSTR_RELAYS),
+                        ];
+                    const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+                    const isExternal = editing?.type === "event" ? !!editing.event.external : false;
+                    const publishBoardId = editing?.type === "event" && !isExternal
+                      ? (editing.event.originBoardId ?? editing.event.boardId)
+                      : null;
+                    const boardNostrId = publishBoardId
+                      ? boards.find((b) => b.id === publishBoardId)?.nostr?.boardId
+                      : undefined;
+                    const inviteToken =
+                      editing?.type === "event"
+                        ? editing.event.inviteToken
+                          || (nostrPK ? editing.event.inviteTokens?.[nostrPK] : undefined)
+                        : undefined;
+                    if ((!inviteToken && !boardNostrId) || !editing || editing.type !== "event") {
+                      showToast("Missing invite token for RSVP.");
+                      return;
+                    }
+                    const nextOptions =
+                      boardNostrId
+                        ? { ...(options ?? {}), boardId: boardNostrId }
+                        : options;
+                    await publishCalendarRsvp(activeEventRsvpCoord, editing.event.id, inviteToken, relays, status, nextOptions);
+                    showToast(`RSVP sent: ${status}`);
+                  } catch (err) {
+	                    console.warn("RSVP publish failed", err);
+	                    showToast("Failed to send RSVP.");
+                  }
+                }
+              : undefined
+          }
         />
       )}
 
@@ -8100,148 +18093,353 @@ export default function App() {
         />
       )}
 
-      {tutorialStep !== null && currentTutorial && (
+      {biblePrintPortal && biblePrintOpen && biblePrintMeta &&
+        createPortal(
+          <BibleTrackerPrintPreview
+            state={bibleTracker}
+            meta={biblePrintMeta}
+            paperSize={biblePrintPaperSize}
+            onPaperSizeChange={handleBiblePaperSizeChange}
+          />,
+          biblePrintPortal
+        )}
+
+      {biblePrintOpen && biblePrintMeta && (
         <Modal
-          onClose={handleSkipTutorial}
-          title={currentTutorial.title}
-          showClose={false}
-        >
-          <div className="space-y-4">
-            <div className="text-xs uppercase tracking-wide text-secondary">
-              Step {tutorialStep + 1} of {totalTutorialSteps}
-            </div>
-            {currentTutorial.body}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+          onClose={() => setBiblePrintOpen(false)}
+          title="Print Bible tracker"
+          actions={(
+            <>
+              <button
+                className="accent-button button-sm pressable"
+                onClick={handleExportBiblePdf}
+                disabled={biblePrintPdfBusy}
+              >
+                {biblePrintPdfBusy ? "Preparing PDF..." : "Export PDF"}
+              </button>
               <button
                 className="ghost-button button-sm pressable"
-                onClick={handleSkipTutorial}
+                onClick={handlePrintBibleWindow}
               >
-                Skip tutorial
+                Print
               </button>
-              <div className="flex gap-2">
-                {tutorialStep > 0 && (
-                  <button
-                    className="ghost-button button-sm pressable"
-                    onClick={handlePrevTutorial}
-                  >
-                    Back
-                  </button>
-                )}
-                <button
-                  className="accent-button button-sm pressable"
-                  onClick={handleNextTutorial}
-                >
-                  {tutorialStep === totalTutorialSteps - 1 ? "Finish" : "Next"}
-                </button>
-              </div>
-            </div>
-          </div>
+            </>
+          )}
+        >
+          <BibleTrackerPrintPreview
+            state={bibleTracker}
+            meta={biblePrintMeta}
+            paperSize={biblePrintPaperSize}
+            onPaperSizeChange={handleBiblePaperSizeChange}
+          />
         </Modal>
       )}
 
-      {/* Settings (Week start + Manage Boards & Columns) */}
-      {showSettings && (
-        <SettingsModal
-          settings={settings}
-          boards={boards}
-          currentBoardId={currentBoardId}
-          setSettings={setSettings}
-          setBoards={setBoards}
-          bountyListEnabled={bountyListEnabled}
-          activeBountyListKey={activeBountyListKey}
-          bountyListOptions={bountyListOptions}
-          shouldReloadForNavigation={shouldReloadForNavigation}
-          defaultRelays={defaultRelays}
-          setDefaultRelays={setDefaultRelays}
-          pubkeyHex={nostrPK}
-          onGenerateKey={rotateNostrKey}
-          onSetKey={setCustomNostrKey}
-          onRestartTutorial={handleRestartTutorial}
-          pushWorkState={pushWorkState}
-          pushError={pushError}
-          onEnablePush={enablePushNotifications}
-          onDisablePush={disablePushNotifications}
-          workerBaseUrl={workerBaseUrl}
-          vapidPublicKey={vapidPublicKey}
-          onResetWalletTokenTracking={handleResetWalletTokenTracking}
-          onShareBoard={(boardId, relayCsv) => {
-            const r = (relayCsv || "").split(",").map(s=>s.trim()).filter(Boolean);
-            const relays = r.length ? r : defaultRelays;
-            setBoards(prev => prev.map(b => {
-              if (b.id !== boardId) return b;
-              const nostrId = b.nostr?.boardId || (/^[0-9a-f-]{8}-[0-9a-f-]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(b.id) ? b.id : crypto.randomUUID());
-              let nb: Board;
-              if (b.kind === "week") {
-                nb = { ...b, nostr: { boardId: nostrId, relays } };
-              } else if (b.kind === "compound") {
-                nb = { ...b, nostr: { boardId: nostrId, relays } } as Board;
-              } else {
-                nb = { ...b, nostr: { boardId: nostrId, relays } } as Board;
-              }
-              setTimeout(() => {
-                publishBoardMetadata(nb, { force: true }).catch(() => {});
-                tasks.filter(t => t.boardId === nb.id).forEach(t => {
-                  maybePublishTask(t, nb, { skipBoardMetadata: true }).catch(() => {});
-                });
-              }, 0);
-              return nb;
-            }));
-          }}
-          onJoinBoard={(nostrId, name, relayCsv) => {
-            if (shouldReloadForNavigation()) return;
-            const relays = (relayCsv || "").split(",").map(s=>s.trim()).filter(Boolean);
-            const id = nostrId.trim();
-            if (!id) return;
-            const defaultCols: ListColumn[] = [{ id: crypto.randomUUID(), name: "Items" }];
-            const newBoard: Board = {
-              id,
-              name: name || "Shared Board",
-              kind: "lists",
-              columns: defaultCols,
-              nostr: { boardId: id, relays: relays.length ? relays : defaultRelays },
-              archived: false,
-              hidden: false,
-              clearCompletedDisabled: false,
-              indexCardEnabled: false,
-            };
-            setBoards(prev => {
-              const existingIndex = prev.findIndex((b) => b.id === id || b.nostr?.boardId === id);
-              if (existingIndex >= 0) {
-                const existing = prev[existingIndex];
-                const columns = existing.kind === "lists" ? existing.columns : newBoard.columns;
-                const indexCardEnabled = existing.kind === "lists"
-                  ? (typeof existing.indexCardEnabled === "boolean" ? existing.indexCardEnabled : newBoard.indexCardEnabled)
-                  : newBoard.indexCardEnabled;
-                const merged: Board = {
-                  ...newBoard,
-                  id: existing.id,
-                  name: name || existing.name || newBoard.name,
-                  columns,
-                  archived: false,
-                  hidden: false,
-                  clearCompletedDisabled: existing.clearCompletedDisabled ?? newBoard.clearCompletedDisabled,
-                  indexCardEnabled,
-                };
-                const copy = prev.slice();
-                copy[existingIndex] = merged;
-                return copy;
-              }
-              return [...prev, newBoard];
-            });
-            changeBoard(id);
-          }}
-          onRegenerateBoardId={regenerateBoardId}
-          onBoardChanged={handleBoardChanged}
-          onClose={() => setShowSettingsState(false)}
+      {bibleScanOpen && (
+        <Modal onClose={() => setBibleScanOpen(false)} title="Scan Bible tracker">
+          <BibleTrackerScanPanel
+            state={bibleTracker}
+            onApply={handleApplyBibleScan}
+            paperSize={biblePrintPaperSize}
+            onPaperSizeChange={handleBiblePaperSizeChange}
+          />
+        </Modal>
+      )}
+
+      {boardPrintPortal && boardPrintOpen && boardPrintJob &&
+        createPortal(
+          <BoardPrintPreview
+            job={boardPrintJob}
+            paperSize={boardPrintJob.paperSize}
+            onPaperSizeChange={handleBoardPaperSizeChange}
+          />,
+          boardPrintPortal
+        )}
+
+      {boardPrintOpen && boardPrintJob && (
+        <Modal
+          onClose={() => setBoardPrintOpen(false)}
+          title={`Print ${boardPrintJob.boardName || "board"}`}
+          actions={(
+            <>
+              <button
+                className="accent-button button-sm pressable"
+                onClick={handleExportBoardPdf}
+                disabled={boardPrintPdfBusy}
+              >
+                {boardPrintPdfBusy ? "Preparing PDF..." : "Export PDF"}
+              </button>
+              <button
+                className="ghost-button button-sm pressable"
+                onClick={handlePrintBoardWindow}
+              >
+                Print
+              </button>
+            </>
+          )}
+        >
+          <BoardPrintPreview
+            job={boardPrintJob}
+            paperSize={boardPrintJob.paperSize}
+            onPaperSizeChange={handleBoardPaperSizeChange}
+          />
+        </Modal>
+      )}
+
+      {boardScanOpen && boardPrintJob && (
+        <Modal onClose={() => setBoardScanOpen(false)} title={`Scan ${boardPrintJob.boardName || "board"}`}>
+          <BoardScanPanel job={boardPrintJob} onApply={handleApplyBoardScan} />
+        </Modal>
+      )}
+
+      {showFirstRunOnboarding && (
+        <Modal onClose={() => {}} title="Welcome to Taskify" showClose={false}>
+          <FirstRunOnboarding
+            pushSupported={onboardingPushSupported}
+            pushConfigured={onboardingPushConfigured}
+            cloudRestoreAvailable={!!workerBaseUrl}
+            onUseExistingKey={handleOnboardingUseExistingKey}
+            onGenerateNewKey={handleOnboardingGenerateNewKey}
+            onRestoreFromBackupFile={handleOnboardingRestoreFromBackupFile}
+            onRestoreFromCloud={handleOnboardingRestoreFromCloud}
+            onEnableNotifications={handleOnboardingEnableNotifications}
+            onComplete={completeFirstRunOnboarding}
+          />
+        </Modal>
+      )}
+
+      {addBoardOpen && (
+        <AddBoardModal
+          onClose={closeAddBoard}
+          onCreateBoard={createBoardFromName}
+          onJoinBoard={joinSharedBoard}
         />
       )}
 
+      {shareBoardModalOpen && (
+        <Modal onClose={closeShareBoard} title={`Share ${shareBoardDisplayName}`}>
+          {shareBoardTarget ? (
+            shareBoardTarget.nostr?.boardId ? (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <div className="share-mode-header">
+                    <div className="text-xs uppercase tracking-wide text-secondary">Share mode</div>
+                    <button
+                      type="button"
+                      className="share-mode-info-button pressable"
+                      aria-label="About share modes"
+                      aria-expanded={shareModeInfoOpen}
+                      aria-controls="share-mode-info"
+                      onClick={() => setShareModeInfoOpen((prev) => !prev)}
+                      ref={shareModeInfoButtonRef}
+                    >
+                      <span className="share-mode-info-button__icon" aria-hidden="true">i</span>
+                    </button>
+                    {shareModeInfoOpen && (
+                      <div
+                        className="share-mode-info"
+                        role="tooltip"
+                        id="share-mode-info"
+                        ref={shareModeInfoRef}
+                      >
+                        <div className="share-mode-info__row">
+                          <div className="share-mode-info__label">Board</div>
+                          <div className="share-mode-info__text">
+                            Shares the live board ID and keeps changes in sync.
+                          </div>
+                        </div>
+                        <div className="share-mode-info__row">
+                          <div className="share-mode-info__label">Template</div>
+                          <div className="share-mode-info__text">
+                            Creates a new board ID and publishes a snapshot that won't sync future changes.
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="share-mode-toggle" role="group" aria-label="Share mode">
+                    <button
+                      type="button"
+                      className="pill-select share-mode-toggle__button pressable"
+                      data-active={shareBoardMode === "board"}
+                      aria-pressed={shareBoardMode === "board"}
+                      onClick={() => {
+                        setShareBoardMode("board");
+                        setShareTemplateStatus(null);
+                        setShareModeInfoOpen(false);
+                      }}
+                    >
+                      Board
+                    </button>
+                    <button
+                      type="button"
+                      className="pill-select share-mode-toggle__button pressable"
+                      data-active={shareBoardMode === "template"}
+                      aria-pressed={shareBoardMode === "template"}
+                      onClick={() => {
+                        setShareBoardMode("template");
+                        setShareTemplateStatus(null);
+                        setShareModeInfoOpen(false);
+                      }}
+                    >
+                      Template
+                    </button>
+                  </div>
+                </div>
+                {shareTemplateStatus && (
+                  <div className="text-sm text-rose-400">{shareTemplateStatus}</div>
+                )}
+                <div className="space-y-1">
+                  <div className="wallet-qr-card wallet-qr-card--flat wallet-qr-card--centered">
+                    <div className="wallet-qr-card__code">
+                      {shareBoardId ? (
+                        <button
+                          type="button"
+                          className="wallet-qr-card__canvas wallet-qr-card__canvas--pressable pressable"
+                          style={{ maxWidth: "16rem" }}
+                          aria-label="Copy board ID"
+                          onClick={async () => {
+                            if (!shareBoardId) return;
+                            try {
+                              await navigator.clipboard?.writeText(shareBoardId);
+                            } catch {}
+                          }}
+                        >
+                          <QRCodeCanvas
+                            value={shareBoardQrPayload ?? shareBoardId}
+                            size={256}
+                            includeMargin={true}
+                            className="wallet-qr-card__qr"
+                          />
+                        </button>
+                      ) : (
+                        <div className="contact-qr-placeholder text-secondary">
+                          {shareTemplateBusy ? "Generating template share..." : "No QR to share yet."}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {shareBoardId && (
+                    <div className="wallet-qr-card__helper">Tap to copy</div>
+                  )}
+                  <div className="flex gap-2">
+                    <button
+                      className="ghost-button button-sm pressable flex-1 justify-center"
+                      onClick={() => {
+                        setShareContactStatus(null);
+                        setShareContactPickerOpen(true);
+                      }}
+                      disabled={!shareBoardId || (shareBoardMode === "template" && shareTemplateBusy)}
+                    >
+                      Contacts
+                    </button>
+                  </div>
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      className="ghost-button button-sm pressable flex-1 justify-center"
+                      onClick={handleOpenBoardPrint}
+                    >
+                      Print
+                    </button>
+                    <button
+                      className="ghost-button button-sm pressable flex-1 justify-center"
+                      onClick={handleOpenBoardScan}
+                    >
+                      Scan
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <button
+                  className="accent-button button-sm pressable w-full justify-center"
+                  onClick={() => enableBoardSharing(shareBoardTarget.id)}
+                >
+                  Enable sharing
+                </button>
+              </div>
+            )
+          ) : (
+            <div className="text-sm text-secondary">Select a board to share first.</div>
+          )}
+        </Modal>
+      )}
+      <ActionSheet
+        open={shareContactPickerOpen}
+        onClose={() => {
+          if (shareContactBusy) return;
+          setShareContactPickerOpen(false);
+          setShareContactStatus(null);
+        }}
+        title="Send board ID"
+        stackLevel={75}
+      >
+        {shareBoardTarget ? (
+          <div className="text-sm text-secondary mb-2">
+            Choose a contact to send <span className="font-semibold">{shareBoardDisplayName}</span>.
+          </div>
+        ) : (
+          <div className="text-sm text-secondary mb-2">Select a board to share first.</div>
+        )}
+        {shareContactStatus && (
+          <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>
+        )}
+        {shareableContacts.length ? (
+          <div className="space-y-2">
+            {shareableContacts.map((contact) => {
+              const label = contactPrimaryName(contact);
+              const subtitle = formatContactNpub(contact.npub);
+              return (
+                <button
+                  key={contact.id}
+                  type="button"
+                  className="contact-row pressable"
+                  disabled={shareContactBusy || !shareBoardId}
+                  onClick={() => handleShareBoardToContact(contact)}
+                >
+                  <div className="contact-avatar">{contactInitials(label)}</div>
+                  <div className="contact-row__text">
+                    <div className="contact-row__name">{label}</div>
+                    {subtitle ? (
+                      <div className="contact-row__meta">
+                        <span className="contact-row__meta-text">{subtitle}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
+        )}
+        <div className="flex gap-2 mt-3">
+          <button
+            type="button"
+            className="ghost-button button-sm pressable flex-1 justify-center"
+            onClick={() => {
+              if (shareContactBusy) return;
+              setShareContactPickerOpen(false);
+              setShareContactStatus(null);
+            }}
+            disabled={shareContactBusy}
+          >
+            Cancel
+          </button>
+        </div>
+      </ActionSheet>
+
       {/* Cashu Wallet */}
       <Suspense fallback={null}>
-        {showWallet && (
+        {showWalletShell && (
           <CashuWalletModal
-            open={showWallet}
-            onClose={() => setShowWalletState(false)}
+            open={showWalletShell}
+            onClose={closeWallet}
+            onOpenBounties={openWalletBounties}
+            page={showContacts ? "contacts" : "wallet"}
+            showTabSwitcher={false}
+            showBottomNav
             walletConversionEnabled={settings.walletConversionEnabled}
             walletPrimaryCurrency={settings.walletPrimaryCurrency}
             setWalletPrimaryCurrency={(currency) => setSettings({ walletPrimaryCurrency: currency })}
@@ -8254,9 +18452,135 @@ export default function App() {
             }
             tokenStateResetNonce={walletTokenStateResetNonce}
             mintBackupEnabled={settings.walletMintBackupEnabled}
+            contactsSyncEnabled={settings.walletContactsSyncEnabled}
+            fileStorageServer={settings.fileStorageServer}
+            messageItems={walletMessageItems}
+            messagesUnreadCount={messagesUnreadCount}
+            onAcceptMessage={acceptInboxMessage}
+            onDismissMessage={dismissInboxMessage}
+            onMarkMessagesRead={markInboxMessagesRead}
           />
         )}
       </Suspense>
+
+      {migrationGateState === "not_started" && !migrationGateDismissed && (
+        <Modal onClose={() => {}} title="Storage Update Required" showClose={false}>
+          <div className="space-y-4">
+            <div className="text-sm text-secondary">
+              Taskify needs to run a one-time storage update to improve reliability. This will not change your data or wallet balance.
+            </div>
+            <div className="text-sm text-secondary">
+              The update is small and usually completes in under a minute. Please keep the app open until it finishes.
+            </div>
+            <div className="wallet-section wallet-section--compact space-y-2">
+              <div className="text-sm font-medium text-primary">Optional: Back up your key</div>
+              <div className="text-sm text-secondary">
+                Before continuing, you may want to copy your private key (nsec) and store it somewhere safe. This is optional, but
+                recommended.
+              </div>
+              <div>
+                <button
+                  className="ghost-button button-sm pressable"
+                  onClick={() => void handleCopyMigrationPrivateKey()}
+                >
+                  Copy private key
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <button
+                className="accent-button button-sm pressable flex-1"
+                onClick={() => void handleStartStorageMigration()}
+                disabled={storageMigrationStartBusy}
+              >
+                {storageMigrationStartBusy ? "Starting..." : "Start update"}
+              </button>
+              <button
+                className="ghost-button button-sm pressable flex-1"
+                onClick={handleDeferStorageMigration}
+                disabled={storageMigrationStartBusy}
+              >
+                Do this later
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {migrationGateState === "in_progress" && (
+        <Modal
+          onClose={() => {}}
+          title={migrationGateResuming ? "Resuming Storage Update" : "Updating Storage"}
+          showClose={false}
+          variant="fullscreen"
+        >
+          <div className="space-y-3">
+            <div className="wallet-section space-y-2">
+              <div className="text-xs text-secondary">
+                {storageMigrationProgress
+                  ? `Step ${Math.min(storageMigrationProgress.completedPhases + 1, storageMigrationProgress.totalPhases)} of ${storageMigrationProgress.totalPhases}`
+                  : "Checking migration status..."}
+              </div>
+              <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                <div
+                  className="h-full"
+                  style={{
+                    width: storageMigrationProgress
+                      ? `${Math.round(
+                          (storageMigrationProgress.completedPhases / Math.max(1, storageMigrationProgress.totalPhases)) * 100,
+                        )}%`
+                      : "0%",
+                    background: "var(--accent)",
+                  }}
+                />
+              </div>
+              <div className="text-xs text-secondary">
+                {storageMigrationProgress?.phase ? `Current phase: ${storageMigrationProgress.phase}` : "Preparing..."}
+              </div>
+              {storageMigrationProgress?.currentKey?.key && (
+                <div className="text-xs text-tertiary break-all">
+                  {storageMigrationProgress.currentKey.storeName}:{storageMigrationProgress.currentKey.key}
+                </div>
+              )}
+              {storageMigrationProgress?.error && (
+                <div className="text-xs text-rose-400">{storageMigrationProgress.error}</div>
+              )}
+            </div>
+            <div className="text-xs text-secondary">
+              This usually takes less than a minute. Please keep Taskify open.
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {shouldShowLegacyCleanupPrompt && (
+        <Modal onClose={handleLegacyCleanupLater} title="Clean Up Old Storage?" showClose={false}>
+          <div className="space-y-4">
+            <div className="text-sm text-secondary">
+              Taskify has finished updating your storage. You can now safely remove old data that is no longer used. This will
+              not affect your tasks, contacts, or wallet balance.
+            </div>
+            <div className="text-sm text-secondary">This is optional, but recommended.</div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <button
+                className="accent-button button-sm pressable flex-1"
+                onClick={handleLegacyCleanup}
+                disabled={legacyCleanupBusy}
+              >
+                {legacyCleanupBusy ? "Cleaning..." : "Clean up now"}
+              </button>
+              <button
+                className="ghost-button button-sm pressable flex-1"
+                onClick={handleLegacyCleanupLater}
+                disabled={legacyCleanupBusy}
+              >
+                Do this later
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      </div>
     </div>
   );
 }
@@ -8274,7 +18598,21 @@ function hiddenUntilForBoard(dueISO: string, boardKind: Board["kind"], weekStart
 }
 
 function applyHiddenForFuture(task: Task, weekStart: Weekday, boardKind: Board["kind"]): void {
+  if (task.dueDateEnabled === false) {
+    task.hiddenUntilISO = undefined;
+    return;
+  }
   task.hiddenUntilISO = hiddenUntilForBoard(task.dueISO, boardKind, weekStart);
+}
+
+function applyHiddenForCalendarEvent(event: CalendarEvent, weekStart: Weekday, boardKind: Board["kind"]): CalendarEvent {
+  const hiddenUntilISO = hiddenUntilForCalendarEvent(event, boardKind, weekStart);
+  if (hiddenUntilISO) {
+    if (event.hiddenUntilISO === hiddenUntilISO) return event;
+    return { ...event, hiddenUntilISO };
+  }
+  if (!event.hiddenUntilISO) return event;
+  return { ...event, hiddenUntilISO: undefined };
 }
 
 function nextOrderForBoard(
@@ -8290,35 +18628,64 @@ function nextOrderForBoard(
   return boardTasks.reduce((max, task) => Math.max(max, task.order ?? -1), -1) + 1;
 }
 
+function nextOrderForCalendarBoard(
+  boardId: string,
+  events: CalendarEvent[],
+  newItemPosition: Settings["newTaskPosition"],
+): number {
+  const boardEvents = events.filter((event) => event.boardId === boardId && !event.external);
+  if (newItemPosition === "top") {
+    const minOrder = boardEvents.reduce((min, event) => Math.min(min, event.order ?? 0), 0);
+    return minOrder - 1;
+  }
+  return boardEvents.reduce((max, event) => Math.max(max, event.order ?? -1), -1) + 1;
+}
+
 async function syncRemindersToWorker(
   workerBaseUrl: string,
   push: PushPreferences,
-  reminderTasks: Task[],
+  reminderItems: Array<{
+    taskId: string;
+    boardId?: string;
+    title: string;
+    dueISO: string;
+    reminders: ReminderPreset[];
+  }>,
   options?: { signal?: AbortSignal }
 ): Promise<void> {
   if (!workerBaseUrl) throw new Error("Worker base URL is not configured");
   if (!push.deviceId || !push.subscriptionId) return;
-  const remindersPayload = reminderTasks
-    .map((task) => ({
-      taskId: task.id,
-      boardId: task.boardId,
-      dueISO: task.dueISO,
-      title: task.title,
-      minutesBefore: (task.reminders ?? [])
-        .map(reminderPresetToMinutes)
-        .sort((a, b) => a - b),
+  const remindersPayload = reminderItems
+    .map((item) => ({
+      taskId: item.taskId,
+      boardId: item.boardId,
+      dueISO: item.dueISO,
+      title: item.title,
+      minutesBefore: (item.reminders ?? []).map(reminderPresetToMinutes).sort((a, b) => a - b),
     }))
     .sort((a, b) => a.taskId.localeCompare(b.taskId));
-  const res = await fetch(`${workerBaseUrl}/api/reminders`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      deviceId: push.deviceId,
-      subscriptionId: push.subscriptionId,
-      reminders: remindersPayload,
-    }),
-    signal: options?.signal,
-  });
+  let res: Response;
+  try {
+    res = await withTimeout(
+      fetch(`${workerBaseUrl}/api/reminders`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          deviceId: push.deviceId,
+          subscriptionId: push.subscriptionId,
+          reminders: remindersPayload,
+        }),
+        signal: options?.signal,
+      }),
+      PUSH_OPERATION_TIMEOUT_MS,
+      "Timed out while syncing reminders to the notification worker.",
+    );
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw err;
+    }
+    throw err;
+  }
   if (!res.ok) {
     throw new Error(`Failed to sync reminders (${res.status})`);
   }
@@ -8373,21 +18740,31 @@ function TaskTitle({ task }: { task: Task }) {
   const urlFromTitle = isTitleUrl ? task.title.trim() : null;
   const urlFromNote = extractFirstUrl(task.note || "");
   const canonicalUrl = derivedPreview?.finalUrl || derivedPreview?.url || urlFromTitle || urlFromNote;
+  const priority = normalizeTaskPriority(task.priority);
+  const priorityLabel = taskPriorityMarks(priority);
+  const priorityNode = priorityLabel ? (
+    <span className="ml-1 text-rose-500 font-semibold">{priorityLabel}</span>
+  ) : null;
 
+  let titleNode: React.ReactNode = task.title;
   if (isTitleUrl) {
     const titleTarget = urlFromTitle || canonicalUrl || task.title.trim();
     const displayTitle = derivedPreview?.title || derivedPreview?.displayUrl || fallbackTitleFromUrl(titleTarget);
     if (canonicalUrl) {
-      return <span className="link-accent">{displayTitle}</span>;
+      titleNode = <span className="link-accent">{displayTitle}</span>;
+    } else {
+      titleNode = displayTitle;
     }
-    return <>{displayTitle}</>;
+  } else if (canonicalUrl) {
+    titleNode = <span className="link-accent">{task.title}</span>;
   }
 
-  if (canonicalUrl) {
-    return <span className="link-accent">{task.title}</span>;
-  }
-
-  return <>{task.title}</>;
+  return (
+    <>
+      {titleNode}
+      {priorityNode}
+    </>
+  );
 }
 
 function UrlPreviewCard({ preview }: { preview: UrlPreviewData; indent?: boolean }) {
@@ -8488,6 +18865,74 @@ function TaskMedia({
               key={doc.id}
               document={doc}
               onClick={() => onOpenDocument?.(task, doc)}
+            />
+          ))}
+        </div>
+      ) : null}
+      {derivedPreview && <UrlPreviewCard preview={derivedPreview} />}
+    </div>
+  );
+}
+
+function useEventPreview(event: CalendarEvent): UrlPreviewData | null {
+  const referencesText = useMemo(() => (event.references || []).join(" "), [event.references]);
+  const previewSource = useMemo(
+    () => `${event.title || ""} ${event.description || ""} ${referencesText}`,
+    [event.title, event.description, referencesText],
+  );
+  return useUrlPreview(previewSource);
+}
+
+function EventTitle({ event }: { event: CalendarEvent }) {
+  const derivedPreview = useEventPreview(event);
+  const isTitleUrl = isUrlLike(event.title);
+  const urlFromTitle = isTitleUrl ? event.title.trim() : null;
+  const urlFromDescription = extractFirstUrl(event.description || "");
+  const urlFromReferences = extractFirstUrl((event.references || []).join(" "));
+  const canonicalUrl = derivedPreview?.finalUrl || derivedPreview?.url || urlFromTitle || urlFromDescription || urlFromReferences;
+
+  if (isTitleUrl) {
+    const titleTarget = urlFromTitle || canonicalUrl || event.title.trim();
+    const displayTitle = derivedPreview?.title || derivedPreview?.displayUrl || fallbackTitleFromUrl(titleTarget);
+    return canonicalUrl ? <span className="link-accent">{displayTitle}</span> : <>{displayTitle}</>;
+  }
+  if (canonicalUrl) {
+    return <span className="link-accent">{event.title}</span>;
+  }
+  return <>{event.title}</>;
+}
+
+function EventMedia({
+  event,
+  onOpenDocument,
+}: {
+  event: CalendarEvent;
+  onOpenDocument?: (event: CalendarEvent, doc: TaskDocument) => void;
+}) {
+  const noteText = useMemo(() => stripUrlsFromText(event.description), [event.description]);
+  const hasDocuments = Boolean(event.documents && event.documents.length);
+  const derivedPreview = useEventPreview(event);
+  const hasPreview = Boolean(derivedPreview);
+
+  if (!noteText && !hasDocuments && !hasPreview) return null;
+
+  return (
+    <div className="mt-2 space-y-1.5">
+      {noteText && (
+        <div
+          className="task-card__details text-xs text-secondary break-words"
+          style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+        >
+          {autolink(noteText)}
+        </div>
+      )}
+      {hasDocuments ? (
+        <div className="space-y-2">
+          {event.documents!.map((doc) => (
+            <DocumentThumbnail
+              key={doc.id}
+              document={doc}
+              onClick={() => onOpenDocument?.(event, doc)}
             />
           ))}
         </div>
@@ -8631,6 +19076,12 @@ function DocumentPreviewModal({
 }
 
 // Column container (fixed width for consistent horizontal scroll)
+function getDraggedTaskId(dataTransfer: DataTransfer | null | undefined) {
+  if (!dataTransfer) return null;
+  const id = dataTransfer.getData("text/task-id") || dataTransfer.getData("text/plain");
+  return id || null;
+}
+
 const DroppableColumn = React.forwardRef<HTMLDivElement, {
   title: string;
   header?: React.ReactNode;
@@ -8671,12 +19122,12 @@ const DroppableColumn = React.forwardRef<HTMLDivElement, {
     const isTaskDrag = (e: DragEvent) => {
       const types = e.dataTransfer?.types;
       if (!types) return false;
-      return Array.from(types).includes("text/task-id");
+      return Array.from(types).some((type) => type === "text/task-id" || type === "text/plain");
     };
     const onDragOver = (e: DragEvent) => e.preventDefault();
     const onDrop = (e: DragEvent) => {
       e.preventDefault();
-      const id = e.dataTransfer?.getData("text/task-id");
+      const id = getDraggedTaskId(e.dataTransfer);
       if (id) {
         let beforeId: string | undefined;
         const columnEl = innerRef.current;
@@ -8732,7 +19183,7 @@ const DroppableColumn = React.forwardRef<HTMLDivElement, {
       ref={setRef}
       data-column-title={title}
       data-drop-over={isDragOver || undefined}
-      className={`board-column surface-panel w-[325px] shrink-0 p-2 ${scrollable ? 'flex h-[calc(100vh-15rem)] flex-col overflow-hidden' : 'min-h-[320px]'} ${isDragOver ? 'board-column--active' : ''} ${className ?? ''}`}
+      className={`board-column surface-panel w-[325px] shrink-0 ${scrollable ? 'flex h-full min-h-0 flex-col overflow-hidden pt-2 px-2 pb-1' : 'min-h-[320px] p-2'} ${isDragOver ? 'board-column--active' : ''} ${className ?? ''}`}
       // No touchAction lock so horizontal scrolling stays fluid
       {...props}
     >
@@ -8765,6 +19216,8 @@ const DroppableColumn = React.forwardRef<HTMLDivElement, {
 
 function Card({
   task,
+  meta,
+  trailing,
   onComplete,
   onEdit,
   onDropBefore,
@@ -8775,8 +19228,11 @@ function Card({
   onDragEnd,
   hideCompletedSubtasks,
   onOpenDocument,
+  onDismissInbox,
 }: {
   task: Task;
+  meta?: React.ReactNode;
+  trailing?: React.ReactNode;
   onComplete: (from?: DOMRect) => void;
   onEdit: () => void;
   onDropBefore: (dragId: string) => void;
@@ -8787,6 +19243,7 @@ function Card({
   onDragEnd: () => void;
   hideCompletedSubtasks: boolean;
   onOpenDocument: (task: Task, doc: TaskDocument) => void;
+  onDismissInbox?: () => void;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
@@ -8844,6 +19301,7 @@ function Card({
 
   function handleDragStart(e: React.DragEvent) {
     e.dataTransfer.setData('text/task-id', task.id);
+    e.dataTransfer.setData('text/plain', task.id);
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setDragImage(e.currentTarget as HTMLElement, 0, 0);
     onDragStart(task.id);
@@ -8857,7 +19315,7 @@ function Card({
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     e.stopPropagation();
-    const dragId = e.dataTransfer.getData('text/task-id');
+    const dragId = getDraggedTaskId(e.dataTransfer);
     if (dragId && dragId !== task.id) onDropBefore(dragId);
     setOverBefore(false);
     onDragEnd();
@@ -8876,6 +19334,16 @@ function Card({
     }
     onComplete(rect);
   }
+
+  const handleEditKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onEdit();
+      }
+    },
+    [onEdit],
+  );
 
   const bountyClass = task.bounty
     ? task.bounty.state === 'unlocked'
@@ -8935,7 +19403,13 @@ function Card({
           )}
         </button>
 
-        <div className="flex-1 min-w-0 cursor-pointer space-y-1" onClick={onEdit}>
+        <div
+          className="flex-1 min-w-0 cursor-pointer space-y-1"
+          role="button"
+          tabIndex={0}
+          onClick={onEdit}
+          onKeyDown={handleEditKeyDown}
+        >
           <div
             ref={titleRef}
             className={`task-card__title ${task.completed ? 'task-card__title--done' : ''}`}
@@ -8958,7 +19432,9 @@ function Card({
               Due at {formatTimeLabel(task.dueISO)}
             </div>
           )}
+          {meta ? <div className="task-card__meta">{meta}</div> : null}
         </div>
+        {trailing ? <div className="flex-shrink-0 pt-0.5">{trailing}</div> : null}
       </div>
 
       <TaskMedia task={task} indent onOpenDocument={onOpenDocument} />
@@ -8979,6 +19455,18 @@ function Card({
         </ul>
       ) : null}
 
+      {task.inboxItem && !task.completed && onDismissInbox && (
+        <div className="mt-2 flex gap-2">
+          <button
+            type="button"
+            className="ghost-button button-sm pressable text-rose-400"
+            onClick={onDismissInbox}
+          >
+            Delete
+          </button>
+        </div>
+      )}
+
       {task.completed && task.bounty && task.bounty.state !== 'claimed' && (
         <div className="task-card__details mt-2 text-xs text-secondary">
           {task.bounty.state === 'unlocked' ? 'Bounty unlocked!' : 'Complete! - Unlock bounty'}
@@ -8992,6 +19480,116 @@ function Card({
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+function EventCard({
+  event,
+  onEdit,
+  showDate,
+  meta,
+  trailing,
+  onOpenDocument,
+}: {
+  event: CalendarEvent;
+  onEdit?: () => void;
+  showDate?: boolean;
+  meta?: React.ReactNode;
+  trailing?: React.ReactNode;
+  onOpenDocument?: (event: CalendarEvent, doc: TaskDocument) => void;
+}) {
+  const iconSizeStyle = useMemo(() => ({ "--icon-size": "1.85rem" } as React.CSSProperties), []);
+  const dateKey = useMemo(() => {
+    if (event.kind === "date") return ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : isoDatePart(new Date().toISOString());
+    return isoDatePart(event.startISO, event.startTzid);
+  }, [event]);
+  const timeLabel = useMemo(() => {
+    if (event.kind === "date") {
+      const startKey = ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : dateKey;
+      const endKey = event.endDate && ISO_DATE_PATTERN.test(event.endDate) && event.endDate >= startKey ? event.endDate : "";
+      const formatShort = (key: string) => {
+        const parsed = new Date(`${key}T00:00:00`);
+        if (Number.isNaN(parsed.getTime())) return key;
+        return parsed.toLocaleDateString([], { month: "short", day: "numeric" });
+      };
+      if (!showDate) return "All-day";
+      if (endKey && endKey !== startKey) {
+        return `All-day • ${formatShort(startKey)} – ${formatShort(endKey)}`;
+      }
+      return `All-day • ${formatShort(startKey)}`;
+    }
+
+    const start = formatTimeLabel(event.startISO, event.startTzid);
+    const end = event.endISO ? formatTimeLabel(event.endISO, event.endTzid || event.startTzid) : "";
+    const core = end ? `${start} – ${end}` : start;
+    if (!showDate) return core;
+    const parsed = new Date(`${dateKey}T00:00:00`);
+    const dateLabel = Number.isNaN(parsed.getTime())
+      ? dateKey
+      : parsed.toLocaleDateString([], { month: "short", day: "numeric" });
+    return `${core} • ${dateLabel}`;
+  }, [dateKey, event, showDate]);
+  const locationLabel = useMemo(() => {
+    const loc = event.locations?.find((value) => typeof value === "string" && value.trim())?.trim() ?? "";
+    return loc || "";
+  }, [event.locations]);
+  const metaNode = meta ?? (locationLabel ? locationLabel : null);
+  const hasUrl = useMemo(
+    () => isUrlLike(event.title) || Boolean(extractFirstUrl(`${event.description || ""} ${(event.references || []).join(" ")}`)),
+    [event.description, event.references, event.title],
+  );
+  const hasDetail =
+    !!stripUrlsFromText(event.description) ||
+    (event.documents && event.documents.length > 0) ||
+    hasUrl;
+  const isInteractive = typeof onEdit === "function";
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!onEdit) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onEdit();
+      }
+    },
+    [onEdit],
+  );
+
+  return (
+    <div className="task-card group relative select-none" data-form={hasDetail ? "stacked" : "pill"}>
+      <div className="flex items-start gap-3">
+        <div className="icon-button flex-shrink-0" style={iconSizeStyle} aria-hidden="true">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            className="pointer-events-none h-[18px] w-[18px]"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+            <line x1="16" y1="2" x2="16" y2="6" />
+            <line x1="8" y1="2" x2="8" y2="6" />
+            <line x1="3" y1="10" x2="21" y2="10" />
+          </svg>
+        </div>
+        <div
+          className={`flex-1 min-w-0 space-y-1 ${isInteractive ? "cursor-pointer" : ""}`}
+          role={isInteractive ? "button" : undefined}
+          tabIndex={isInteractive ? 0 : undefined}
+          onClick={onEdit}
+          onKeyDown={isInteractive ? handleKeyDown : undefined}
+        >
+          <div className="task-card__title">{event.title ? <EventTitle event={event} /> : "Untitled"}</div>
+          <div className="text-xs text-secondary">{timeLabel}</div>
+          {metaNode ? <div className="task-card__meta">{metaNode}</div> : null}
+        </div>
+        {trailing ? <div className="flex-shrink-0 pt-0.5">{trailing}</div> : null}
+      </div>
+      <EventMedia event={event} onOpenDocument={onOpenDocument} />
     </div>
   );
 }
@@ -9044,14 +19642,2025 @@ function labelOf(r: Recurrence): string {
   }
 }
 
+function EventEditModal({
+  event,
+  onCancel,
+  onDelete,
+  onSave,
+  onSwitchToTask,
+  boards,
+  contacts,
+  rsvps,
+  nostrPK,
+  nostrSkHex,
+  defaultRelays,
+  onPreviewDocument,
+  onRsvp,
+}: {
+  event: CalendarEvent;
+  onCancel: () => void;
+  onDelete: () => void;
+  onSave: (ev: CalendarEvent) => void;
+  onSwitchToTask?: (ev: CalendarEvent) => void;
+  boards: Board[];
+  contacts: Contact[];
+  rsvps: CalendarRsvpEnvelope[];
+  nostrPK: string;
+  nostrSkHex: string;
+  defaultRelays: string[];
+  onPreviewDocument?: (event: CalendarEvent, doc: TaskDocument) => void;
+  onRsvp?: (status: CalendarRsvpStatus, options?: { fb?: CalendarRsvpFb }) => Promise<void>;
+}) {
+  const [title, setTitle] = useState(event.title);
+  const [description, setDescription] = useState(event.description || "");
+  const [documents, setDocuments] = useState<TaskDocument[]>(event.documents || []);
+  const [image, setImage] = useState(event.image || "");
+  const [locations, setLocations] = useState<string[]>(() => (event.locations?.length ? [...event.locations] : [""]));
+  const [geohash, setGeohash] = useState(event.geohash || "");
+  const [participants, setParticipants] = useState<CalendarEventParticipant[]>(() => (event.participants ? [...event.participants] : []));
+  const [hashtagsText, setHashtagsText] = useState(() => (event.hashtags?.length ? event.hashtags.join(", ") : ""));
+  const [referencesText, setReferencesText] = useState(() => (event.references?.length ? event.references.join("\n") : ""));
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  type EventWhenPicker = null | "startDate" | "startTime" | "endDate" | "endTime" | "reminderTime";
+  const [whenPicker, setWhenPicker] = useState<EventWhenPicker>(null);
+  const [timeZoneSheetOpen, setTimeZoneSheetOpen] = useState(false);
+  const [boardLocationExpanded, setBoardLocationExpanded] = useState(false);
+  const [repeatSheetOpen, setRepeatSheetOpen] = useState(false);
+  const [repeatCustomSheetOpen, setRepeatCustomSheetOpen] = useState(false);
+  const [endRepeatSheetOpen, setEndRepeatSheetOpen] = useState(false);
+  const [recurrenceModalOpen, setRecurrenceModalOpen] = useState(false);
+  const documentInputRef = useRef<HTMLInputElement>(null);
+
+  const participantValidation = useMemo(() => {
+    const normalized: CalendarEventParticipant[] = [];
+    const seen = new Set<string>();
+    let invalidCount = 0;
+
+    participants.forEach((participant) => {
+      const pubkeyInput = (participant.pubkey || "").trim();
+      if (!pubkeyInput) return;
+      const pubkey = normalizeNostrPubkeyHex(pubkeyInput);
+      if (!pubkey) {
+        invalidCount += 1;
+        return;
+      }
+      if (seen.has(pubkey)) return;
+      seen.add(pubkey);
+      normalized.push({
+        pubkey,
+        relay: (participant.relay || "").trim() || undefined,
+        role: (participant.role || "").trim() || undefined,
+      });
+    });
+
+    return { normalized, invalidCount };
+  }, [participants]);
+
+  const [invitePickerOpen, setInvitePickerOpen] = useState(false);
+  const [inviteSearch, setInviteSearch] = useState("");
+  const invitedPubkeys = useMemo(
+    () => new Set(participantValidation.normalized.map((participant) => participant.pubkey)),
+    [participantValidation.normalized],
+  );
+  const contactByPubkey = useMemo(() => {
+    const map = new Map<string, Contact>();
+    (contacts || []).forEach((contact) => {
+      const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+      if (pubkey) map.set(pubkey, contact);
+    });
+    return map;
+  }, [contacts]);
+  const filteredInviteContacts = useMemo(() => {
+    const q = inviteSearch.trim().toLowerCase();
+    if (!q) return contacts;
+    return (contacts || []).filter((contact) => {
+      const label = contactPrimaryName(contact).toLowerCase();
+      const npub = (contact.npub || "").trim().toLowerCase();
+      const username = (contact.username || "").trim().toLowerCase();
+      const displayName = (contact.displayName || "").trim().toLowerCase();
+      const nip05 = (contact.nip05 || "").trim().toLowerCase();
+      return (
+        label.includes(q) ||
+        npub.includes(q) ||
+        username.includes(q) ||
+        displayName.includes(q) ||
+        nip05.includes(q)
+      );
+    });
+  }, [contacts, inviteSearch]);
+  const shareableContacts = useMemo(
+    () => (contacts || []).filter((contact) => contactHasNpub(contact)),
+    [contacts],
+  );
+  const [shareEventPickerOpen, setShareEventPickerOpen] = useState(false);
+  const [shareEventStatus, setShareEventStatus] = useState<string | null>(null);
+  const [shareEventBusy, setShareEventBusy] = useState(false);
+  const { show: showToast } = useToast();
+  const isReadOnly = !!event.readOnly;
+
+  const shortenPubkey = useCallback((value: string): string => {
+    const trimmed = (value || "").trim();
+    if (!trimmed) return "";
+    return trimmed.length > 18 ? `${trimmed.slice(0, 10)}…${trimmed.slice(-6)}` : trimmed;
+  }, []);
+
+  const [rsvpBusy, setRsvpBusy] = useState(false);
+  const rsvpList = useMemo(() => rsvps ?? [], [rsvps]);
+  const showRsvpSection = !!onRsvp || rsvpList.length > 0;
+	  const myRsvpStatus = useMemo(() => {
+	    const match = rsvpList.find((rsvp) => rsvp.authorPubkey === nostrPK);
+	    return match?.status ?? null;
+	  }, [nostrPK, rsvpList]);
+	  const rsvpCounts = useMemo(() => {
+	    const counts = { accepted: 0, tentative: 0, declined: 0 };
+	    rsvpList.forEach((rsvp) => {
+	      if (rsvp.status === "accepted") counts.accepted += 1;
+      else if (rsvp.status === "tentative") counts.tentative += 1;
+      else if (rsvp.status === "declined") counts.declined += 1;
+    });
+	    return counts;
+	  }, [rsvpList]);
+
+  const editableBoards = useMemo(() => {
+    const base = boards.filter(
+      (b) => !b.archived && !b.hidden && b.kind !== "bible" && b.kind !== "compound",
+    );
+    if (!base.some((b) => b.id === event.boardId)) {
+      const fallback = boards.find((b) => b.id === event.boardId);
+      if (fallback) return [fallback, ...base];
+    }
+    return base;
+  }, [boards, event.boardId]);
+
+  const [selectedBoardId, setSelectedBoardId] = useState(event.boardId);
+  const selectedBoard = useMemo(
+    () => editableBoards.find((b) => b.id === selectedBoardId) ?? null,
+    [editableBoards, selectedBoardId],
+  );
+  useEffect(() => {
+    if (!editableBoards.length) return;
+    if (!editableBoards.some((board) => board.id === selectedBoardId)) {
+      setSelectedBoardId(editableBoards[0].id);
+    }
+  }, [editableBoards, selectedBoardId]);
+
+  const initialAllDay = event.kind === "date";
+  const [allDay, setAllDay] = useState(initialAllDay);
+  const hasEventTime = !allDay;
+  const initialReminderTime = normalizeReminderTime(event.reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
+
+  const [reminderSelection, setReminderSelection] = useState<ReminderPreset[]>(() => {
+    return Array.isArray(event.reminders) ? event.reminders : [];
+  });
+  const [reminderTime, setReminderTime] = useState(initialReminderTime);
+  const [reminderPickerExpanded, setReminderPickerExpanded] = useState(false);
+
+  const systemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
+  const initialStartTzid = event.kind === "time" ? (normalizeTimeZone(event.startTzid) ?? systemTimeZone) : systemTimeZone;
+  const initialEndTzid = event.kind === "time" ? (normalizeTimeZone(event.endTzid) ?? normalizeTimeZone(event.startTzid) ?? systemTimeZone) : systemTimeZone;
+  const [startTzid, setStartTzid] = useState(initialStartTzid);
+  const [endTzid, setEndTzid] = useState(initialEndTzid);
+
+  const initialStartDate = event.kind === "date" ? event.startDate : isoDatePart(event.startISO, initialStartTzid);
+  const initialEndDate = event.kind === "date"
+    ? (event.endDate || event.startDate)
+    : (() => {
+        if (!event.endISO) {
+          const startMs = Date.parse(event.startISO);
+          if (Number.isNaN(startMs)) return initialStartDate;
+          return isoDatePart(new Date(startMs + 60 * 60 * 1000).toISOString(), initialEndTzid);
+        }
+        return isoDatePart(event.endISO, initialEndTzid);
+      })();
+  const [startDate, setStartDate] = useState(initialStartDate);
+  const [endDate, setEndDate] = useState(initialEndDate);
+
+  const initialStartTime = event.kind === "time" ? isoTimePart(event.startISO, initialStartTzid) : "09:00";
+  const initialEndTime = event.kind === "time"
+    ? (() => {
+        if (event.endISO) return isoTimePart(event.endISO, initialEndTzid);
+        const startMs = Date.parse(event.startISO);
+        if (Number.isNaN(startMs)) return "10:00";
+        return isoTimePart(new Date(startMs + 60 * 60 * 1000).toISOString(), initialEndTzid);
+      })()
+    : "10:00";
+  const [startTime, setStartTime] = useState(initialStartTime);
+  const [endTime, setEndTime] = useState(initialEndTime);
+  const timePickerHourColumnRef = useRef<HTMLDivElement | null>(null);
+  const timePickerMinuteColumnRef = useRef<HTMLDivElement | null>(null);
+  const timePickerMeridiemColumnRef = useRef<HTMLDivElement | null>(null);
+  const timePickerHourScrollFrame = useRef<number | null>(null);
+  const timePickerMinuteScrollFrame = useRef<number | null>(null);
+  const timePickerMeridiemScrollFrame = useRef<number | null>(null);
+  const timePickerHourSnapTimeout = useRef<number | null>(null);
+  const timePickerMinuteSnapTimeout = useRef<number | null>(null);
+  const timePickerMeridiemSnapTimeout = useRef<number | null>(null);
+  const [timePickerHour, setTimePickerHour] = useState(() => parseTimePickerValue(startTime, "09:00").hour);
+  const [timePickerMinute, setTimePickerMinute] = useState(() => parseTimePickerValue(startTime, "09:00").minute);
+  const [timePickerMeridiem, setTimePickerMeridiem] = useState<Meridiem>(() => parseTimePickerValue(startTime, "09:00").meridiem);
+  const timePickerHourValueRef = useRef(0);
+  const timePickerMinuteValueRef = useRef(0);
+  const timePickerMeridiemValueRef = useRef<Meridiem>("AM");
+
+  const [selectedColumnId, setSelectedColumnId] = useState<string>(() => {
+    if (!selectedBoard || !isListLikeBoard(selectedBoard)) return "";
+    const columns = selectedBoard.kind === "lists" ? selectedBoard.columns : [];
+    const fallback = columns[0]?.id || "";
+    return event.columnId && columns.some((c) => c.id === event.columnId) ? event.columnId : fallback;
+  });
+
+  useEffect(() => {
+    if (!selectedBoard || !isListLikeBoard(selectedBoard)) {
+      setSelectedColumnId("");
+      return;
+    }
+    const columns = selectedBoard.kind === "lists" ? selectedBoard.columns : [];
+    if (!columns.length) {
+      setSelectedColumnId("");
+      return;
+    }
+    if (!selectedColumnId || !columns.some((col) => col.id === selectedColumnId)) {
+      setSelectedColumnId(columns[0].id);
+    }
+  }, [selectedBoard, selectedColumnId]);
+
+  const [rule, setRule] = useState<Recurrence>(event.recurrence ?? R_NONE);
+  const repeatLabel = useMemo(() => (rule.type === "none" ? "Never" : labelOf(rule)), [rule]);
+  const endRepeatSummary = useMemo(() => {
+    if (!rule.untilISO) return "Never";
+    const timeZone = allDay ? "UTC" : (normalizeTimeZone(startTzid) ?? systemTimeZone);
+    const dateKey = isoDatePart(rule.untilISO, timeZone);
+    if (!ISO_DATE_PATTERN.test(dateKey)) return "Custom date";
+    const parsed = new Date(`${dateKey}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return "Custom date";
+    return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  }, [allDay, rule.untilISO, startTzid, systemTimeZone]);
+
+  const { options: timeZoneOptions, map: timeZoneOptionMap } = useMemo(() => getTimeZoneOptions(), []);
+  const safeStartTzid = useMemo(
+    () => normalizeTimeZone(startTzid) ?? systemTimeZone,
+    [startTzid, systemTimeZone],
+  );
+  const safeEndTzid = useMemo(() => normalizeTimeZone(endTzid) ?? safeStartTzid, [endTzid, safeStartTzid]);
+  const timeZoneLabel = useMemo(
+    () => formatTimeZoneDisplay(safeStartTzid, timeZoneOptionMap),
+    [safeStartTzid, timeZoneOptionMap],
+  );
+
+  const formatDatePill = useCallback((dateKey: string): string => {
+    const parts = parseDateKey(dateKey);
+    if (!parts) return dateKey;
+    const date = new Date(parts.year, parts.month - 1, parts.day);
+    if (Number.isNaN(date.getTime())) return dateKey;
+    return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  }, []);
+
+  const startDateLabel = useMemo(() => formatDatePill(startDate), [formatDatePill, startDate]);
+  const endDateLabel = useMemo(() => formatDatePill(endDate), [formatDatePill, endDate]);
+
+  const startTimeLabel = useMemo(
+    () => formatTimeLabel(isoFromDateTime(startDate, startTime || "09:00", safeStartTzid), safeStartTzid),
+    [safeStartTzid, startDate, startTime],
+  );
+  const endTimeLabel = useMemo(
+    () => formatTimeLabel(isoFromDateTime(endDate || startDate, endTime || "10:00", safeEndTzid), safeEndTzid),
+    [endDate, endTime, safeEndTzid, startDate],
+  );
+  const reminderTimeLabel = useMemo(
+    () =>
+      formatTimeLabel(
+        isoFromDateTime(startDate || isoDatePart(new Date().toISOString()), reminderTime || DEFAULT_DATE_REMINDER_TIME, systemTimeZone),
+        systemTimeZone,
+      ),
+    [reminderTime, startDate, systemTimeZone],
+  );
+
+  const boardLocationSummary = useMemo(() => {
+    if (!selectedBoard) return "Select board";
+    const boardLabel = selectedBoard.name || "Board";
+    if (selectedBoard.kind === "lists") {
+      const match = selectedBoard.columns.find((column) => column.id === selectedColumnId);
+      if (match) return `${boardLabel} • ${match.name}`;
+      if (selectedBoard.columns.length === 0) return `${boardLabel} • No lists`;
+      return `${boardLabel} • Choose list`;
+    }
+    return boardLabel;
+  }, [selectedBoard, selectedColumnId]);
+
+  const inviteesLabel = useMemo(() => {
+    const count = participantValidation.normalized.length;
+    if (!count) return "None";
+    return `${count} invited`;
+  }, [participantValidation.normalized.length]);
+
+  const reminderPresetMode: ReminderPresetMode = hasEventTime ? "timed" : "date";
+  const reminderOptions = useMemo(
+    () => buildReminderOptions(reminderSelection, reminderPresetMode),
+    [reminderPresetMode, reminderSelection],
+  );
+  const reminderPresetMap = useMemo(() => {
+    const map = new Map<ReminderPreset, ReminderOption>();
+    for (const opt of reminderOptions) map.set(opt.id, opt);
+    return map;
+  }, [reminderOptions]);
+  const reminderSummary = useMemo(() => {
+    if (!reminderSelection.length) return "";
+    return reminderSelection
+      .map((id) => {
+        const preset = reminderPresetMap.get(id);
+        if (preset) return preset.badge;
+        const minutes = reminderPresetToMinutes(id);
+        if (!Number.isFinite(minutes) || minutes < 0) return String(id);
+        return formatReminderLabel(minutes).badge;
+      })
+      .join(", ");
+  }, [reminderPresetMap, reminderSelection]);
+  const reminderRowSummary = useMemo(() => {
+    if (!reminderSelection.length) return "None";
+    return reminderSummary;
+  }, [reminderSelection.length, reminderSummary]);
+
+  function toggleReminder(id: ReminderPreset) {
+    if (isReadOnly) return;
+    setReminderSelection((prev) => {
+      const exists = prev.includes(id);
+      const next = exists ? prev.filter((item) => item !== id) : [...prev, id];
+      return next.sort((a, b) =>
+        reminderPresetMode === "date"
+          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
+          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
+      );
+    });
+  }
+
+  const handleAddCustomReminder = useCallback(() => {
+    if (isReadOnly) return;
+    const response = window.prompt(
+      hasEventTime
+        ? "Remind me how many minutes before the start time?"
+        : "Remind me how many minutes before the reminder time?",
+      "30",
+    );
+    if (response == null) return;
+    const trimmed = response.trim();
+    if (!trimmed) return;
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(parsed)) {
+      alert("Enter a valid number of minutes (whole number).");
+      return;
+    }
+    if (parsed < MIN_CUSTOM_REMINDER_MINUTES || parsed > MAX_CUSTOM_REMINDER_MINUTES) {
+      alert(
+        `Pick a value between ${MIN_CUSTOM_REMINDER_MINUTES} and ${MAX_CUSTOM_REMINDER_MINUTES} minutes (up to one week).`,
+      );
+      return;
+    }
+    const normalized = clampCustomReminderMinutes(parsed);
+    const id = minutesToReminderId(normalized);
+    setReminderSelection((prev) => {
+      if (prev.includes(id)) return prev;
+      const next = [...prev, id];
+      return next.sort((a, b) =>
+        reminderPresetMode === "date"
+          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
+          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
+      );
+    });
+  }, [hasEventTime, isReadOnly, reminderPresetMode]);
+
+  const urlValue = useMemo(() => {
+    const lines = (referencesText || "")
+      .split(/\n+/g)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    return lines[0] || "";
+  }, [referencesText]);
+
+  const handleUrlValueChange = useCallback((next: string) => {
+    const trimmed = next.trim();
+    setReferencesText((prev) => {
+      const lines = (prev || "")
+        .split(/\n+/g)
+        .map((value) => value.trim())
+        .filter(Boolean);
+      if (!trimmed) {
+        return lines.slice(1).join("\n");
+      }
+      if (!lines.length) return trimmed;
+      return [trimmed, ...lines.slice(1)].join("\n");
+    });
+  }, []);
+
+  async function handleDocumentAttach(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files || !files.length) return;
+    if (isReadOnly) {
+      e.target.value = "";
+      return;
+    }
+    try {
+      const docs = await readDocumentsFromFiles(files);
+      setDocuments((prev) => [...prev, ...docs]);
+    } catch (err) {
+      console.error("Failed to attach event document", err);
+      alert("Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
+    } finally {
+      e.target.value = "";
+    }
+  }
+
+  const toggleWhenPicker = useCallback((next: Exclude<EventWhenPicker, null>) => {
+    if (isReadOnly) return;
+    setWhenPicker((prev) => (prev === next ? null : next));
+  }, [isReadOnly]);
+
+  const handleSelectStartDate = useCallback((iso: string) => {
+    if (isReadOnly) return;
+    setStartDate(iso);
+    setEndDate((prev) => (prev && prev >= iso ? prev : iso));
+  }, [isReadOnly]);
+
+  const handleSelectEndDate = useCallback((iso: string) => {
+    if (isReadOnly) return;
+    setEndDate(iso);
+    setStartDate((prev) => (prev && prev <= iso ? prev : iso));
+  }, [isReadOnly]);
+
+  useEffect(() => {
+    if (!allDay) return;
+    setWhenPicker((prev) => (prev === "startTime" || prev === "endTime" ? null : prev));
+  }, [allDay]);
+
+  useEffect(() => {
+    if (whenPicker !== "startTime" && whenPicker !== "endTime" && whenPicker !== "reminderTime") return;
+    const source = whenPicker === "endTime" ? endTime : whenPicker === "reminderTime" ? reminderTime : startTime;
+    const fallback = whenPicker === "endTime" ? "10:00" : "09:00";
+    const parsed = parseTimePickerValue(source, fallback);
+    setTimePickerHour(parsed.hour);
+    setTimePickerMinute(parsed.minute);
+    setTimePickerMeridiem(parsed.meridiem);
+  }, [endTime, reminderTime, startTime, whenPicker]);
+
+  useEffect(() => {
+    timePickerHourValueRef.current = timePickerHour;
+  }, [timePickerHour]);
+  useEffect(() => {
+    timePickerMinuteValueRef.current = timePickerMinute;
+  }, [timePickerMinute]);
+  useEffect(() => {
+    timePickerMeridiemValueRef.current = timePickerMeridiem;
+  }, [timePickerMeridiem]);
+
+  useEffect(
+    () => () => {
+      if (timePickerHourScrollFrame.current != null) {
+        cancelAnimationFrame(timePickerHourScrollFrame.current);
+      }
+      if (timePickerMinuteScrollFrame.current != null) {
+        cancelAnimationFrame(timePickerMinuteScrollFrame.current);
+      }
+      if (timePickerMeridiemScrollFrame.current != null) {
+        cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
+      }
+      const snapRefs = [timePickerHourSnapTimeout, timePickerMinuteSnapTimeout, timePickerMeridiemSnapTimeout];
+      for (const ref of snapRefs) {
+        if (ref.current != null) {
+          window.clearTimeout(ref.current);
+          ref.current = null;
+        }
+      }
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    if (whenPicker !== "startTime" && whenPicker !== "endTime" && whenPicker !== "reminderTime") return;
+    const hourIndex = HOURS_12.indexOf(timePickerHour);
+    if (hourIndex >= 0) {
+      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex);
+    }
+    const minuteIndex = MINUTES.indexOf(timePickerMinute);
+    if (minuteIndex >= 0) {
+      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex);
+    }
+    const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
+    if (meridiemIndex >= 0) {
+      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex);
+    }
+  }, [whenPicker, timePickerHour, timePickerMinute, timePickerMeridiem]);
+
+  const setTimePickerFromParts = useCallback(
+    (hour: number, minute: number, meridiem: Meridiem) => {
+      const nextValue = formatTimePickerValue(hour, minute, meridiem);
+      setTimePickerHour(hour);
+      setTimePickerMinute(minute);
+      setTimePickerMeridiem(meridiem);
+      if (whenPicker === "endTime") {
+        setEndTime(nextValue);
+      } else if (whenPicker === "reminderTime") {
+        setReminderTime(nextValue);
+      } else {
+        setStartTime(nextValue);
+      }
+    },
+    [whenPicker],
+  );
+
+  const handleTimePickerHourScroll = useCallback(() => {
+    const column = timePickerHourColumnRef.current;
+    if (!column) return;
+    if (timePickerHourScrollFrame.current != null) {
+      cancelAnimationFrame(timePickerHourScrollFrame.current);
+    }
+    timePickerHourScrollFrame.current = requestAnimationFrame(() => {
+      const clampedIndex = getWheelNearestIndex(column, HOURS_12.length);
+      if (clampedIndex == null) return;
+      const nextHour = HOURS_12[clampedIndex];
+      if (nextHour && timePickerHourValueRef.current !== nextHour) {
+        setTimePickerFromParts(nextHour, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+      }
+      if (nextHour) {
+        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex);
+      }
+    });
+  }, [setTimePickerFromParts]);
+
+  const handleTimePickerMinuteScroll = useCallback(() => {
+    const column = timePickerMinuteColumnRef.current;
+    if (!column) return;
+    if (timePickerMinuteScrollFrame.current != null) {
+      cancelAnimationFrame(timePickerMinuteScrollFrame.current);
+    }
+    timePickerMinuteScrollFrame.current = requestAnimationFrame(() => {
+      const clampedIndex = getWheelNearestIndex(column, MINUTES.length);
+      if (clampedIndex == null) return;
+      const nextMinute = MINUTES[clampedIndex];
+      if (Number.isFinite(nextMinute) && timePickerMinuteValueRef.current !== nextMinute) {
+        setTimePickerFromParts(timePickerHourValueRef.current, nextMinute, timePickerMeridiemValueRef.current);
+      }
+      if (Number.isFinite(nextMinute)) {
+        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex);
+      }
+    });
+  }, [setTimePickerFromParts]);
+
+  const handleTimePickerMeridiemScroll = useCallback(() => {
+    const column = timePickerMeridiemColumnRef.current;
+    if (!column) return;
+    if (timePickerMeridiemScrollFrame.current != null) {
+      cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
+    }
+    timePickerMeridiemScrollFrame.current = requestAnimationFrame(() => {
+      const clampedIndex = getWheelNearestIndex(column, MERIDIEMS.length);
+      if (clampedIndex == null) return;
+      const nextMeridiem = MERIDIEMS[clampedIndex];
+      if (nextMeridiem && timePickerMeridiemValueRef.current !== nextMeridiem) {
+        setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, nextMeridiem);
+      }
+      if (nextMeridiem) {
+        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex);
+      }
+    });
+  }, [setTimePickerFromParts]);
+
+  useEffect(() => {
+    if (endDate < startDate) setEndDate(startDate);
+  }, [endDate, startDate]);
+
+  useEffect(() => {
+    if (allDay) return;
+    const startISO = isoFromDateTime(startDate, startTime || "09:00", safeStartTzid);
+    const endISO = isoFromDateTime(endDate || startDate, endTime || "10:00", safeEndTzid);
+    const startMs = Date.parse(startISO);
+    const endMs = Date.parse(endISO);
+    if (Number.isNaN(startMs) || Number.isNaN(endMs)) return;
+    if (endMs > startMs) return;
+    const nextEnd = new Date(startMs + 60 * 60 * 1000).toISOString();
+    setEndDate(isoDatePart(nextEnd, safeEndTzid));
+    setEndTime(isoTimePart(nextEnd, safeEndTzid));
+  }, [allDay, endDate, endTime, safeEndTzid, safeStartTzid, startDate, startTime]);
+
+  const normalizeHashtags = (raw: string): string[] | undefined => {
+    const parts = raw
+      .split(/[,\n]+/g)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => (value.startsWith("#") ? value.slice(1) : value));
+    const unique = Array.from(new Set(parts));
+    return unique.length ? unique : undefined;
+  };
+
+  const normalizeReferences = (raw: string): string[] | undefined => {
+    const lines = raw
+      .split(/\n+/g)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const unique = Array.from(new Set(lines));
+    return unique.length ? unique : undefined;
+  };
+
+  const normalizeLocations = (list: string[]): string[] | undefined => {
+    const out = list.map((value) => value.trim()).filter(Boolean);
+    return out.length ? out : undefined;
+  };
+
+  const buildDraft = (): CalendarEvent => {
+    const boardId = selectedBoardId;
+    const columnId = selectedBoard && isListLikeBoard(selectedBoard) ? (selectedColumnId || undefined) : undefined;
+    const normalizedTitle = title.trim() || "Untitled";
+    const normalizedDescription = description.trim();
+    const derivedSummary = (normalizedDescription || (event.summary || "").trim()).trim();
+    const normalizedDocuments = documents.map(ensureDocumentPreview);
+    const normalizedImage = image.trim();
+    const normalizedGeohash = geohash.trim();
+    const normalizedParticipants = participantValidation.normalized;
+
+    const base: CalendarEventBase = {
+      id: event.id,
+      boardId,
+      columnId,
+      order: event.order,
+      title: normalizedTitle,
+      ...(derivedSummary ? { summary: derivedSummary } : {}),
+      ...(normalizedDescription ? { description: normalizedDescription } : {}),
+      ...(normalizedDocuments.length ? { documents: normalizedDocuments } : {}),
+      ...(normalizedImage ? { image: normalizedImage } : {}),
+      ...(normalizeLocations(locations) ? { locations: normalizeLocations(locations) } : {}),
+      ...(normalizedGeohash ? { geohash: normalizedGeohash } : {}),
+      ...(normalizedParticipants.length ? { participants: normalizedParticipants } : {}),
+      ...(normalizeHashtags(hashtagsText) ? { hashtags: normalizeHashtags(hashtagsText) } : {}),
+      ...(normalizeReferences(referencesText) ? { references: normalizeReferences(referencesText) } : {}),
+      ...(reminderSelection.length ? { reminders: reminderSelection.slice() } : {}),
+      ...(allDay ? { reminderTime: normalizeReminderTime(reminderTime) ?? DEFAULT_DATE_REMINDER_TIME } : {}),
+      ...(rule && rule.type !== "none" ? { recurrence: rule, seriesId: event.seriesId || event.id } : {}),
+      ...(event.readOnly ? { readOnly: true } : {}),
+      ...(event.originBoardId ? { originBoardId: event.originBoardId } : {}),
+      ...(event.eventKey ? { eventKey: event.eventKey } : {}),
+      ...(event.inviteTokens ? { inviteTokens: event.inviteTokens } : {}),
+      ...(event.canonicalAddress ? { canonicalAddress: event.canonicalAddress } : {}),
+      ...(event.viewAddress ? { viewAddress: event.viewAddress } : {}),
+      ...(event.inviteToken ? { inviteToken: event.inviteToken } : {}),
+      ...(event.inviteRelays ? { inviteRelays: event.inviteRelays } : {}),
+    };
+
+    if (allDay) {
+      const start = startDate;
+      const end = endDate && endDate > start ? endDate : undefined;
+      return { ...base, kind: "date", startDate: start, ...(end ? { endDate: end } : {}) };
+    }
+
+    const normalizedStartTz = normalizeTimeZone(startTzid) ?? systemTimeZone;
+    const normalizedEndTz = normalizeTimeZone(endTzid) ?? normalizedStartTz;
+    const startISO = isoFromDateTime(startDate, startTime || "09:00", normalizedStartTz);
+    const endISO = isoFromDateTime(endDate || startDate, endTime || "10:00", normalizedEndTz);
+    const startMs = Date.parse(startISO);
+    const endMs = Date.parse(endISO);
+    const finalEndISO = !Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs ? endISO : undefined;
+
+    return {
+      ...base,
+      kind: "time",
+      startISO,
+      ...(finalEndISO ? { endISO: finalEndISO } : {}),
+      ...(normalizedStartTz ? { startTzid: normalizedStartTz } : {}),
+      ...(normalizedEndTz ? { endTzid: normalizedEndTz } : {}),
+    };
+  };
+
+  const handleSave = () => {
+    if (isReadOnly) return;
+    if (participantValidation.invalidCount > 0) return;
+    onSave(buildDraft());
+  };
+
+  const handleSwitchToTask = () => {
+    if (isReadOnly) return;
+    if (!onSwitchToTask) return;
+    onSwitchToTask(buildDraft());
+  };
+
+  async function copyCurrent() {
+    const base = buildDraft();
+    try { await navigator.clipboard?.writeText(JSON.stringify(base)); } catch {}
+  }
+
+  async function handleShareEventToContact(contact: Contact) {
+    if (shareEventBusy) return;
+    const draft = buildDraft();
+    const board = boards.find((b) => b.id === draft.boardId) ?? selectedBoard;
+    if (!board?.nostr?.boardId) {
+      setShareEventStatus("Enable sharing on this board to share events.");
+      return;
+    }
+    const recipientHex = normalizeNostrPubkeyHex(contact.npub);
+    if (!recipientHex) {
+      setShareEventStatus("Contact is missing a valid npub.");
+      return;
+    }
+    if (!nostrSkHex) {
+      setShareEventStatus("Connect a Nostr key to share events.");
+      return;
+    }
+    const boardRelays = Array.from(
+      new Set(
+        (board.nostr?.relays?.length ? board.nostr.relays : [])
+          .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
+          .filter(Boolean),
+      ),
+    );
+    const defaultRelayList = Array.from(
+      new Set(
+        (defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS))
+          .map((relay) => relay.trim())
+          .filter(Boolean),
+      ),
+    );
+    const relayList = boardRelays.length ? boardRelays : defaultRelayList;
+    if (!relayList.length) {
+      setShareEventStatus("No relays configured for sharing.");
+      return;
+    }
+    let senderNpub: string | null = null;
+    try {
+      if (nostrPK) {
+        senderNpub =
+          typeof (nip19 as any)?.npubEncode === "function"
+            ? (nip19 as any).npubEncode(hexToBytes(nostrPK))
+            : null;
+      }
+    } catch {
+      senderNpub = null;
+    }
+    setShareEventBusy(true);
+    setShareEventStatus(null);
+    try {
+      const boardKeys = await deriveBoardNostrKeys(board.nostr.boardId);
+      const eventKey = draft.eventKey || event.eventKey;
+      if (!eventKey) {
+        setShareEventStatus("Save the event to generate a share key first.");
+        return;
+      }
+      const inviteToken =
+        (draft.inviteTokens ?? event.inviteTokens ?? {})[recipientHex] || "";
+      if (!inviteToken) {
+        setShareEventStatus("Add this contact as an invitee before sharing.");
+        return;
+      }
+      const canonical = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, draft.id);
+      const view = calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, boardKeys.pk, draft.id);
+      const envelope = buildCalendarEventInviteEnvelope({
+        eventId: draft.id,
+        canonical,
+        view,
+        eventKey,
+        inviteToken,
+        title: draft.title,
+        start: draft.kind === "date" ? draft.startDate : draft.startISO,
+        end: draft.kind === "date" ? draft.endDate : draft.endISO,
+        relays: relayList,
+      }, senderNpub ? { npub: senderNpub } : undefined);
+      const sendRelays = Array.from(new Set([...relayList, ...defaultRelayList])).filter(Boolean);
+      await sendShareMessage(envelope, recipientHex, nostrSkHex, sendRelays);
+      setShareEventPickerOpen(false);
+      showToast(`Event sent to ${contactPrimaryName(contact)}`);
+    } catch (err: any) {
+      setShareEventStatus(err?.message || "Unable to share event.");
+    } finally {
+      setShareEventBusy(false);
+    }
+  }
+
+  const handleChangeLocation = (idx: number, value: string) => {
+    if (isReadOnly) return;
+    setLocations((prev) => prev.map((loc, i) => (i === idx ? value : loc)));
+  };
+
+  const handleAddLocation = () => {
+    if (isReadOnly) return;
+    setLocations((prev) => [...prev, ""]);
+  };
+
+  const handleRemoveLocation = (idx: number) => {
+    if (isReadOnly) return;
+    setLocations((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleChangeParticipant = (idx: number, patch: Partial<CalendarEventParticipant>) => {
+    if (isReadOnly) return;
+    setParticipants((prev) => prev.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
+  };
+
+  const handleAddParticipant = () => {
+    if (isReadOnly) return;
+    setParticipants((prev) => [...prev, { pubkey: "", relay: "", role: "attendee" }]);
+  };
+
+  const handleRemoveParticipant = (idx: number) => {
+    if (isReadOnly) return;
+    setParticipants((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleOpenInvitePicker = () => {
+    if (isReadOnly) return;
+    setInviteSearch("");
+    setInvitePickerOpen(true);
+  };
+
+  const handleToggleInviteContact = (contact: Contact) => {
+    if (isReadOnly) return;
+    const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+    if (!pubkey) return;
+    setParticipants((prev) => {
+      const existing = prev.some((participant) => normalizeNostrPubkeyHex(participant.pubkey) === pubkey);
+      if (existing) {
+        return prev.filter((participant) => normalizeNostrPubkeyHex(participant.pubkey) !== pubkey);
+      }
+      const relay = Array.isArray(contact?.relays)
+        ? contact.relays.map((entry) => (typeof entry === "string" ? entry.trim() : "")).find(Boolean) || ""
+        : "";
+      return [...prev, { pubkey, relay, role: "attendee" }];
+    });
+  };
+
+	  const handleRsvpSelection = async (status: CalendarRsvpStatus) => {
+	    if (!onRsvp || rsvpBusy) return;
+	    if (myRsvpStatus === status) return;
+	    try {
+	      setRsvpBusy(true);
+	      await onRsvp(status);
+	    } finally {
+	      setRsvpBusy(false);
+	    }
+	  };
+
+	  const handleRepeatSelect = useCallback((next: Recurrence) => {
+	    setRule((prev) => {
+	      if (prev.untilISO) {
+	        return { ...next, untilISO: prev.untilISO };
+	      }
+	      return next;
+	    });
+	    setRepeatSheetOpen(false);
+	    setRepeatCustomSheetOpen(false);
+	  }, []);
+
+	  const handleOpenCustomRepeat = useCallback(() => {
+	    setRepeatSheetOpen(false);
+	    setRepeatCustomSheetOpen(true);
+	  }, []);
+
+	  const handleOpenAdvancedRepeat = useCallback(() => {
+	    setRepeatSheetOpen(false);
+	    setRepeatCustomSheetOpen(false);
+	    setRecurrenceModalOpen(true);
+	  }, []);
+
+	  return (
+	    <>
+	      <Modal onClose={onCancel} showClose={false} variant="fullscreen">
+        <div className="edit-modal">
+        <div className="edit-sheet__header">
+          <button
+            type="button"
+            className="edit-sheet__action"
+            onClick={onCancel}
+            aria-label="Close editor"
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+          <div className="edit-sheet__title">Details</div>
+          <button
+            type="button"
+            className="edit-sheet__action edit-sheet__action--accent"
+            onClick={handleSave}
+            aria-label="Save event"
+            disabled={participantValidation.invalidCount > 0 || isReadOnly}
+          >
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2}>
+              <path d="M5 12l4 4 10-10" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        </div>
+
+        {onSwitchToTask && (
+          <div className="mt-[-1rem] mb-[-1rem] w-full pb-[0.1rem]">
+            <div className="w-full">
+              <div className="flex w-full rounded-full border border-white/10 bg-white/5 p-0.5">
+                <button
+                  type="button"
+                  className="flex-1 rounded-full border border-white/10 bg-white/10 px-3 py-0.5 text-sm font-medium leading-none text-primary shadow-sm"
+                  aria-pressed="true"
+                >
+                  Event
+                </button>
+                <button
+                  type="button"
+                  className="pressable flex-1 rounded-full px-3 py-0.5 text-sm leading-none text-secondary"
+                  onClick={handleSwitchToTask}
+                  disabled={isReadOnly}
+                >
+                  Task
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {participantValidation.invalidCount > 0 && (
+          <div className="px-4 pt-3 text-sm text-rose-400">
+            Fix {participantValidation.invalidCount} invalid invitee {participantValidation.invalidCount === 1 ? "pubkey" : "pubkeys"} to save.
+          </div>
+        )}
+        {isReadOnly && (
+          <div className="px-4 pt-2 text-xs text-secondary">
+            View only • You don&apos;t have edit access to this event.
+          </div>
+        )}
+
+		        <section className="edit-card">
+		          <div className="space-y-3">
+		            <div className="edit-card__detail edit-card__detail--field">
+		              <input
+		                value={title}
+		                onChange={(e) => setTitle(e.target.value)}
+		                className="edit-field-input"
+		                placeholder="Title"
+		                readOnly={isReadOnly}
+		              />
+		            </div>
+		            <div className="edit-card__detail edit-card__detail--field">
+		              <input
+		                value={locations[0] ?? ""}
+		                onChange={(e) => handleChangeLocation(0, e.target.value)}
+		                className="edit-field-input"
+		                placeholder="Location or video call"
+		                readOnly={isReadOnly}
+		              />
+		            </div>
+		            <div className="edit-card__detail edit-card__detail--field">
+		              <input
+		                value={urlValue}
+		                onChange={(e) => handleUrlValueChange(e.target.value)}
+		                className="edit-field-input"
+		                placeholder="URL"
+		                readOnly={isReadOnly}
+		              />
+		            </div>
+			            <div className="edit-card__detail edit-card__detail--field">
+			              <textarea
+			                value={description}
+			                onChange={(e) => setDescription(e.target.value)}
+			                className="edit-field-textarea"
+			                rows={4}
+			                placeholder="Notes"
+			                readOnly={isReadOnly}
+			              />
+			            </div>
+			            <div className="edit-card__detail">
+			              <input
+			                ref={documentInputRef}
+			                type="file"
+			                accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+			                className="hidden"
+			                multiple
+			                onChange={handleDocumentAttach}
+			              />
+			              <button
+			                type="button"
+			                className="ghost-button button-sm pressable"
+			                onClick={() => documentInputRef.current?.click()}
+			                disabled={isReadOnly}
+			              >
+			                Attach
+			              </button>
+			            </div>
+			            {documents.length > 0 && (
+			              <ul className="space-y-1">
+			                {documents.map((doc) => (
+			                  <li key={doc.id} className="doc-edit-row">
+			                    <div className="doc-edit-row__info">
+			                      <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
+			                      <div className="doc-edit-row__meta">{doc.kind.toUpperCase()}</div>
+			                    </div>
+			                    <div className="doc-edit-row__actions">
+			                      <button
+			                        type="button"
+			                        className="ghost-button button-sm pressable"
+			                        onClick={() => onPreviewDocument?.(event, doc)}
+			                      >
+			                        Preview
+			                      </button>
+			                      <button
+			                        type="button"
+			                        className="ghost-button button-sm pressable text-rose-500"
+			                        onClick={() => setDocuments((prev) => prev.filter((item) => item.id !== doc.id))}
+			                        disabled={isReadOnly}
+			                      >
+			                        Remove
+			                      </button>
+			                    </div>
+			                  </li>
+			                ))}
+			              </ul>
+			            )}
+			          </div>
+			        </section>
+
+	        <section className="edit-card">
+	          <div className="edit-row">
+	            <div className="edit-row__content">
+	              <div className="edit-row__label">All-day</div>
+	            </div>
+            <button
+              type="button"
+              className={`edit-toggle ${allDay ? "is-on" : ""}`}
+              role="switch"
+              aria-checked={allDay}
+              aria-label="Toggle all-day"
+              onClick={() => setAllDay((prev) => !prev)}
+              disabled={isReadOnly}
+            >
+	              <span className="edit-toggle__thumb" />
+	            </button>
+	          </div>
+	          <div className="edit-row">
+	            <div className="edit-row__content">
+	              <div className="edit-row__label">Starts</div>
+	            </div>
+	            <div className="flex items-center gap-2">
+	              <button
+	                type="button"
+	                className={`pressable rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium ${
+	                  whenPicker === "startDate" ? "text-primary" : "text-secondary"
+	                }`}
+	                onClick={() => toggleWhenPicker("startDate")}
+	                aria-pressed={whenPicker === "startDate"}
+	                disabled={isReadOnly}
+	              >
+	                {startDateLabel}
+	              </button>
+	              {!allDay && (
+	                <button
+	                  type="button"
+	                  className={`pressable rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium ${
+	                    whenPicker === "startTime" ? "text-primary" : "text-secondary"
+	                  }`}
+	                  onClick={() => toggleWhenPicker("startTime")}
+	                  aria-pressed={whenPicker === "startTime"}
+	                  disabled={isReadOnly}
+	                >
+	                  {startTimeLabel}
+	                </button>
+	              )}
+	            </div>
+	          </div>
+	          {whenPicker === "startDate" && (
+	            <div className="edit-card__detail space-y-3">
+	              <DatePickerCalendar baseDate={startDate} selectedDate={startDate} onSelectDate={handleSelectStartDate} />
+	            </div>
+	          )}
+	          {!allDay && whenPicker === "startTime" && (
+	            <div className="edit-card__detail space-y-2">
+	              <div className="edit-time-picker" role="group" aria-label="Select time">
+	                <div
+	                  className="edit-time-picker__column"
+	                  ref={timePickerHourColumnRef}
+	                  onScroll={handleTimePickerHourScroll}
+	                  role="listbox"
+	                  aria-label="Select hour"
+	                >
+	                  {HOURS_12.map((hour, idx) => (
+	                    <div
+	                      key={`start-hour-${hour}`}
+	                      className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
+	                      data-picker-index={idx}
+	                      role="option"
+	                      aria-selected={timePickerHour === hour}
+	                    >
+	                      {String(hour).padStart(2, "0")}
+	                    </div>
+	                  ))}
+	                </div>
+	                <div className="edit-time-picker__separator" aria-hidden="true">
+	                  :
+	                </div>
+	                <div
+	                  className="edit-time-picker__column"
+	                  ref={timePickerMinuteColumnRef}
+	                  onScroll={handleTimePickerMinuteScroll}
+	                  role="listbox"
+	                  aria-label="Select minute"
+	                >
+	                  {MINUTES.map((minute, idx) => (
+	                    <div
+	                      key={`start-minute-${minute}`}
+	                      className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
+	                      data-picker-index={idx}
+	                      role="option"
+	                      aria-selected={timePickerMinute === minute}
+	                    >
+	                      {String(minute).padStart(2, "0")}
+	                    </div>
+	                  ))}
+	                </div>
+	                <div
+	                  className="edit-time-picker__column edit-time-picker__column--meridiem"
+	                  ref={timePickerMeridiemColumnRef}
+	                  onScroll={handleTimePickerMeridiemScroll}
+	                  role="listbox"
+	                  aria-label="Select AM or PM"
+	                >
+	                  {MERIDIEMS.map((label, idx) => (
+	                    <div
+	                      key={`start-meridiem-${label}`}
+	                      className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
+	                      data-picker-index={idx}
+	                      role="option"
+	                      aria-selected={timePickerMeridiem === label}
+	                    >
+	                      {label}
+	                    </div>
+	                  ))}
+	                </div>
+	              </div>
+	              <button
+	                type="button"
+	                className="edit-row edit-row--interactive w-full text-left"
+	                onClick={() => setTimeZoneSheetOpen(true)}
+	                disabled={isReadOnly}
+	              >
+	                <div className="edit-row__content">
+	                  <div className="edit-row__label">Time Zone</div>
+	                </div>
+	                <div className="edit-row__value">{timeZoneLabel}</div>
+	                <span className="edit-row__chevron" aria-hidden="true">›</span>
+	              </button>
+	            </div>
+	          )}
+
+	          <div className="edit-row">
+	            <div className="edit-row__content">
+	              <div className="edit-row__label">Ends</div>
+	            </div>
+	            <div className="flex items-center gap-2">
+	              <button
+	                type="button"
+	                className={`pressable rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium ${
+	                  whenPicker === "endDate" ? "text-primary" : "text-secondary"
+	                }`}
+	                onClick={() => toggleWhenPicker("endDate")}
+	                aria-pressed={whenPicker === "endDate"}
+	                disabled={isReadOnly}
+	              >
+	                {endDateLabel}
+	              </button>
+	              {!allDay && (
+	                <button
+	                  type="button"
+	                  className={`pressable rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium ${
+	                    whenPicker === "endTime" ? "text-primary" : "text-secondary"
+	                  }`}
+	                  onClick={() => toggleWhenPicker("endTime")}
+	                  aria-pressed={whenPicker === "endTime"}
+	                  disabled={isReadOnly}
+	                >
+	                  {endTimeLabel}
+	                </button>
+	              )}
+	            </div>
+	          </div>
+	          {whenPicker === "endDate" && (
+	            <div className="edit-card__detail space-y-3">
+	              <DatePickerCalendar baseDate={endDate} selectedDate={endDate} onSelectDate={handleSelectEndDate} />
+	            </div>
+	          )}
+	          {!allDay && whenPicker === "endTime" && (
+	            <div className="edit-card__detail space-y-2">
+	              <div className="edit-time-picker" role="group" aria-label="Select time">
+	                <div
+	                  className="edit-time-picker__column"
+	                  ref={timePickerHourColumnRef}
+	                  onScroll={handleTimePickerHourScroll}
+	                  role="listbox"
+	                  aria-label="Select hour"
+	                >
+	                  {HOURS_12.map((hour, idx) => (
+	                    <div
+	                      key={`end-hour-${hour}`}
+	                      className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
+	                      data-picker-index={idx}
+	                      role="option"
+	                      aria-selected={timePickerHour === hour}
+	                    >
+	                      {String(hour).padStart(2, "0")}
+	                    </div>
+	                  ))}
+	                </div>
+	                <div className="edit-time-picker__separator" aria-hidden="true">
+	                  :
+	                </div>
+	                <div
+	                  className="edit-time-picker__column"
+	                  ref={timePickerMinuteColumnRef}
+	                  onScroll={handleTimePickerMinuteScroll}
+	                  role="listbox"
+	                  aria-label="Select minute"
+	                >
+	                  {MINUTES.map((minute, idx) => (
+	                    <div
+	                      key={`end-minute-${minute}`}
+	                      className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
+	                      data-picker-index={idx}
+	                      role="option"
+	                      aria-selected={timePickerMinute === minute}
+	                    >
+	                      {String(minute).padStart(2, "0")}
+	                    </div>
+	                  ))}
+	                </div>
+	                <div
+	                  className="edit-time-picker__column edit-time-picker__column--meridiem"
+	                  ref={timePickerMeridiemColumnRef}
+	                  onScroll={handleTimePickerMeridiemScroll}
+	                  role="listbox"
+	                  aria-label="Select AM or PM"
+	                >
+	                  {MERIDIEMS.map((label, idx) => (
+	                    <div
+	                      key={`end-meridiem-${label}`}
+	                      className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
+	                      data-picker-index={idx}
+	                      role="option"
+	                      aria-selected={timePickerMeridiem === label}
+	                    >
+	                      {label}
+	                    </div>
+	                  ))}
+	                </div>
+	              </div>
+	              <button
+	                type="button"
+	                className="edit-row edit-row--interactive w-full text-left"
+	                onClick={() => setTimeZoneSheetOpen(true)}
+	                disabled={isReadOnly}
+	              >
+	                <div className="edit-row__content">
+	                  <div className="edit-row__label">Time Zone</div>
+	                </div>
+	                <div className="edit-row__value">{timeZoneLabel}</div>
+	                <span className="edit-row__chevron" aria-hidden="true">›</span>
+	              </button>
+	            </div>
+	          )}
+
+		        </section>
+
+		        <section className="edit-card">
+		          <button
+		            type="button"
+		            className="edit-row edit-row--interactive w-full text-left"
+		            onClick={() => setRepeatSheetOpen(true)}
+		            disabled={isReadOnly}
+		          >
+	            <div className="edit-row__content">
+	              <div className="edit-row__label">Repeat</div>
+	            </div>
+		            <div className="edit-row__value">{repeatLabel}</div>
+		            <span className="edit-row__chevron" aria-hidden="true">›</span>
+		          </button>
+              {rule.type !== "none" && (
+                <button
+                  type="button"
+                  className="edit-row edit-row--interactive w-full text-left"
+                  onClick={() => setEndRepeatSheetOpen(true)}
+                  disabled={isReadOnly}
+                >
+                  <div className="edit-row__content">
+                    <div className="edit-row__label">End Repeat</div>
+                  </div>
+                  <div className="edit-row__value">{endRepeatSummary}</div>
+                  <span className="edit-row__chevron" aria-hidden="true">›</span>
+                </button>
+              )}
+		        </section>
+
+		        <section className="edit-card">
+		          <button
+		            type="button"
+		            className="edit-row edit-row--interactive edit-row--inline"
+		            onClick={() => setBoardLocationExpanded((prev) => !prev)}
+		            aria-expanded={boardLocationExpanded}
+		            disabled={isReadOnly}
+		          >
+		            <div className="edit-row__content">
+		              <div className="edit-row__label">Board</div>
+		            </div>
+		            <div className="edit-row__value truncate max-w-[10rem]" title={boardLocationSummary}>
+		              {boardLocationSummary}
+		            </div>
+		            <span className="edit-row__chevron" aria-hidden="true">›</span>
+		          </button>
+		          {boardLocationExpanded && (
+		            <div className="edit-card__detail edit-location">
+		              {editableBoards.length === 0 ? (
+		                <div className="text-sm text-secondary">No boards available.</div>
+		              ) : (
+		                <div className="edit-location__controls">
+		                  <select
+		                    className="pill-select pill-select--compact w-full"
+		                    value={selectedBoardId}
+		                    onChange={(evt) => setSelectedBoardId(evt.target.value)}
+		                    title="Select board"
+		                    aria-label="Select board"
+		                    disabled={isReadOnly}
+		                  >
+		                    {editableBoards.map((board) => (
+		                      <option key={board.id} value={board.id}>
+		                        {board.name}
+		                      </option>
+		                    ))}
+		                  </select>
+		                  {selectedBoard?.kind === "lists" && (
+		                    <select
+		                      className="pill-select pill-select--compact w-full"
+		                      value={selectedColumnId}
+		                      onChange={(evt) => setSelectedColumnId(evt.target.value)}
+		                      title="Select list"
+		                      aria-label="Select list"
+		                      disabled={isReadOnly || selectedBoard.columns.length === 0}
+		                    >
+		                      {selectedBoard.columns.length === 0 ? (
+		                        <option value="">No lists</option>
+		                      ) : (
+		                        selectedBoard.columns.map((column) => (
+		                          <option key={column.id} value={column.id}>
+		                            {column.name}
+		                          </option>
+		                        ))
+		                      )}
+		                    </select>
+		                  )}
+		                </div>
+		              )}
+		            </div>
+		          )}
+          <button
+            type="button"
+            className="edit-row edit-row--interactive w-full text-left"
+            onClick={handleOpenInvitePicker}
+            disabled={isReadOnly}
+          >
+            <div className="edit-row__content">
+              <div className="edit-row__label">Invitees</div>
+            </div>
+            <div className="edit-row__value">{inviteesLabel}</div>
+            <span className="edit-row__chevron" aria-hidden="true">›</span>
+          </button>
+          <div className="edit-card__detail">
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="ghost-button button-sm pressable"
+                onClick={handleOpenInvitePicker}
+                disabled={isReadOnly}
+              >
+                Invite contact
+              </button>
+              <button
+                type="button"
+                className="ghost-button button-sm pressable"
+                onClick={() => {
+                  handleAddParticipant();
+                  setShowAdvanced(true);
+                }}
+                disabled={isReadOnly}
+              >
+                Add invitee
+              </button>
+            </div>
+          </div>
+        </section>
+
+		        <section className="edit-card">
+		          <button
+		            type="button"
+		            className="edit-row edit-row--interactive w-full text-left"
+		            onClick={() => setReminderPickerExpanded((prev) => !prev)}
+		            disabled={isReadOnly}
+		          >
+		            <div className="edit-row__content">
+		              <div className="edit-row__label">Reminders</div>
+		            </div>
+		            <div className="edit-row__value">{reminderRowSummary}</div>
+		            <span className="edit-row__chevron" aria-hidden="true">›</span>
+		          </button>
+		          {reminderPickerExpanded && (
+		            <div className="edit-card__detail space-y-2">
+		              <div className="flex flex-wrap gap-1.5">
+		                {reminderOptions.map((opt) => {
+		                  const active = reminderSelection.includes(opt.id);
+		                  const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
+		                  return (
+			                    <button
+			                      key={opt.id}
+			                      type="button"
+			                      className={cls}
+			                      onClick={() => toggleReminder(opt.id)}
+			                      disabled={isReadOnly}
+			                      title={opt.label}
+			                    >
+			                      {opt.badge}
+			                    </button>
+			                  );
+		                })}
+			                <button
+			                  type="button"
+			                  className="ghost-button button-sm pressable"
+			                  onClick={handleAddCustomReminder}
+			                  disabled={isReadOnly}
+			                  title="Add a custom reminder"
+			                >
+			                  Custom…
+			                </button>
+			              </div>
+                    {allDay && (
+                      <div className="space-y-2">
+                        <div className="text-xs text-secondary">Reminder time (current timezone)</div>
+                        <button
+                          type="button"
+                          className={`pressable rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium ${
+                            whenPicker === "reminderTime" ? "text-primary" : "text-secondary"
+                          }`}
+                          onClick={() => toggleWhenPicker("reminderTime")}
+                          aria-pressed={whenPicker === "reminderTime"}
+                          disabled={isReadOnly}
+                        >
+                          {reminderTimeLabel}
+                        </button>
+                        {whenPicker === "reminderTime" && (
+                          <div className="edit-time-picker" role="group" aria-label="Select reminder time">
+                            <div
+                              className="edit-time-picker__column"
+                              ref={timePickerHourColumnRef}
+                              onScroll={handleTimePickerHourScroll}
+                              role="listbox"
+                              aria-label="Select hour"
+                            >
+                              {HOURS_12.map((hour, idx) => (
+                                <div
+                                  key={`reminder-hour-${hour}`}
+                                  className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
+                                  data-picker-index={idx}
+                                  role="option"
+                                  aria-selected={timePickerHour === hour}
+                                >
+                                  {String(hour).padStart(2, "0")}
+                                </div>
+                              ))}
+                            </div>
+                            <div className="edit-time-picker__separator" aria-hidden="true">
+                              :
+                            </div>
+                            <div
+                              className="edit-time-picker__column"
+                              ref={timePickerMinuteColumnRef}
+                              onScroll={handleTimePickerMinuteScroll}
+                              role="listbox"
+                              aria-label="Select minute"
+                            >
+                              {MINUTES.map((minute, idx) => (
+                                <div
+                                  key={`reminder-minute-${minute}`}
+                                  className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
+                                  data-picker-index={idx}
+                                  role="option"
+                                  aria-selected={timePickerMinute === minute}
+                                >
+                                  {String(minute).padStart(2, "0")}
+                                </div>
+                              ))}
+                            </div>
+                            <div
+                              className="edit-time-picker__column edit-time-picker__column--meridiem"
+                              ref={timePickerMeridiemColumnRef}
+                              onScroll={handleTimePickerMeridiemScroll}
+                              role="listbox"
+                              aria-label="Select AM or PM"
+                            >
+                              {MERIDIEMS.map((label, idx) => (
+                                <div
+                                  key={`reminder-meridiem-${label}`}
+                                  className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
+                                  data-picker-index={idx}
+                                  role="option"
+                                  aria-selected={timePickerMeridiem === label}
+                                >
+                                  {label}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+			            </div>
+			          )}
+			        </section>
+
+	        {showRsvpSection && (
+	          <section className="edit-card">
+	            <div className="edit-card__title">Responses</div>
+	            <div className="space-y-3">
+              {onRsvp && (
+                <div className="space-y-2">
+                  <div className="text-xs text-secondary">Your RSVP</div>
+                  <div className="mx-auto w-full max-w-md">
+                    <div className="flex rounded-full border border-white/10 bg-white/5 p-1">
+                      <button
+                        type="button"
+                        className={
+                          myRsvpStatus === "accepted"
+                            ? "pressable flex-1 rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium text-primary shadow-sm"
+                            : "pressable flex-1 rounded-full px-3 py-2 text-sm text-secondary"
+                        }
+                        disabled={rsvpBusy}
+                        onClick={() => void handleRsvpSelection("accepted")}
+                      >
+                        Accept
+                      </button>
+                      <button
+                        type="button"
+                        className={
+                          myRsvpStatus === "tentative"
+                            ? "pressable flex-1 rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium text-primary shadow-sm"
+                            : "pressable flex-1 rounded-full px-3 py-2 text-sm text-secondary"
+                        }
+                        disabled={rsvpBusy}
+                        onClick={() => void handleRsvpSelection("tentative")}
+                      >
+                        Tentative
+                      </button>
+                      <button
+                        type="button"
+                        className={
+                          myRsvpStatus === "declined"
+                            ? "pressable flex-1 rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium text-primary shadow-sm"
+                            : "pressable flex-1 rounded-full px-3 py-2 text-sm text-secondary"
+                        }
+                        disabled={rsvpBusy}
+                        onClick={() => void handleRsvpSelection("declined")}
+                      >
+                        Decline
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="text-xs text-secondary">
+                Accepted {rsvpCounts.accepted} • Tentative {rsvpCounts.tentative} • Declined {rsvpCounts.declined}
+              </div>
+
+              {rsvpList.length === 0 ? (
+                <div className="text-xs text-secondary">No responses yet.</div>
+              ) : (
+                <div className="space-y-2">
+                  {rsvpList.map((rsvp) => {
+                    const contact = contactByPubkey.get(rsvp.authorPubkey);
+                    const label = contact ? contactPrimaryName(contact) : shortenPubkey(rsvp.authorPubkey);
+                    const isSelf = rsvp.authorPubkey === nostrPK;
+                    const statusLabel =
+                      rsvp.status === "accepted" ? "Accepted" : rsvp.status === "tentative" ? "Tentative" : "Declined";
+                    const statusClass =
+                      rsvp.status === "accepted"
+                        ? "text-emerald-400"
+                        : rsvp.status === "tentative"
+                          ? "text-amber-400"
+                          : "text-rose-400";
+                    return (
+                      <div
+                        key={rsvp.authorPubkey}
+                        className="flex items-center justify-between rounded-xl border border-surface bg-surface-muted px-3 py-2"
+                      >
+                        <div className="min-w-0 truncate text-sm font-medium">
+                          {label}
+                          {isSelf ? " (You)" : ""}
+                        </div>
+                        <div className={`text-xs font-medium ${statusClass}`}>{statusLabel}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </section>
+	        )}
+
+	        <div className="edit-actions">
+          <button
+            type="button"
+            className="pressable rounded-full bg-rose-600/80 px-4 py-2 text-sm font-semibold hover:bg-rose-600"
+            onClick={onDelete}
+          >
+            Delete
+          </button>
+          <div className="edit-actions__secondary">
+            <button type="button" className="ghost-button button-sm pressable" onClick={() => setShowAdvanced((v) => !v)}>
+              {showAdvanced ? "Hide details" : "More"}
+            </button>
+            <button
+              type="button"
+              className="ghost-button button-sm pressable"
+              onClick={() => {
+                setShareEventStatus(null);
+                setShareEventPickerOpen(true);
+              }}
+              disabled={shareEventBusy || isReadOnly}
+            >
+              Share
+            </button>
+            <button type="button" className="ghost-button button-sm pressable" onClick={copyCurrent}>
+              Copy Event
+            </button>
+          </div>
+        </div>
+
+	        {showAdvanced && (
+	          <>
+	            <section className="edit-card">
+	              <div className="edit-card__title">Details</div>
+	              <div className="space-y-3">
+	                <div className="edit-card__detail edit-card__detail--field">
+	                  <input
+	                    value={image}
+	                    onChange={(e) => setImage(e.target.value)}
+	                    className="edit-field-input"
+	                    placeholder="Image URL"
+	                    readOnly={isReadOnly}
+	                  />
+	                </div>
+                <div className="edit-card__detail edit-card__detail--field">
+                  <input
+                    value={geohash}
+                    onChange={(e) => setGeohash(e.target.value)}
+                    className="edit-field-input"
+                    placeholder="Geohash (optional)"
+                    readOnly={isReadOnly}
+                  />
+                </div>
+                {!allDay && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <div className="text-xs text-secondary">Start TZID</div>
+                      <input
+                        value={startTzid}
+                        onChange={(e) => setStartTzid(e.target.value)}
+                        className="edit-field-input"
+                        placeholder={systemTimeZone}
+                        readOnly={isReadOnly}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs text-secondary">End TZID</div>
+                      <input
+                        value={endTzid}
+                        onChange={(e) => setEndTzid(e.target.value)}
+                        className="edit-field-input"
+                        placeholder={startTzid || systemTimeZone}
+                        readOnly={isReadOnly}
+                      />
+                    </div>
+                  </div>
+                )}
+                <div className="edit-card__detail edit-card__detail--field">
+                  <input
+                    value={hashtagsText}
+                    onChange={(e) => setHashtagsText(e.target.value)}
+                    className="edit-field-input"
+                    placeholder="Hashtags (comma-separated)"
+                    readOnly={isReadOnly}
+                  />
+                </div>
+	                <div className="edit-card__detail edit-card__detail--field">
+	                  <textarea
+	                    value={referencesText}
+	                    onChange={(e) => setReferencesText(e.target.value)}
+	                    className="edit-field-textarea"
+	                    rows={3}
+	                    placeholder="References / links (one per line)"
+	                    readOnly={isReadOnly}
+	                  />
+	                </div>
+	              </div>
+	            </section>
+	            <section className="edit-card">
+	              <div className="edit-card__title">Additional Locations</div>
+	              <div className="space-y-2">
+	                {locations.slice(1).length === 0 ? (
+	                  <div className="text-xs text-secondary">No additional locations.</div>
+	                ) : (
+	                  locations.slice(1).map((loc, extraIdx) => {
+	                    const idx = extraIdx + 1;
+	                    return (
+	                      <div key={idx} className="edit-card__detail edit-card__detail--field flex items-center gap-2">
+	                        <input
+	                          value={loc}
+	                          onChange={(e) => handleChangeLocation(idx, e.target.value)}
+	                          className="edit-field-input flex-1"
+	                          placeholder="Additional location"
+	                          readOnly={isReadOnly}
+	                        />
+	                        <button
+	                          type="button"
+	                          className="ghost-button button-sm pressable text-rose-400"
+	                          onClick={() => handleRemoveLocation(idx)}
+	                          aria-label="Remove location"
+	                          disabled={isReadOnly}
+	                        >
+	                          ×
+	                        </button>
+	                      </div>
+	                    );
+	                  })
+	                )}
+	                <div className="edit-card__detail">
+	                  <button
+	                    type="button"
+	                    className="ghost-button button-sm pressable"
+	                    onClick={handleAddLocation}
+	                    disabled={isReadOnly}
+	                  >
+	                    Add location
+	                  </button>
+	                </div>
+	              </div>
+	            </section>
+	
+	            <section className="edit-card">
+	              <div className="edit-card__title">Invitees (advanced)</div>
+	              <div className="space-y-2">
+	                {participants.length === 0 ? (
+	                  <div className="text-xs text-secondary">No invitees yet.</div>
+	                ) : (
+	                  participants.map((participant, idx) => {
+	                    const normalizedPubkey = normalizeNostrPubkeyHex(participant.pubkey);
+	                    const contact = normalizedPubkey ? contactByPubkey.get(normalizedPubkey) : undefined;
+	                    const contactLabel = contact ? contactPrimaryName(contact) : "";
+	                    const invalidPubkey = !!(participant.pubkey || "").trim() && !normalizedPubkey;
+	                    return (
+	                      <div key={idx} className="space-y-2 rounded-2xl border border-surface bg-surface-muted p-3">
+	                        {contactLabel ? <div className="text-xs text-secondary">{contactLabel}</div> : null}
+	                        <div className="flex items-center gap-2">
+	                          <input
+	                            value={participant.pubkey}
+	                            onChange={(e) => handleChangeParticipant(idx, { pubkey: e.target.value })}
+	                            className="edit-field-input flex-1"
+	                            placeholder="npub or hex pubkey"
+	                            readOnly={isReadOnly}
+	                          />
+	                          <button
+	                            type="button"
+	                            className="ghost-button button-sm pressable text-rose-400"
+	                            onClick={() => handleRemoveParticipant(idx)}
+	                            aria-label="Remove invitee"
+	                            disabled={isReadOnly}
+	                          >
+	                            Delete
+	                          </button>
+	                        </div>
+	                        {invalidPubkey ? <div className="text-xs text-rose-400">Invalid pubkey</div> : null}
+	                        <div className="grid grid-cols-2 gap-2">
+	                          <input
+	                            value={participant.role || ""}
+	                            onChange={(e) => handleChangeParticipant(idx, { role: e.target.value })}
+	                            className="edit-field-input"
+	                            placeholder="Role (optional)"
+	                            readOnly={isReadOnly}
+	                          />
+	                          <input
+	                            value={participant.relay || ""}
+	                            onChange={(e) => handleChangeParticipant(idx, { relay: e.target.value })}
+	                            className="edit-field-input"
+	                            placeholder="Relay hint (optional)"
+	                            readOnly={isReadOnly}
+	                          />
+	                        </div>
+	                      </div>
+	                    );
+	                  })
+	                )}
+              </div>
+            </section>
+          </>
+        )}
+	        </div>
+	      </Modal>
+
+	      <ActionSheet
+	        open={invitePickerOpen}
+	        onClose={() => {
+	          setInvitePickerOpen(false);
+	          setInviteSearch("");
+        }}
+        title="Invitees"
+        stackLevel={90}
+      >
+        <div className="space-y-3">
+          <div className="edit-card__detail edit-card__detail--field">
+            <input
+              value={inviteSearch}
+              onChange={(e) => setInviteSearch(e.target.value)}
+              className="edit-field-input"
+              placeholder="Search contacts"
+              readOnly={isReadOnly}
+            />
+          </div>
+          {filteredInviteContacts.length ? (
+            <div className="space-y-2">
+              {filteredInviteContacts.map((contact) => {
+                const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+                if (!pubkey) return null;
+                const label = contactPrimaryName(contact);
+                const subtitle = formatContactNpub(contact.npub);
+                const selected = invitedPubkeys.has(pubkey);
+                return (
+                  <button
+                    key={contact.id}
+                    type="button"
+                    className="contact-row pressable"
+                    onClick={() => handleToggleInviteContact(contact)}
+                    aria-pressed={selected}
+                    disabled={isReadOnly}
+                  >
+                    <div className="contact-avatar">{contactInitials(label)}</div>
+                    <div className="contact-row__text">
+                      <div className="contact-row__name flex items-center gap-2">
+                        <span className="min-w-0 truncate">{label}</span>
+                        {selected ? (
+                          <span className="text-xs text-secondary" aria-label="Invited">
+                            ✓
+                          </span>
+                        ) : null}
+                      </div>
+                      {subtitle ? (
+                        <div className="contact-row__meta">
+                          <span className="contact-row__meta-text">{subtitle}</span>
+                        </div>
+                      ) : null}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-sm text-secondary">No contacts found.</div>
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="ghost-button button-sm pressable flex-1 justify-center"
+              onClick={() => {
+                setInvitePickerOpen(false);
+                setInviteSearch("");
+              }}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      </ActionSheet>
+
+      <ActionSheet
+        open={shareEventPickerOpen}
+        onClose={() => {
+          if (shareEventBusy) return;
+          setShareEventPickerOpen(false);
+          setShareEventStatus(null);
+        }}
+        title="Send event"
+        stackLevel={85}
+      >
+        <div className="text-sm text-secondary mb-2">
+          Choose a contact to send <span className="font-semibold">{title.trim() || "this event"}</span>.
+        </div>
+        {shareEventStatus && (
+          <div className="text-sm text-rose-400 mb-2">{shareEventStatus}</div>
+        )}
+        {shareableContacts.length ? (
+          <div className="space-y-2">
+            {shareableContacts.map((contact) => {
+              const label = contactPrimaryName(contact);
+              const subtitle = formatContactNpub(contact.npub);
+              return (
+                <button
+                  key={contact.id}
+                  type="button"
+                  className="contact-row pressable"
+                  disabled={shareEventBusy}
+                  onClick={() => handleShareEventToContact(contact)}
+                >
+                  <div className="contact-avatar">{contactInitials(label)}</div>
+                  <div className="contact-row__text">
+                    <div className="contact-row__name">{label}</div>
+                    {subtitle ? (
+                      <div className="contact-row__meta">
+                        <span className="contact-row__meta-text">{subtitle}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
+        )}
+        <div className="flex gap-2 mt-3">
+          <button
+            type="button"
+            className="ghost-button button-sm pressable flex-1 justify-center"
+            onClick={() => {
+              if (shareEventBusy) return;
+              setShareEventPickerOpen(false);
+              setShareEventStatus(null);
+            }}
+            disabled={shareEventBusy}
+          >
+            Cancel
+          </button>
+        </div>
+      </ActionSheet>
+
+      <TimeZoneSheet
+        open={timeZoneSheetOpen}
+        onClose={() => setTimeZoneSheetOpen(false)}
+        options={timeZoneOptions}
+	        selectedTimeZone={safeStartTzid}
+	        onSelect={(timeZone) => {
+	          setStartTzid(timeZone);
+		          setEndTzid(timeZone);
+		        }}
+		      />
+
+		      <RepeatPickerSheet
+		        open={repeatSheetOpen}
+		        onClose={() => setRepeatSheetOpen(false)}
+		        rule={rule}
+	        scheduledDate={startDate}
+	        onSelect={handleRepeatSelect}
+	        onOpenCustom={handleOpenCustomRepeat}
+	        onOpenAdvanced={handleOpenAdvancedRepeat}
+	      />
+	      <RepeatCustomSheet
+	        open={repeatCustomSheetOpen}
+	        onClose={() => setRepeatCustomSheetOpen(false)}
+	        scheduledDate={startDate}
+	        rule={rule}
+	        onApply={handleRepeatSelect}
+	        onOpenAdvanced={handleOpenAdvancedRepeat}
+	      />
+        <EndRepeatSheet
+          open={endRepeatSheetOpen}
+          onClose={() => setEndRepeatSheetOpen(false)}
+          rule={rule}
+          scheduledDate={startDate}
+          timeZone={allDay ? "UTC" : safeStartTzid}
+          onSelect={(untilISO) =>
+            setRule((prev) => {
+              const next: Recurrence = { ...prev };
+              if (untilISO) {
+                next.untilISO = untilISO;
+              } else {
+                delete next.untilISO;
+              }
+              return next;
+            })
+          }
+        />
+	      {recurrenceModalOpen && (
+	        <RecurrenceModal
+	          initial={rule}
+	          onClose={() => setRecurrenceModalOpen(false)}
+	          onApply={(next) => {
+	            setRule(next);
+	            setRecurrenceModalOpen(false);
+	          }}
+	        />
+	      )}
+	    </>
+	  );
+	}
+
 /* Edit modal with Advanced recurrence */
-function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onRedeemCoins, onRevealBounty, onTransferBounty, onPreviewDocument, walletConversionEnabled, walletPrimaryCurrency, bountyListEnabled, bountyListLabel, bountyListKey, onAddToBountyList, onRemoveFromBountyList }: {
+function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, boards, onRedeemCoins, onRevealBounty, onTransferBounty, onPreviewDocument, walletConversionEnabled, walletPrimaryCurrency, bountyListEnabled, bountyListKey, onAddToBountyList, onRemoveFromBountyList, defaultRelays, nostrPK, nostrSkHex }: {
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
   onSave: (t: Task)=>void;
+  onSwitchToEvent?: (t: Task)=>void;
   weekStart: Weekday;
   boardKind: Board["kind"];
+  boards: Board[];
   onRedeemCoins?: (from: DOMRect)=>void;
   onRevealBounty?: (taskId: string)=>Promise<void>;
   onTransferBounty?: (taskId: string, recipientHex: string)=>Promise<void>;
@@ -9059,17 +21668,23 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   walletConversionEnabled: boolean;
   walletPrimaryCurrency: "sat" | "usd";
   bountyListEnabled: boolean;
-  bountyListLabel: string;
   bountyListKey?: string | null;
   onAddToBountyList?: (taskId: string) => void;
   onRemoveFromBountyList?: (taskId: string) => void;
+  defaultRelays: string[];
+  nostrPK: string;
+  nostrSkHex: string;
 }) {
   const [title, setTitle] = useState(task.title);
+  const [priority, setPriority] = useState<TaskPriority | 0>(() => normalizeTaskPriority(task.priority) ?? 0);
+  const [prioritySheetOpen, setPrioritySheetOpen] = useState(false);
   const [note, setNote] = useState(task.note || "");
   const [images, setImages] = useState<string[]>(task.images || []);
   const [documents, setDocuments] = useState<TaskDocument[]>(task.documents || []);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
   const [newSubtask, setNewSubtask] = useState("");
+  const [selectedBoardId, setSelectedBoardId] = useState(task.boardId);
+  const [selectedColumnId, setSelectedColumnId] = useState(task.columnId || "");
   const newSubtaskRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
   const dragSubtaskIdRef = useRef<string | null>(null);
@@ -9078,17 +21693,26 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   const [repeatSheetOpen, setRepeatSheetOpen] = useState(false);
   const [repeatCustomSheetOpen, setRepeatCustomSheetOpen] = useState(false);
   const [endRepeatSheetOpen, setEndRepeatSheetOpen] = useState(false);
-  const initialDate = isoDatePart(task.dueISO);
-  const initialTime = isoTimePart(task.dueISO);
+  const initialDateEnabled = task.dueDateEnabled !== false;
+  const systemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
+  const initialTimeZone = useMemo(
+    () => normalizeTimeZone(task.dueTimeEnabled ? task.dueTimeZone : undefined) ?? systemTimeZone,
+    [systemTimeZone, task.dueTimeEnabled, task.dueTimeZone],
+  );
+  const initialDate = initialDateEnabled ? isoDatePart(task.dueISO, initialTimeZone) : "";
+  const initialTime = initialDateEnabled ? isoTimePart(task.dueISO, initialTimeZone) : "";
   const defaultTimeValue = initialTime || "09:00";
-  const defaultHasTime = task.dueTimeEnabled ?? false;
+  const defaultHasTime = initialDateEnabled && (task.dueTimeEnabled ?? false);
   const [scheduledDate, setScheduledDate] = useState(initialDate);
-  const [scheduledTime, setScheduledTime] = useState<string>(defaultHasTime ? initialTime : '');
-  const hasDueTime = scheduledTime.trim().length > 0;
-
+  const [scheduledTime, setScheduledTime] = useState<string>(defaultHasTime ? initialTime : "");
+  const [scheduledTimeZone, setScheduledTimeZone] = useState(initialTimeZone);
+  const [timeZoneSheetOpen, setTimeZoneSheetOpen] = useState(false);
+  const initialReminderTime = normalizeReminderTime(task.reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
   const [reminderSelection, setReminderSelection] = useState<ReminderPreset[]>(task.reminders ?? []);
+  const [reminderTime, setReminderTime] = useState<string>(initialReminderTime);
   const lastTimeRef = useRef<string>(defaultTimeValue);
-  const [dateEnabled, setDateEnabled] = useState(() => !!initialDate);
+  const [dateEnabled, setDateEnabled] = useState(() => initialDateEnabled && !!initialDate);
+  const hasDueTime = dateEnabled && scheduledTime.trim().length > 0;
   const [dateDetailsOpen, setDateDetailsOpen] = useState(false);
   const [calendarBaseDate, setCalendarBaseDate] = useState(initialDate);
   const timePickerHourColumnRef = useRef<HTMLDivElement | null>(null);
@@ -9105,7 +21729,9 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   const timePickerMeridiemValueRef = useRef<Meridiem>("AM");
   const [reminderPickerExpanded, setReminderPickerExpanded] = useState(false);
   const [subtasksExpanded, setSubtasksExpanded] = useState(false);
+  const [locationExpanded, setLocationExpanded] = useState(false);
   const [timeDetailsOpen, setTimeDetailsOpen] = useState(false);
+  const [reminderTimeDetailsOpen, setReminderTimeDetailsOpen] = useState(false);
   const [, setBountyState] = useState<Task["bounty"]["state"]>(task.bounty?.state || "locked");
   const { createSendToken, receiveToken, mintUrl } = useCashu();
   const [attachSheetOpen, setAttachSheetOpen] = useState(false);
@@ -9113,17 +21739,63 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   const [lockToSelf, setLockToSelf] = useState(true);
   const [bountyExpanded, setBountyExpanded] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>(() => loadContactsFromStorage());
+  const prefetchedContactPhotos = useRef<Set<string>>(new Set());
+  const [nip05Cache, setNip05Cache] = useState<Record<string, Nip05CheckState>>(() =>
+    typeof window !== "undefined" ? loadNip05Cache() : {},
+  );
   const [lockNpubSheetOpen, setLockNpubSheetOpen] = useState(false);
   const [lockRecipientSelection, setLockRecipientSelection] = useState<LockRecipientSelection | null>(null);
-  const updateContacts = useCallback((compute: (prev: Contact[]) => Contact[]) => {
-    setContacts((prev) => {
-      const next = compute(prev);
-      saveContactsToStorage(next);
-      return next;
-    });
-  }, []);
   const [signingBounty, setSigningBounty] = useState(false);
+  const [shareTaskPickerOpen, setShareTaskPickerOpen] = useState(false);
+  const [shareTaskStatus, setShareTaskStatus] = useState<string | null>(null);
+  const [shareTaskBusy, setShareTaskBusy] = useState(false);
   const { show: showToast } = useToast();
+  const availableBoards = useMemo(() => {
+    const base = boards.filter(
+      (board) => !board.archived && !board.hidden && board.kind !== "bible" && board.kind !== "compound",
+    );
+    if (!base.some((board) => board.id === task.boardId)) {
+      const fallback = boards.find((board) => board.id === task.boardId);
+      if (fallback) return [fallback, ...base];
+    }
+    return base;
+  }, [boards, task.boardId]);
+  const selectedBoard = useMemo(
+    () => boards.find((board) => board.id === selectedBoardId) || null,
+    [boards, selectedBoardId],
+  );
+  const selectedBoardKind = selectedBoard?.kind ?? boardKind;
+  const locationSummary = useMemo(() => {
+    if (!selectedBoard) return "Select board";
+    const boardLabel = selectedBoard.name || "Board";
+    if (selectedBoard.kind === "lists") {
+      const list = selectedBoard.columns.find((column) => column.id === selectedColumnId);
+      if (list) return `${boardLabel} • ${list.name}`;
+      if (selectedBoard.columns.length === 0) return `${boardLabel} • No lists`;
+      return `${boardLabel} • Choose list`;
+    }
+    return boardLabel;
+  }, [selectedBoard, selectedColumnId]);
+  useEffect(() => {
+    setSelectedBoardId(task.boardId);
+    setSelectedColumnId(task.columnId || "");
+  }, [task.boardId, task.columnId, task.id]);
+  useEffect(() => {
+    if (!availableBoards.length) return;
+    if (!availableBoards.some((board) => board.id === selectedBoardId)) {
+      setSelectedBoardId(availableBoards[0].id);
+    }
+  }, [availableBoards, selectedBoardId]);
+  useEffect(() => {
+    if (!selectedBoard || selectedBoard.kind !== "lists") {
+      if (selectedColumnId) setSelectedColumnId("");
+      return;
+    }
+    const hasColumn = selectedBoard.columns.some((column) => column.id === selectedColumnId);
+    if (!hasColumn) {
+      setSelectedColumnId(selectedBoard.columns[0]?.id || "");
+    }
+  }, [selectedBoard, selectedColumnId]);
   const streakEligible = isFrequentRecurrence(rule);
   const currentStreak = typeof task.streak === "number" ? task.streak : 0;
   const bestStreak = Math.max(
@@ -9132,10 +21804,6 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   );
   const bountyButtonActive = bountyListEnabled && !!bountyListKey;
   const taskInBountyList = bountyButtonActive && bountyListKey ? taskHasBountyList(task, bountyListKey) : false;
-  const bountyButtonLabel = bountyListLabel || "Bounties";
-  const bountyButtonTargetLabel = bountyButtonLabel.includes("•")
-    ? (bountyButtonLabel.split("•").pop() || bountyButtonLabel).trim() || "Bounties"
-    : bountyButtonLabel;
   const contactsByHex = useMemo(() => {
     const map = new Map<string, Contact>();
     contacts.forEach((contact) => {
@@ -9144,13 +21812,30 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     });
     return map;
   }, [contacts]);
+  const shareableContacts = useMemo(
+    () => contacts.filter((contact) => contactHasNpub(contact)),
+    [contacts],
+  );
+
+  const lockLabelForContact = useCallback(
+    (contact: Contact | null | undefined, fallback: string) => {
+      const verifiedNip05 = contact ? contactVerifiedNip05(contact, nip05Cache) : null;
+      if (verifiedNip05) return verifiedNip05;
+      const primaryName = contact ? contactPrimaryName(contact) : "";
+      if (primaryName && primaryName !== "Contact" && primaryName !== contact?.npub?.trim()) {
+        return primaryName;
+      }
+      return fallback;
+    },
+    [nip05Cache],
+  );
   const quickLockOptions = useMemo<QuickLockOption[]>(() => {
     const options: QuickLockOption[] = [];
     const ownerHex = normalizeNostrPubkey(task.createdBy || "");
     if (ownerHex) {
       const contact = contactsByHex.get(ownerHex);
       const sourceValue = contact?.npub?.trim() || (task.createdBy ? toNpubKey(task.createdBy) : ownerHex);
-      const label = contact?.name?.trim() || shortenPubkey(sourceValue);
+      const label = lockLabelForContact(contact, shortenPubkey(sourceValue));
       options.push({
         id: "creator",
         title: "Task creator",
@@ -9163,7 +21848,7 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     if (completerHex) {
       const contact = contactsByHex.get(completerHex);
       const sourceValue = contact?.npub?.trim() || (task.completedBy ? toNpubKey(task.completedBy) : completerHex);
-      const label = contact?.name?.trim() || shortenPubkey(sourceValue);
+      const label = lockLabelForContact(contact, shortenPubkey(sourceValue));
       options.push({
         id: "completer",
         title: "Task fulfiller",
@@ -9173,36 +21858,7 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
       });
     }
     return options;
-  }, [contactsByHex, task.completedBy, task.createdBy]);
-  const handleUpsertLockContact = useCallback(
-    ({ id, name, npub }: { id: string | null; name: string; npub: string }) => {
-      const trimmedNpub = npub.trim();
-      if (!trimmedNpub) return;
-      const trimmedName = name.trim();
-      updateContacts((prev) => {
-        if (id) {
-          return prev.map((contact) =>
-            contact.id === id ? { ...contact, name: trimmedName, npub: trimmedNpub } : contact,
-          );
-        }
-        const newContact: Contact = {
-          id: makeContactId(),
-          name: trimmedName,
-          address: "",
-          paymentRequest: "",
-          npub: trimmedNpub,
-        };
-        return [...prev, newContact];
-      });
-    },
-    [updateContacts],
-  );
-  const handleDeleteLockContact = useCallback(
-    (contactId: string) => {
-      updateContacts((prev) => prev.filter((contact) => contact.id !== contactId));
-    },
-    [updateContacts],
-  );
+  }, [contactsByHex, lockLabelForContact, task.completedBy, task.createdBy]);
   const handleLockRecipientSelect = useCallback((selection: LockRecipientSelection) => {
     setLockRecipientSelection(selection);
     setLockToSelf(false);
@@ -9225,98 +21881,154 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     setLockRecipientSelection(null);
     setAttachSheetOpen(true);
   }, []);
-  const handleAttachBounty = useCallback(
-    async (amountSat: number, overrideMint?: string) => {
-      if (!amountSat || amountSat <= 0) {
-        throw new Error("Enter an amount greater than zero.");
+  async function handleAttachBounty(amountSat: number, overrideMint?: string) {
+    if (!amountSat || amountSat <= 0) {
+      throw new Error("Enter an amount greater than zero.");
+    }
+    const recipientPubkey = lockRecipientSelection
+      ? normalizeNostrPubkey(lockRecipientSelection.value)
+      : null;
+    const recipientHex = ensureXOnlyHex(recipientPubkey);
+    if (lockRecipientSelection && (!recipientPubkey || !recipientHex)) {
+      throw new Error("Selected npub is invalid.");
+    }
+    const sendOptions: { p2pk?: { pubkey: string }; mintUrl?: string } = {};
+    if (recipientPubkey) {
+      sendOptions.p2pk = { pubkey: recipientPubkey };
+    }
+    if (overrideMint?.trim()) {
+      sendOptions.mintUrl = overrideMint.trim();
+    }
+    const { token: tok, lockInfo, mintUrl: sendMintUrl } = await createSendToken(amountSat, sendOptions);
+    const bountyMint = sendMintUrl || overrideMint || mintUrl;
+    const lockType: Task["bounty"]["lock"] =
+      lockInfo?.type === "p2pk" ? "p2pk" : lockToSelf ? "unknown" : "none";
+    const selfPubkey = (window as any).nostrPK as string | undefined;
+    const selfHex = ensureXOnlyHex(selfPubkey);
+    const bounty: Task["bounty"] = {
+      id: crypto.randomUUID(),
+      token: lockToSelf || recipientHex ? "" : tok,
+      amount: amountSat,
+      mint: bountyMint,
+      state: lockToSelf || recipientHex ? "locked" : "unlocked",
+      owner: task.createdBy || (window as any).nostrPK || "",
+      sender: (window as any).nostrPK || "",
+      receiver: recipientHex || (lockToSelf ? selfHex : undefined) || undefined,
+      updatedAt: new Date().toISOString(),
+      lock: lockType,
+    };
+    if (recipientHex) {
+      const enc = await encryptEcashTokenForRecipient(recipientHex, tok);
+      bounty.enc = enc;
+    } else if (lockToSelf) {
+      const funderHex = selfHex || "";
+      if (!funderHex) {
+        throw new Error("Locking to yourself requires a connected Nostr key.");
       }
-      const recipientPubkey = lockRecipientSelection
-        ? normalizeNostrPubkey(lockRecipientSelection.value)
-        : null;
-      const recipientHex = ensureXOnlyHex(recipientPubkey);
-      if (lockRecipientSelection && (!recipientPubkey || !recipientHex)) {
-        throw new Error("Selected npub is invalid.");
-      }
-      const sendOptions: { p2pk?: { pubkey: string }; mintUrl?: string } = {};
-      if (recipientPubkey) {
-        sendOptions.p2pk = { pubkey: recipientPubkey };
-      }
-      if (overrideMint?.trim()) {
-        sendOptions.mintUrl = overrideMint.trim();
-      }
-      const { token: tok, lockInfo, mintUrl: sendMintUrl } = await createSendToken(amountSat, sendOptions);
-      const bountyMint = sendMintUrl || overrideMint || mintUrl;
-      const lockType: Task["bounty"]["lock"] =
-        lockInfo?.type === "p2pk" ? "p2pk" : lockToSelf ? "unknown" : "none";
-      const selfPubkey = (window as any).nostrPK as string | undefined;
-      const selfHex = ensureXOnlyHex(selfPubkey);
-      const bounty: Task["bounty"] = {
-        id: crypto.randomUUID(),
-        token: lockToSelf || recipientHex ? "" : tok,
-        amount: amountSat,
-        mint: bountyMint,
-        state: lockToSelf || recipientHex ? "locked" : "unlocked",
-        owner: task.createdBy || (window as any).nostrPK || "",
-        sender: (window as any).nostrPK || "",
-        receiver: recipientHex || (lockToSelf ? selfHex : undefined) || undefined,
-        updatedAt: new Date().toISOString(),
-        lock: lockType,
-      };
-      if (recipientHex) {
-        const enc = await encryptEcashTokenForRecipient(recipientHex, tok);
-        bounty.enc = enc;
-      } else if (lockToSelf) {
-        const funderHex = selfHex || "";
-        if (!funderHex) {
-          throw new Error("Locking to yourself requires a connected Nostr key.");
-        }
-        const enc = await encryptEcashTokenForRecipient(funderHex, tok);
-        bounty.enc = enc;
-      }
-      save({ bounty });
-      if (bountyButtonActive) {
-        onAddToBountyList?.(task.id);
-      }
-      const summaryPrefix = recipientHex
-        ? "Locked bounty"
-        : lockToSelf
-          ? "Hidden bounty"
-          : "Attached bounty";
-      appendWalletHistoryEntry({
-        id: `attach-bounty-${bounty.id}`,
-        summary: `${summaryPrefix} • ${amountSat} sats`,
-        detail: tok,
-        detailKind: "token",
-        type: "ecash",
-        direction: "out",
-        amountSat,
-        mintUrl: bountyMint ?? undefined,
+      const enc = await encryptEcashTokenForRecipient(funderHex, tok);
+      bounty.enc = enc;
+    }
+    save({ bounty });
+    const summaryPrefix = recipientHex
+      ? "Locked bounty"
+      : lockToSelf
+        ? "Hidden bounty"
+        : "Attached bounty";
+    appendWalletHistoryEntry({
+      id: `attach-bounty-${bounty.id}`,
+      summary: `${summaryPrefix} • ${amountSat} sats`,
+      detail: tok,
+      detailKind: "token",
+      type: "ecash",
+      direction: "out",
+      amountSat,
+      entryKind: "bounty-attachment",
+      relatedTaskTitle: task.title || undefined,
+      mintUrl: bountyMint ?? undefined,
+    });
+    setAttachSheetOpen(false);
+    setLockToSelf(true);
+    setLockRecipientSelection(null);
+  }
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const urls = new Set<string>();
+    contacts.forEach((contact) => {
+      const url = (contact.picture || "").trim();
+      if (url) urls.add(url);
+    });
+    const newUrls = Array.from(urls).filter((url) => !prefetchedContactPhotos.current.has(url));
+    if (!newUrls.length) return;
+    const images: HTMLImageElement[] = [];
+    newUrls.forEach((url) => {
+      try {
+        const img = new Image();
+        img.src = url;
+        images.push(img);
+        prefetchedContactPhotos.current.add(url);
+      } catch {}
+    });
+    return () => {
+      images.forEach((img) => {
+        try {
+          img.src = "";
+        } catch {}
       });
-      setAttachSheetOpen(false);
-      setLockToSelf(true);
-      setLockRecipientSelection(null);
-    },
-    [bountyButtonActive, createSendToken, lockRecipientSelection, lockToSelf, mintUrl, onAddToBountyList, save, task.createdBy, task.id],
-  );
+    };
+  }, [contacts]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const handleContactsUpdated = () => {
       setContacts(loadContactsFromStorage());
     };
+    const handleNip05CacheUpdated = () => {
+      setNip05Cache(loadNip05Cache());
+    };
     const handleStorage = (event: StorageEvent) => {
       if (event.key === LS_LIGHTNING_CONTACTS) {
         handleContactsUpdated();
+      } else if (event.key === LS_CONTACT_NIP05_CACHE) {
+        handleNip05CacheUpdated();
       }
     };
     window.addEventListener("taskify:contacts-updated", handleContactsUpdated);
+    window.addEventListener("taskify:nip05-cache-updated", handleNip05CacheUpdated);
     window.addEventListener("storage", handleStorage);
     return () => {
       window.removeEventListener("taskify:contacts-updated", handleContactsUpdated);
+      window.removeEventListener("taskify:nip05-cache-updated", handleNip05CacheUpdated);
       window.removeEventListener("storage", handleStorage);
     };
   }, []);
 
-  const reminderOptions = useMemo(() => buildReminderOptions(reminderSelection), [reminderSelection]);
+  const { options: timeZoneOptions, map: timeZoneOptionMap } = useMemo(() => getTimeZoneOptions(), []);
+  const safeScheduledTimeZone = useMemo(
+    () => normalizeTimeZone(scheduledTimeZone) ?? systemTimeZone,
+    [scheduledTimeZone, systemTimeZone],
+  );
+  const timeZoneLabel = useMemo(
+    () => formatTimeZoneDisplay(safeScheduledTimeZone, timeZoneOptionMap),
+    [safeScheduledTimeZone, timeZoneOptionMap],
+  );
+
+  const reminderPresetMode: ReminderPresetMode = hasDueTime ? "timed" : "date";
+  const reminderOptions = useMemo(
+    () => buildReminderOptions(reminderSelection, reminderPresetMode),
+    [reminderPresetMode, reminderSelection],
+  );
+  const priorityOptions = useMemo(
+    () => [
+      { value: 0, label: "None" },
+      { value: 1, label: "Low", marks: TASK_PRIORITY_MARKS[1] },
+      { value: 2, label: "Medium", marks: TASK_PRIORITY_MARKS[2] },
+      { value: 3, label: "High", marks: TASK_PRIORITY_MARKS[3] },
+    ],
+    [],
+  );
+  const prioritySelection = useMemo(
+    () => priorityOptions.find((option) => option.value === priority) ?? priorityOptions[0],
+    [priority, priorityOptions],
+  );
 
   const reminderPresetMap = useMemo(() => {
     const map = new Map<ReminderPreset, ReminderOption>();
@@ -9331,7 +22043,7 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
         const preset = reminderPresetMap.get(id);
         if (preset) return preset.badge;
         const minutes = reminderPresetToMinutes(id);
-        if (!minutes) return String(id);
+        if (!Number.isFinite(minutes) || minutes < 0) return String(id);
         return formatReminderLabel(minutes).badge;
       })
       .join(', ');
@@ -9350,8 +22062,23 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   }, [scheduledDate]);
   const timeSummary = useMemo(() => {
     if (!hasDueTime) return "Off";
-    return formatTimeLabel(isoFromDateTime(scheduledDate, scheduledTime));
-  }, [hasDueTime, scheduledDate, scheduledTime]);
+    return formatTimeLabel(
+      isoFromDateTime(scheduledDate, scheduledTime, safeScheduledTimeZone),
+      safeScheduledTimeZone,
+    );
+  }, [hasDueTime, safeScheduledTimeZone, scheduledDate, scheduledTime]);
+  const reminderTimeSummary = useMemo(
+    () =>
+      formatTimeLabel(
+        isoFromDateTime(
+          scheduledDate || isoDatePart(new Date().toISOString()),
+          reminderTime || DEFAULT_DATE_REMINDER_TIME,
+          systemTimeZone,
+        ),
+        systemTimeZone,
+      ),
+    [reminderTime, scheduledDate, systemTimeZone],
+  );
   const endRepeatSummary = useMemo(() => {
     if (!rule.untilISO) return "Never";
     const parsed = new Date(rule.untilISO);
@@ -9359,13 +22086,18 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
   }, [rule]);
   const reminderRowSummary = useMemo(() => {
-    if (!hasDueTime) return "Enable time";
+    if (!dateEnabled) return "Enable date";
     if (!reminderSelection.length) return "None";
     return reminderSummary;
-  }, [hasDueTime, reminderSelection.length, reminderSummary]);
+  }, [dateEnabled, reminderSelection.length, reminderSummary]);
+  const editingReminderTime = !hasDueTime && reminderTimeDetailsOpen;
   const timePickerParts = useMemo(
-    () => parseTimePickerValue(scheduledTime, defaultTimeValue),
-    [scheduledTime, defaultTimeValue],
+    () =>
+      parseTimePickerValue(
+        editingReminderTime ? reminderTime : scheduledTime,
+        editingReminderTime ? DEFAULT_DATE_REMINDER_TIME : defaultTimeValue,
+      ),
+    [defaultTimeValue, editingReminderTime, reminderTime, scheduledTime],
   );
   const timePickerHour = timePickerParts.hour;
   const timePickerMinute = timePickerParts.minute;
@@ -9377,24 +22109,45 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   }, [scheduledDate]);
 
   useEffect(() => {
-    if (!hasDueTime && reminderSelection.length) {
+    if (!dateEnabled && reminderSelection.length) {
       setReminderSelection([]);
     }
-  }, [hasDueTime, reminderSelection]);
+  }, [dateEnabled, reminderSelection.length]);
   useEffect(() => {
     if (!dateEnabled) {
       setDateDetailsOpen(false);
+      setReminderPickerExpanded(false);
+      setReminderTimeDetailsOpen(false);
     }
   }, [dateEnabled]);
   useEffect(() => {
+    if (selectedBoardKind !== "week" || dateEnabled) return;
+    const todayISO = isoDatePart(new Date().toISOString());
+    setScheduledDate((prev) => prev || todayISO);
+    setCalendarBaseDate((prev) => prev || todayISO);
+    setDateEnabled(true);
+  }, [dateEnabled, selectedBoardKind]);
+  useEffect(() => {
     if (!hasDueTime) {
       setTimeDetailsOpen(false);
-      setReminderPickerExpanded(false);
+    } else {
+      setReminderTimeDetailsOpen(false);
     }
   }, [hasDueTime]);
   useEffect(() => {
+    if (!reminderPickerExpanded) {
+      setReminderTimeDetailsOpen(false);
+    }
+  }, [reminderPickerExpanded]);
+  useEffect(() => {
     setCalendarBaseDate(initialDate);
   }, [task.id, initialDate]);
+  useEffect(() => {
+    setScheduledTimeZone(initialTimeZone);
+  }, [initialTimeZone, task.id]);
+  useEffect(() => {
+    setReminderTime(initialReminderTime);
+  }, [initialReminderTime, task.id]);
   useEffect(() => {
     timePickerHourValueRef.current = timePickerHour;
   }, [timePickerHour]);
@@ -9426,7 +22179,7 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     [],
   );
   useLayoutEffect(() => {
-    if (!timeDetailsOpen || !hasDueTime) return;
+    if ((hasDueTime && !timeDetailsOpen) || (!hasDueTime && !reminderTimeDetailsOpen)) return;
     const hourIndex = HOURS_12.indexOf(timePickerHour);
     if (hourIndex >= 0) {
       scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex);
@@ -9439,7 +22192,7 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     if (meridiemIndex >= 0) {
       scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex);
     }
-  }, [timeDetailsOpen, hasDueTime, timePickerHour, timePickerMinute, timePickerMeridiem]);
+  }, [timeDetailsOpen, hasDueTime, reminderTimeDetailsOpen, timePickerHour, timePickerMinute, timePickerMeridiem]);
 
   useEffect(() => {
     setSigningBounty(false);
@@ -9452,12 +22205,6 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
 
   const me = (window as any).nostrPK as string | undefined;
   const meHex = ensureXOnlyHex(me);
-
-  function compressedToRawHex(value: string): string {
-    if (typeof value !== "string") return value;
-    if (/^(02|03)[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
-    return value;
-  }
 
   function toNpubKey(value: string): string {
     const raw = compressedToRawHex(value);
@@ -9566,24 +22313,21 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     }
   }
 
-  const handleSignOverSelection = useCallback(
-    (selection: LockRecipientSelection) => {
-      const trimmed = selection.value.trim();
-      if (!trimmed) return;
-      const normalized = normalizeNostrPubkey(trimmed);
-      if (!normalized) {
-        alert("Enter a valid recipient npub or hex.");
-        return;
-      }
-      if (task.bounty?.receiver && pubkeysEqual(task.bounty.receiver, normalized)) {
-        alert("Bounty is already locked to that recipient.");
-        return;
-      }
-      handleSignOver(normalized, selection.label);
-      setSignOverSheetOpen(false);
-    },
-    [handleSignOver, task.bounty?.receiver],
-  );
+  function handleSignOverSelection(selection: LockRecipientSelection) {
+    const trimmed = selection.value.trim();
+    if (!trimmed) return;
+    const normalized = normalizeNostrPubkey(trimmed);
+    if (!normalized) {
+      alert("Enter a valid recipient npub or hex.");
+      return;
+    }
+    if (task.bounty?.receiver && pubkeysEqual(task.bounty.receiver, normalized)) {
+      alert("Bounty is already locked to that recipient.");
+      return;
+    }
+    handleSignOver(normalized, selection.label);
+    setSignOverSheetOpen(false);
+  }
 
   const handleCopyBountyToken = useCallback(async () => {
     const token = task.bounty?.token?.trim();
@@ -9597,7 +22341,7 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     }
   }, [showToast, task.bounty?.token]);
 
-  const handleMarkBountyClaimed = useCallback(() => {
+  function handleMarkBountyClaimed() {
     if (!task.bounty) return;
     const next = normalizeBounty({
       ...task.bounty,
@@ -9608,46 +22352,43 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     if (!next) return;
     setBountyState("claimed");
     save({ bounty: next });
-  }, [save, task.bounty]);
+  }
 
-  const redeemCurrentBounty = useCallback(
-    async (fromRect?: DOMRect) => {
-      if (!task.bounty?.token) return;
-      try {
-        const bountyToken = task.bounty.token;
-        const res = await receiveToken(bountyToken);
-        if (res.savedForLater) {
-          alert("Token saved for later redemption. We'll redeem it when your connection returns.");
-          return;
-        }
-        if (res.crossMint) {
-          alert(`Redeemed to a different mint: ${res.usedMintUrl}. Switch to that mint to view the balance.`);
-        }
-        const amt = res.proofs.reduce((a, p) => a + (p?.amount || 0), 0);
-        appendWalletHistoryEntry({
-          id: `redeem-bounty-${Date.now()}`,
-          summary: `Redeemed bounty • ${amt} sats${res.crossMint ? ` at ${res.usedMintUrl}` : ''}`,
-          detail: bountyToken,
-          detailKind: "token",
-          type: "ecash",
-          direction: "in",
-          amountSat: amt,
-          mintUrl: res.usedMintUrl ?? task.bounty?.mint ?? undefined,
-        });
-        onRedeemCoins?.(fromRect);
-        save({ bounty: undefined });
-      } catch (error) {
-        console.error(error);
-        alert("Unable to redeem bounty token right now.");
+  async function redeemCurrentBounty(fromRect?: DOMRect) {
+    if (!task.bounty?.token) return;
+    try {
+      const bountyToken = task.bounty.token;
+      const res = await receiveToken(bountyToken);
+      if (res.savedForLater) {
+        alert("Token saved for later redemption. We'll redeem it when your connection returns.");
+        return;
       }
-    },
-    [appendWalletHistoryEntry, onRedeemCoins, receiveToken, save, task.bounty?.token],
-  );
+      if (res.crossMint) {
+        alert(`Redeemed to a different mint: ${res.usedMintUrl}. Switch to that mint to view the balance.`);
+      }
+      const amt = res.proofs.reduce((a, p) => a + (p?.amount || 0), 0);
+      appendWalletHistoryEntry({
+        id: `redeem-bounty-${Date.now()}`,
+        summary: `Redeemed bounty • ${amt} sats${res.crossMint ? ` at ${res.usedMintUrl}` : ''}`,
+        detail: bountyToken,
+        detailKind: "token",
+        type: "ecash",
+        direction: "in",
+        amountSat: amt,
+        mintUrl: res.usedMintUrl ?? task.bounty?.mint ?? undefined,
+      });
+      onRedeemCoins?.(fromRect);
+      save({ bounty: undefined });
+    } catch (error) {
+      console.error(error);
+      alert("Unable to redeem bounty token right now.");
+    }
+  }
 
-  const handleRemoveBounty = useCallback(() => {
+  function handleRemoveBounty() {
     if (!task.bounty || !canRemoveBounty) return;
     save({ bounty: undefined });
-  }, [canRemoveBounty, save, task.bounty]);
+  }
 
   const handleToggleBountyList = useCallback(() => {
     if (!bountyButtonActive) return;
@@ -9756,16 +22497,26 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   }, [reorderSubtasks]);
 
   function toggleReminder(id: ReminderPreset) {
+    if (!dateEnabled) return;
     setReminderSelection((prev) => {
       const exists = prev.includes(id);
       const next = exists ? prev.filter((item) => item !== id) : [...prev, id];
-      return [...next].sort((a, b) => reminderPresetToMinutes(a) - reminderPresetToMinutes(b));
+      return [...next].sort((a, b) =>
+        reminderPresetMode === "date"
+          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
+          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
+      );
     });
   }
 
   const handleAddCustomReminder = useCallback(() => {
-    if (!hasDueTime) return;
-    const response = window.prompt('Remind me how many minutes before the due time?', '30');
+    if (!dateEnabled) return;
+    const response = window.prompt(
+      hasDueTime
+        ? "Remind me how many minutes before the due time?"
+        : "Remind me how many minutes before the reminder time?",
+      "30",
+    );
     if (response == null) return;
     const trimmed = response.trim();
     if (!trimmed) return;
@@ -9783,9 +22534,13 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     setReminderSelection((prev) => {
       if (prev.includes(id)) return prev;
       const next = [...prev, id];
-      return next.sort((a, b) => reminderPresetToMinutes(a) - reminderPresetToMinutes(b));
+      return next.sort((a, b) =>
+        reminderPresetMode === "date"
+          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
+          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
+      );
     });
-  }, [hasDueTime]);
+  }, [dateEnabled, hasDueTime, reminderPresetMode]);
 
   const handleRepeatSelect = useCallback((next: Recurrence) => {
     setRule((prev) => {
@@ -9809,6 +22564,15 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     setShowAdvanced(true);
   }, []);
   function toggleDateSwitch() {
+    if (selectedBoardKind === "week") {
+      if (!dateEnabled) {
+        const todayISO = isoDatePart(new Date().toISOString());
+        setScheduledDate((prev) => prev || todayISO);
+        setCalendarBaseDate((prev) => prev || todayISO);
+        setDateEnabled(true);
+      }
+      return;
+    }
     setDateEnabled((prev) => {
       const next = !prev;
       if (next) {
@@ -9840,8 +22604,12 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
   }
   const setTimePickerFromParts = useCallback((hour: number, minute: number, meridiem: Meridiem) => {
     const nextValue = formatTimePickerValue(hour, minute, meridiem);
-    setScheduledTime((prev) => (prev === nextValue ? prev : nextValue));
-  }, [setScheduledTime]);
+    if (editingReminderTime) {
+      setReminderTime((prev) => (prev === nextValue ? prev : nextValue));
+    } else {
+      setScheduledTime((prev) => (prev === nextValue ? prev : nextValue));
+    }
+  }, [editingReminderTime, setReminderTime, setScheduledTime]);
   const handleTimePickerHourScroll = useCallback(() => {
     const column = timePickerHourColumnRef.current;
     if (!column) return;
@@ -9901,12 +22669,23 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     if (hasDueTime) {
       setScheduledTime("");
       setTimeDetailsOpen(false);
+      setReminderTimeDetailsOpen(false);
       return;
+    }
+    if (!normalizeTimeZone(scheduledTimeZone)) {
+      setScheduledTimeZone(systemTimeZone);
     }
     const fallback = lastTimeRef.current || defaultTimeValue;
     setScheduledTime(fallback);
     setTimeDetailsOpen(true);
+    setReminderTimeDetailsOpen(false);
     setDateDetailsOpen(false);
+    if (!dateEnabled) {
+      const todayISO = scheduledDate || isoDatePart(new Date().toISOString());
+      setScheduledDate(todayISO);
+      setCalendarBaseDate(todayISO);
+      setDateEnabled(true);
+    }
   }
 
   function handleTimeRowToggle() {
@@ -9915,33 +22694,55 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
       const next = !prev;
       if (next) {
         setDateDetailsOpen(false);
+        setReminderTimeDetailsOpen(false);
       }
       return next;
     });
   }
 
   function buildTask(overrides: Partial<Task> = {}): Task {
-    const baseDate = scheduledDate || initialDate || isoDatePart(task.dueISO);
-    const hasTime = hasDueTime;
+    const targetBoardKind = selectedBoardKind;
+    const effectiveDateEnabled = targetBoardKind === "week" ? true : dateEnabled;
+    const baseDate = scheduledDate || initialDate || isoDatePart(task.dueISO, initialTimeZone);
+    const hasTime = effectiveDateEnabled && scheduledTime.trim().length > 0;
     const dateUnchanged = baseDate === (initialDate || "");
     const timeUnchanged = hasTime === defaultHasTime && (!hasTime || scheduledTime === initialTime);
-    const dueISO = dateUnchanged && timeUnchanged
-      ? task.dueISO
-      : isoFromDateTime(baseDate, hasTime ? scheduledTime : undefined);
-    const hiddenUntilISO = hiddenUntilForBoard(dueISO, boardKind, weekStart);
-    const reminderValues = hasTime ? [...reminderSelection] : [];
+    const timeZoneUnchanged = !hasTime || safeScheduledTimeZone === initialTimeZone;
+    const dueISO = effectiveDateEnabled
+      ? (dateUnchanged && timeUnchanged && timeZoneUnchanged
+        ? task.dueISO
+        : isoFromDateTime(baseDate, hasTime ? scheduledTime : undefined, hasTime ? safeScheduledTimeZone : undefined))
+      : task.dueISO;
+    const targetColumnId =
+      targetBoardKind === "lists"
+        ? selectedColumnId || selectedBoard?.columns[0]?.id
+        : undefined;
+    const targetColumn =
+      targetBoardKind === "week"
+        ? "day"
+        : undefined;
+    const hiddenUntilISO = effectiveDateEnabled ? hiddenUntilForBoard(dueISO, targetBoardKind, weekStart) : undefined;
+    const reminderValues = effectiveDateEnabled ? [...reminderSelection] : [];
+    const normalizedReminderTime = normalizeReminderTime(reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
     return {
       ...task,
+      boardId: selectedBoardId,
+      columnId: targetBoardKind === "lists" ? targetColumnId : undefined,
+      column: targetBoardKind === "week" ? targetColumn : undefined,
       title,
+      priority: priority === 0 ? undefined : priority,
       note: note || undefined,
       images: images.length ? images : undefined,
       documents: documents.length ? documents : undefined,
       subtasks: subtasks.length ? subtasks : undefined,
       recurrence: rule.type === "none" ? undefined : rule,
       dueISO,
+      dueDateEnabled: effectiveDateEnabled ? true : false,
       hiddenUntilISO,
       dueTimeEnabled: hasTime ? true : undefined,
+      dueTimeZone: hasTime ? safeScheduledTimeZone : undefined,
       reminders: reminderValues,
+      reminderTime: effectiveDateEnabled && !hasTime ? normalizedReminderTime : undefined,
       ...overrides,
     };
   }
@@ -9954,6 +22755,134 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
     const base = buildTask();
     try { await navigator.clipboard?.writeText(JSON.stringify(base)); } catch {}
   }
+
+  function buildTaskSharePayload(): SharedTaskPayload | null {
+    const base = buildTask();
+    const title = base.title.trim();
+    if (!title) return null;
+    const subtasks = (base.subtasks || [])
+      .map((subtask) => {
+        const subtaskTitle = subtask.title?.trim() || "";
+        if (!subtaskTitle) return null;
+        return {
+          title: subtaskTitle,
+          completed: !!subtask.completed,
+        };
+      })
+      .filter((subtask): subtask is { title: string; completed?: boolean } => !!subtask);
+    return {
+      type: "task",
+      title,
+      note: base.note?.trim() || undefined,
+      priority: base.priority,
+      dueISO: base.dueISO,
+      dueDateEnabled: base.dueDateEnabled,
+      dueTimeEnabled: base.dueTimeEnabled,
+      dueTimeZone: base.dueTimeZone,
+      reminders: base.dueTimeEnabled ? (base.reminders?.length ? base.reminders : undefined) : undefined,
+      subtasks: subtasks.length ? subtasks : undefined,
+      recurrence: base.recurrence,
+    };
+  }
+
+  async function handleShareTaskToContact(contact: Contact) {
+    if (shareTaskBusy) return;
+    const payload = buildTaskSharePayload();
+    if (!payload) {
+      setShareTaskStatus("Add a title to share this task.");
+      return;
+    }
+    const recipient = normalizeNostrPubkey(contact.npub);
+    if (!recipient) {
+      setShareTaskStatus("Contact is missing a valid npub.");
+      return;
+    }
+    if (!nostrSkHex) {
+      setShareTaskStatus("Connect a Nostr key to share tasks.");
+      return;
+    }
+    const relayList = Array.from(
+      new Set(
+        (defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS))
+          .map((relay) => relay.trim())
+          .filter(Boolean),
+      ),
+    );
+    if (!relayList.length) {
+      setShareTaskStatus("No relays configured for sharing.");
+      return;
+    }
+    let senderNpub: string | null = null;
+    try {
+      if (nostrPK) {
+        senderNpub =
+          typeof (nip19 as any)?.npubEncode === "function"
+            ? (nip19 as any).npubEncode(hexToBytes(nostrPK))
+            : null;
+      }
+    } catch {
+      senderNpub = null;
+    }
+    setShareTaskBusy(true);
+    setShareTaskStatus(null);
+    try {
+      const envelope = buildTaskShareEnvelope(payload, senderNpub ? { npub: senderNpub } : undefined);
+      await sendShareMessage(envelope, recipient, nostrSkHex, relayList);
+      setShareTaskPickerOpen(false);
+      showToast(`Task sent to ${contactPrimaryName(contact)}`);
+    } catch (err: any) {
+      setShareTaskStatus(err?.message || "Unable to share task.");
+    } finally {
+      setShareTaskBusy(false);
+    }
+  }
+
+  const buildTaskDraftForTypeSwitch = (): Task => {
+    const updated: Task = { ...task };
+    updated.title = title;
+    updated.note = note;
+    updated.priority = (priority ? priority : undefined) as TaskPriority | undefined;
+    updated.images = images;
+    updated.documents = documents;
+    updated.subtasks = subtasks;
+
+    updated.boardId = selectedBoardId;
+    updated.columnId = selectedColumnId || undefined;
+
+    if (!dateEnabled) {
+      updated.dueDateEnabled = false;
+      updated.dueTimeEnabled = undefined;
+      updated.dueTimeZone = undefined;
+      updated.reminders = undefined;
+      updated.reminderTime = undefined;
+    } else {
+      const tz = normalizeTimeZone(scheduledTimeZone) ?? systemTimeZone;
+      const datePart = scheduledDate || isoDatePart(updated.dueISO, tz);
+      const timePart = scheduledTime?.trim() || "";
+      updated.dueISO = isoFromDateTime(datePart, timePart || undefined, tz);
+      updated.dueDateEnabled = true;
+      updated.dueTimeEnabled = !!timePart;
+      updated.dueTimeZone = updated.dueTimeEnabled ? tz : undefined;
+      updated.reminders = reminderSelection.length ? [...reminderSelection] : undefined;
+      updated.reminderTime = updated.dueTimeEnabled
+        ? undefined
+        : (normalizeReminderTime(reminderTime) ?? DEFAULT_DATE_REMINDER_TIME);
+    }
+
+    updated.recurrence = rule && rule.type !== "none" ? rule : undefined;
+    updated.seriesId = updated.recurrence ? (updated.seriesId || updated.id) : undefined;
+
+    return normalizeTaskBounty(updated);
+  };
+
+  const handleSwitchToEventType = () => {
+    if (!onSwitchToEvent) return;
+    if (task.bounty) {
+      alert("Remove the ecash bounty before converting this task into a calendar event.");
+      return;
+    }
+    onSwitchToEvent(buildTaskDraftForTypeSwitch());
+  };
 
   return (
     <>
@@ -9980,6 +22909,29 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
             </svg>
           </button>
         </div>
+
+        {onSwitchToEvent && (
+          <div className="mt-[-1rem] mb-[-1rem] w-full pb-[0.1rem]">
+            <div className="w-full">
+              <div className="flex w-full rounded-full border border-white/10 bg-white/5 p-0.5">
+                <button
+                  type="button"
+                  className="pressable flex-1 rounded-full px-3 py-0.5 text-sm leading-none text-secondary"
+                  onClick={handleSwitchToEventType}
+                >
+                  Event
+                </button>
+                <button
+                  type="button"
+                  className="flex-1 rounded-full border border-white/10 bg-white/10 px-3 py-0.5 text-sm font-medium leading-none text-primary shadow-sm"
+                  aria-pressed="true"
+                >
+                  Task
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <section className="edit-card">
           <div className="space-y-3">
@@ -10139,6 +23091,24 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
                 </div>
               )}
             </div>
+            <div className="edit-card__detail edit-card__detail--field">
+              <button
+                type="button"
+                className="edit-row edit-row--interactive edit-row--inline"
+                onClick={() => setPrioritySheetOpen(true)}
+                aria-haspopup="dialog"
+                aria-expanded={prioritySheetOpen}
+              >
+                <span className="edit-row__icon" aria-hidden="true">
+                  <span className="font-semibold">{TASK_PRIORITY_MARKS[3]}</span>
+                </span>
+                <div className="edit-row__content">
+                  <div className="edit-row__label">Priority</div>
+                </div>
+                <div className="edit-row__value">{prioritySelection.label}</div>
+                <span className="edit-row__chevron" aria-hidden="true">›</span>
+              </button>
+            </div>
           </div>
         </section>
 
@@ -10289,6 +23259,28 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
             </div>
           )}
 
+          {hasDueTime && timeDetailsOpen && (
+            <button
+              type="button"
+              className="edit-row edit-row--interactive"
+              onClick={() => setTimeZoneSheetOpen(true)}
+            >
+              <span className="edit-row__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M3 12h18" />
+                  <path d="M12 3a15 15 0 0 1 0 18" />
+                  <path d="M12 3a15 15 0 0 0 0 18" />
+                </svg>
+              </span>
+              <div className="edit-row__content">
+                <div className="edit-row__label">Time Zone</div>
+              </div>
+              <div className="edit-row__value">{timeZoneLabel}</div>
+              <span className="edit-row__chevron" aria-hidden="true">›</span>
+            </button>
+          )}
+
           <button
             type="button"
             className="edit-row edit-row--interactive"
@@ -10326,7 +23318,7 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
             </button>
           )}
 
-          {hasDueTime && (
+        {dateEnabled && (
             <>
               <button
                 type="button"
@@ -10357,7 +23349,7 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
                           type="button"
                           className={cls}
                           onClick={() => toggleReminder(opt.id)}
-                          disabled={!hasDueTime}
+                          disabled={!dateEnabled}
                           title={opt.label}
                         >
                           {opt.badge}
@@ -10368,15 +23360,161 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
                       type="button"
                       className="ghost-button button-sm pressable"
                       onClick={handleAddCustomReminder}
-                      disabled={!hasDueTime}
+                      disabled={!dateEnabled}
                       title="Add a custom reminder"
                     >
                       Custom…
                     </button>
                   </div>
+                  {!hasDueTime && (
+                    <div className="space-y-2">
+                      <div className="text-xs text-secondary">Reminder time (current timezone)</div>
+                      <button
+                        type="button"
+                        className={`pressable rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium ${
+                          reminderTimeDetailsOpen ? "text-primary" : "text-secondary"
+                        }`}
+                        onClick={() => setReminderTimeDetailsOpen((prev) => !prev)}
+                        aria-pressed={reminderTimeDetailsOpen}
+                        disabled={!dateEnabled}
+                      >
+                        {reminderTimeSummary}
+                      </button>
+                      {reminderTimeDetailsOpen && (
+                        <div className="edit-time-picker" role="group" aria-label="Select reminder time">
+                          <div
+                            className="edit-time-picker__column"
+                            ref={timePickerHourColumnRef}
+                            onScroll={handleTimePickerHourScroll}
+                            role="listbox"
+                            aria-label="Select hour"
+                          >
+                            {HOURS_12.map((hour, idx) => (
+                              <div
+                                key={`task-reminder-hour-${hour}`}
+                                className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
+                                data-picker-index={idx}
+                                role="option"
+                                aria-selected={timePickerHour === hour}
+                              >
+                                {String(hour).padStart(2, "0")}
+                              </div>
+                            ))}
+                          </div>
+                          <div className="edit-time-picker__separator" aria-hidden="true">
+                            :
+                          </div>
+                          <div
+                            className="edit-time-picker__column"
+                            ref={timePickerMinuteColumnRef}
+                            onScroll={handleTimePickerMinuteScroll}
+                            role="listbox"
+                            aria-label="Select minute"
+                          >
+                            {MINUTES.map((minute, idx) => (
+                              <div
+                                key={`task-reminder-minute-${minute}`}
+                                className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
+                                data-picker-index={idx}
+                                role="option"
+                                aria-selected={timePickerMinute === minute}
+                              >
+                                {String(minute).padStart(2, "0")}
+                              </div>
+                            ))}
+                          </div>
+                          <div
+                            className="edit-time-picker__column edit-time-picker__column--meridiem"
+                            ref={timePickerMeridiemColumnRef}
+                            onScroll={handleTimePickerMeridiemScroll}
+                            role="listbox"
+                            aria-label="Select AM or PM"
+                          >
+                            {MERIDIEMS.map((label, idx) => (
+                              <div
+                                key={`task-reminder-meridiem-${label}`}
+                                className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
+                                data-picker-index={idx}
+                                role="option"
+                                aria-selected={timePickerMeridiem === label}
+                              >
+                                {label}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </>
+          )}
+        </section>
+
+        <section className="edit-card">
+          <button
+            type="button"
+            className="edit-row edit-row--interactive edit-row--inline"
+            onClick={() => setLocationExpanded((prev) => !prev)}
+            aria-expanded={locationExpanded}
+          >
+            <span className="edit-row__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 21s6-6 6-10a6 6 0 1 0-12 0c0 4 6 10 6 10z" />
+                <circle cx="12" cy="11" r="2.5" />
+              </svg>
+            </span>
+            <div className="edit-row__content">
+              <div className="edit-row__label">Location</div>
+            </div>
+            <div className="edit-row__value truncate max-w-[10rem]" title={locationSummary}>
+              {locationSummary}
+            </div>
+            <span className="edit-row__chevron" aria-hidden="true">›</span>
+          </button>
+          {locationExpanded && (
+            <div className="edit-card__detail edit-location">
+              {availableBoards.length === 0 ? (
+                <div className="text-sm text-secondary">No boards available.</div>
+              ) : (
+                <div className="edit-location__controls">
+                  <select
+                    className="pill-select pill-select--compact w-full"
+                    value={selectedBoardId}
+                    onChange={(event) => setSelectedBoardId(event.target.value)}
+                    title="Select board"
+                    aria-label="Select board"
+                  >
+                    {availableBoards.map((board) => (
+                      <option key={board.id} value={board.id}>
+                        {board.name}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedBoard?.kind === "lists" && (
+                    <select
+                      className="pill-select pill-select--compact w-full"
+                      value={selectedColumnId}
+                      onChange={(event) => setSelectedColumnId(event.target.value)}
+                      title="Select list"
+                      aria-label="Select list"
+                      disabled={selectedBoard.columns.length === 0}
+                    >
+                      {selectedBoard.columns.length === 0 ? (
+                        <option value="">No lists</option>
+                      ) : (
+                        selectedBoard.columns.map((column) => (
+                          <option key={column.id} value={column.id}>
+                            {column.name}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  )}
+                </div>
+              )}
+            </div>
           )}
         </section>
 
@@ -10596,17 +23734,27 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
           <button
             type="button"
             className="pressable rounded-full bg-rose-600/80 px-4 py-2 text-sm font-semibold hover:bg-rose-600"
-            onClick={task.bounty ? () => alert("Remove the bounty before deleting this task.") : onDelete}
-            disabled={!!task.bounty}
+            onClick={onDelete}
           >
             Delete
           </button>
           <div className="edit-actions__secondary">
             {bountyButtonActive && (
               <button type="button" className="ghost-button button-sm pressable" onClick={handleToggleBountyList}>
-                {taskInBountyList ? `Remove from ${bountyButtonTargetLabel}` : `Add to ${bountyButtonTargetLabel}`}
+                {taskInBountyList ? "Unpin task" : "Pin task"}
               </button>
             )}
+            <button
+              type="button"
+              className="ghost-button button-sm pressable"
+              onClick={() => {
+                setShareTaskStatus(null);
+                setShareTaskPickerOpen(true);
+              }}
+              disabled={shareTaskBusy}
+            >
+              Share
+            </button>
             <button type="button" className="ghost-button button-sm pressable" onClick={copyCurrent}>Copy Task</button>
           </div>
         </div>
@@ -10623,6 +23771,105 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
         />
       )}
     </Modal>
+
+    <ActionSheet
+      open={prioritySheetOpen}
+      onClose={() => setPrioritySheetOpen(false)}
+      title="Priority"
+      panelClassName="sheet-panel--compact"
+    >
+      <div className="overflow-hidden rounded-2xl border border-border bg-elevated">
+        {priorityOptions.map((option, index) => {
+          const active = priority === option.value;
+          return (
+            <React.Fragment key={option.value}>
+              <button
+                type="button"
+                className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface"
+                onClick={() => {
+                  setPriority(option.value as TaskPriority | 0);
+                  setPrioritySheetOpen(false);
+                }}
+                aria-pressed={active}
+              >
+                <span
+                  className={`text-accent text-sm font-semibold ${active ? "" : "opacity-0"}`}
+                  aria-hidden="true"
+                >
+                  ✓
+                </span>
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-primary">{option.label}</div>
+                </div>
+                {option.marks && <span className="text-rose-500 font-semibold">{option.marks}</span>}
+              </button>
+              {index === 0 && <div className="h-px bg-border mx-4" />}
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </ActionSheet>
+
+    <ActionSheet
+      open={shareTaskPickerOpen}
+      onClose={() => {
+        if (shareTaskBusy) return;
+        setShareTaskPickerOpen(false);
+        setShareTaskStatus(null);
+      }}
+      title="Send task"
+      stackLevel={85}
+    >
+      <div className="text-sm text-secondary mb-2">
+        Choose a contact to send <span className="font-semibold">{title.trim() || "this task"}</span>.
+      </div>
+      {shareTaskStatus && (
+        <div className="text-sm text-rose-400 mb-2">{shareTaskStatus}</div>
+      )}
+      {shareableContacts.length ? (
+        <div className="space-y-2">
+          {shareableContacts.map((contact) => {
+            const label = contactPrimaryName(contact);
+            const subtitle = formatContactNpub(contact.npub);
+            return (
+              <button
+                key={contact.id}
+                type="button"
+                className="contact-row pressable"
+                disabled={shareTaskBusy}
+                onClick={() => handleShareTaskToContact(contact)}
+              >
+                <div className="contact-avatar">{contactInitials(label)}</div>
+                <div className="contact-row__text">
+                  <div className="contact-row__name">{label}</div>
+                  {subtitle ? (
+                    <div className="contact-row__meta">
+                      <span className="contact-row__meta-text">{subtitle}</span>
+                    </div>
+                  ) : null}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
+      )}
+      <div className="flex gap-2 mt-3">
+        <button
+          type="button"
+          className="ghost-button button-sm pressable flex-1 justify-center"
+          onClick={() => {
+            if (shareTaskBusy) return;
+            setShareTaskPickerOpen(false);
+            setShareTaskStatus(null);
+          }}
+          disabled={shareTaskBusy}
+        >
+          Cancel
+        </button>
+      </div>
+    </ActionSheet>
 
     <RepeatPickerSheet
       open={repeatSheetOpen}
@@ -10646,6 +23893,7 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
       onClose={() => setEndRepeatSheetOpen(false)}
       rule={rule}
       scheduledDate={scheduledDate}
+      timeZone={safeScheduledTimeZone}
       onSelect={(untilISO) =>
         setRule((prev) => {
           const next: Recurrence = { ...prev };
@@ -10664,9 +23912,8 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
       onClose={() => setLockNpubSheetOpen(false)}
       contacts={contacts}
       quickOptions={quickLockOptions}
+      nip05Cache={nip05Cache}
       onSelect={handleLockRecipientSelect}
-      onUpsertContact={handleUpsertLockContact}
-      onDeleteContact={handleDeleteLockContact}
       selected={lockRecipientSelection}
     />
     <LockToNpubSheet
@@ -10674,9 +23921,8 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
       onClose={() => setSignOverSheetOpen(false)}
       contacts={contacts}
       quickOptions={quickLockOptions}
+      nip05Cache={nip05Cache}
       onSelect={handleSignOverSelection}
-      onUpsertContact={handleUpsertLockContact}
-      onDeleteContact={handleDeleteLockContact}
       selected={null}
     />
     <BountyAttachSheet
@@ -10692,9 +23938,117 @@ function EditModal({ task, onCancel, onDelete, onSave, weekStart, boardKind, onR
       walletPrimaryCurrency={walletPrimaryCurrency}
       mintUrl={mintUrl}
     />
+    <TimeZoneSheet
+      open={timeZoneSheetOpen}
+      onClose={() => setTimeZoneSheetOpen(false)}
+      options={timeZoneOptions}
+      selectedTimeZone={safeScheduledTimeZone}
+      onSelect={(timeZone) => setScheduledTimeZone(timeZone)}
+    />
     </>
   );
 
+}
+
+function TimeZoneSheet({
+  open,
+  onClose,
+  options,
+  selectedTimeZone,
+  onSelect,
+}: {
+  open: boolean;
+  onClose: () => void;
+  options: TimeZoneOption[];
+  selectedTimeZone: string;
+  onSelect: (timeZone: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const normalizedSelected = normalizeTimeZone(selectedTimeZone) ?? resolveSystemTimeZone();
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    if (!normalizedQuery) return options;
+    return options
+      .filter((option) => option.search.includes(normalizedQuery))
+      .map((option) => ({ option, score: scoreTimeZoneOption(option, normalizedQuery) }))
+      .sort((a, b) => {
+        if (a.score !== b.score) return a.score - b.score;
+        if (a.option.offsetMinutes !== b.option.offsetMinutes) {
+          return a.option.offsetMinutes - b.option.offsetMinutes;
+        }
+        return a.option.label.localeCompare(b.option.label);
+      })
+      .map((entry) => entry.option);
+  }, [normalizedQuery, options]);
+
+  useEffect(() => {
+    if (!open) {
+      setQuery("");
+    }
+  }, [open]);
+
+  const handleSelect = useCallback(
+    (timeZone: string) => {
+      onSelect(timeZone);
+      onClose();
+    },
+    [onClose, onSelect],
+  );
+
+  return (
+    <ActionSheet open={open} onClose={onClose} title="Time Zone" stackLevel={80} panelClassName="sheet-panel--tall">
+      <div className="wallet-section space-y-4 text-sm">
+        <div className="space-y-2">
+          <input
+            type="search"
+            className="pill-input w-full"
+            placeholder="Search by city, abbreviation, or name"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          {filtered.length ? (
+            filtered.map((option) => {
+              const isSelected = option.id === normalizedSelected;
+              const longLabel = option.longNames[0] || option.region || option.id;
+              const shortLabel = option.shortNames.find((name) => name && name !== longLabel) || "";
+              const metaParts = [
+                longLabel,
+                shortLabel && shortLabel !== longLabel ? shortLabel : "",
+                option.offsetLabel,
+              ].filter(Boolean);
+              const metaLabel = metaParts.join(" • ");
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`w-full text-left rounded-2xl border border-surface bg-surface p-3 ${isSelected ? "ring-2 ring-accent/50" : "pressable"}`}
+                  onClick={() => handleSelect(option.id)}
+                  disabled={isSelected}
+                  aria-pressed={isSelected}
+                  title={option.id}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <div className="font-semibold truncate">{option.label}</div>
+                        {isSelected && <div className="text-[11px] font-semibold text-accent">Selected</div>}
+                      </div>
+                      <div className="text-[11px] text-secondary truncate">{metaLabel}</div>
+                    </div>
+                    <span className="text-secondary">›</span>
+                  </div>
+                </button>
+              );
+            })
+          ) : (
+            <div className="text-secondary text-sm">No matching time zones.</div>
+          )}
+        </div>
+      </div>
+    </ActionSheet>
+  );
 }
 
 function LockToNpubSheet({
@@ -10702,27 +24056,18 @@ function LockToNpubSheet({
   onClose,
   contacts,
   quickOptions,
+  nip05Cache,
   onSelect,
-  onUpsertContact,
-  onDeleteContact,
   selected,
 }: {
   open: boolean;
   onClose: () => void;
   contacts: Contact[];
   quickOptions: QuickLockOption[];
+  nip05Cache: Record<string, Nip05CheckState>;
   onSelect: (selection: LockRecipientSelection) => void;
-  onUpsertContact: (payload: { id: string | null; name: string; npub: string }) => void;
-  onDeleteContact: (id: string) => void;
   selected?: LockRecipientSelection | null;
 }) {
-  const [formVisible, setFormVisible] = useState(false);
-  const [formState, setFormState] = useState<{ id: string | null; name: string; npub: string }>({
-    id: null,
-    name: "",
-    npub: "",
-  });
-  const [formError, setFormError] = useState("");
   const [manualValue, setManualValue] = useState("");
   const npubContacts = useMemo(
     () => contacts.filter((contact) => contact.npub.trim().length > 0),
@@ -10730,34 +24075,30 @@ function LockToNpubSheet({
   );
   useEffect(() => {
     if (!open) {
-      setFormVisible(false);
-      setFormState({ id: null, name: "", npub: "" });
-      setFormError("");
       setManualValue("");
     }
   }, [open]);
 
-  const shorten = useCallback((value: string) => {
+  const shortenNpub = useCallback((value: string) => {
     if (value.length <= 28) return value;
     return `${value.slice(0, 12)}…${value.slice(-6)}`;
   }, []);
-  const selectedValue = selected?.value?.trim() || "";
 
-  const handleSubmit = useCallback(
-    (event?: React.FormEvent) => {
-      if (event) event.preventDefault();
-      const trimmed = formState.npub.trim();
-      if (!trimmed) {
-        setFormError("Enter a npub or hex key.");
-        return;
-      }
-      onUpsertContact({ id: formState.id, name: formState.name, npub: trimmed });
-      setFormVisible(false);
-      setFormState({ id: null, name: "", npub: "" });
-      setFormError("");
+  const shortenName = useCallback((value: string) => {
+    const trimmed = value.trim();
+    if (trimmed.length <= 24) return trimmed;
+    return `${trimmed.slice(0, 20)}…`;
+  }, []);
+
+  const shortenDisplay = useCallback(
+    (value: string) => {
+      const trimmed = value.trim();
+      if (trimmed.toLowerCase().startsWith("npub")) return shortenNpub(trimmed);
+      return shortenName(trimmed);
     },
-    [formState, onUpsertContact],
+    [shortenName, shortenNpub],
   );
+  const selectedValue = selected?.value?.trim() || "";
 
   const handleSelect = useCallback(
     (value: string, label: string, contactId?: string) => {
@@ -10765,14 +24106,6 @@ function LockToNpubSheet({
       onClose();
     },
     [onClose, onSelect],
-  );
-
-  const handleDelete = useCallback(
-    (id: string) => {
-      if (!window.confirm("Remove this contact?")) return;
-      onDeleteContact(id);
-    },
-    [onDeleteContact],
   );
 
   return (
@@ -10786,6 +24119,7 @@ function LockToNpubSheet({
                 const optionValue = option.value.trim();
                 const isActive = !!selectedValue && selectedValue === optionValue;
                 const optionClass = isActive ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
+                const optionLabel = shortenDisplay(option.label);
                 return (
                   <button
                     key={option.id}
@@ -10795,7 +24129,7 @@ function LockToNpubSheet({
                     disabled={isActive}
                   >
                     <span className="text-secondary">{option.title}:</span>
-                    <span className="font-semibold text-primary">{option.label}</span>
+                    <span className="font-semibold text-primary">{optionLabel}</span>
                   </button>
                 );
               })}
@@ -10805,97 +24139,58 @@ function LockToNpubSheet({
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div className="text-sm font-medium">Contacts with npub</div>
-            <button
-              className="ghost-button button-sm pressable"
-              type="button"
-              onClick={() => {
-                setFormVisible(true);
-                setFormState({ id: null, name: "", npub: "" });
-                setFormError("");
-              }}
-            >
-              Add contact
-            </button>
           </div>
-          {formVisible && (
-            <form className="space-y-2" onSubmit={handleSubmit}>
-              <input
-                className="pill-input"
-                placeholder="Contact name (optional)"
-                value={formState.name}
-                onChange={(e) => setFormState((prev) => ({ ...prev, name: e.target.value }))}
-              />
-              <input
-                className="pill-input"
-                placeholder="npub1… or hex pubkey"
-                value={formState.npub}
-                onChange={(e) => setFormState((prev) => ({ ...prev, npub: e.target.value }))}
-              />
-              {formError && <div className="text-[11px] text-rose-500">{formError}</div>}
-              <div className="flex flex-wrap gap-2 text-xs">
-                <button className="accent-button button-sm pressable" type="submit">
-                  {formState.id ? "Save contact" : "Add contact"}
-                </button>
-                <button
-                  className="ghost-button button-sm pressable"
-                  type="button"
-                  onClick={() => {
-                    setFormVisible(false);
-                    setFormState({ id: null, name: "", npub: "" });
-                    setFormError("");
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          )}
           {npubContacts.length > 0 ? (
             <div className="space-y-2">
               {npubContacts.map((contact) => {
                 const trimmed = contact.npub.trim();
-                const displayName = contact.name?.trim() || shorten(trimmed);
+                const contactName = contact.name?.trim();
+                const verifiedNip05 = contactVerifiedNip05(contact, nip05Cache);
+                const labelValue = contactName || contactPrimaryName(contact) || trimmed;
+                const primaryDisplay = shortenDisplay(labelValue);
+                const subtitleDisplay = verifiedNip05 || shortenNpub(trimmed);
+                const initials = contactInitials(labelValue);
+                const photo = contact.picture?.trim();
+                const isSelected = !!selectedValue && selectedValue === trimmed;
                 return (
-                  <div key={contact.id} className="rounded-2xl border border-surface bg-surface p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="font-medium">{displayName}</div>
-                      <button
-                        type="button"
-                        className={selectedValue && selectedValue === trimmed ? "accent-button button-sm pressable" : "ghost-button button-sm pressable"}
-                        onClick={() => handleSelect(trimmed, displayName, contact.id)}
-                        disabled={!!selectedValue && selectedValue === trimmed}
-                      >
-                        {selectedValue && selectedValue === trimmed ? "Selected" : "Use"}
-                      </button>
+                  <button
+                    key={contact.id}
+                    type="button"
+                    className={`w-full text-left rounded-2xl border border-surface bg-surface p-3 ${isSelected ? "ring-2 ring-accent/50" : "pressable"}`}
+                    onClick={() => handleSelect(trimmed, labelValue, contact.id)}
+                    disabled={isSelected}
+                    aria-pressed={isSelected}
+                    title={trimmed}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-full bg-surface-muted text-primary font-semibold flex items-center justify-center uppercase overflow-hidden">
+                        {photo ? (
+                          <img src={photo} alt={labelValue} className="h-full w-full object-cover" />
+                        ) : (
+                          initials
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <div className="font-semibold truncate">{primaryDisplay}</div>
+                          {isSelected && <div className="text-[11px] font-semibold text-accent">Selected</div>}
+                        </div>
+                        <div className="text-[11px] text-secondary break-all flex items-center gap-1">
+                          <span>{subtitleDisplay}</span>
+                          {verifiedNip05 && (
+                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                          )}
+                        </div>
+                      </div>
+                      <span className="text-secondary">›</span>
                     </div>
-                    <div className="text-[11px] text-secondary break-all">{trimmed}</div>
-                    <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                      <button
-                        type="button"
-                        className="ghost-button button-sm pressable"
-                        onClick={() => {
-                          setFormVisible(true);
-                          setFormState({ id: contact.id, name: contact.name || "", npub: trimmed });
-                          setFormError("");
-                        }}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-button button-sm pressable text-rose-400"
-                        onClick={() => handleDelete(contact.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
           ) : (
             <div className="text-secondary text-sm">
-              No saved contacts with a npub yet. Add one to lock bounties to a teammate.
+              No saved contacts with a npub yet. Add one from the Contacts tab to lock bounties to a teammate.
             </div>
           )}
         </div>
@@ -10914,7 +24209,7 @@ function LockToNpubSheet({
               onClick={() => {
                 const trimmed = manualValue.trim();
                 if (!trimmed) return;
-                handleSelect(trimmed, shorten(trimmed));
+                handleSelect(trimmed, shortenNpub(trimmed));
                 setManualValue("");
               }}
               disabled={!manualValue.trim()}
@@ -11017,6 +24312,10 @@ function BountyAttachSheet({
   );
   const satFormatter = useMemo(() => new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }), []);
   const canToggleCurrency = walletConversionEnabled;
+  const shortenLabel = useCallback((value: string) => {
+    if (value.length <= 28) return value;
+    return `${value.slice(0, 12)}…${value.slice(-6)}`;
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -11112,7 +24411,7 @@ function BountyAttachSheet({
     }
     let cancelled = false;
     try {
-      const cachedRaw = localStorage.getItem(LS_BTC_USD_PRICE_CACHE);
+      const cachedRaw = kvStorage.getItem(LS_BTC_USD_PRICE_CACHE);
       if (cachedRaw) {
         const parsed = JSON.parse(cachedRaw);
         const cached = Number(parsed?.price);
@@ -11135,7 +24434,7 @@ function BountyAttachSheet({
         setBtcUsdPrice(amount);
         setPriceStatus("idle");
         try {
-          localStorage.setItem(
+          kvStorage.setItem(
             LS_BTC_USD_PRICE_CACHE,
             JSON.stringify({ price: amount, updatedAt: Date.now() }),
           );
@@ -11236,6 +24535,11 @@ function BountyAttachSheet({
     ? `${satFormatter.format(selectedMintOption.balance)} sat available`
     : "Select a mint to use";
 
+  const lockRecipientLabel = useMemo(
+    () => (lockRecipient?.label ? shortenLabel(lockRecipient.label) : ""),
+    [lockRecipient?.label, shortenLabel],
+  );
+
   const handleAttach = async () => {
     if (parsedAmount.sats <= 0 || parsedAmount.error) {
       setSubmitError(parsedAmount.error || "Enter an amount to attach.");
@@ -11256,7 +24560,7 @@ function BountyAttachSheet({
   };
 
   const lockStatusLabel = lockRecipient
-    ? `Locking to ${lockRecipient.label}`
+    ? `Locking to ${lockRecipientLabel}`
     : lockToSelf
       ? "Hidden until you reveal"
       : "Unlocked token";
@@ -11316,7 +24620,7 @@ function BountyAttachSheet({
             className={`glass-panel pressable py-1${lockRecipient ? " ring-2 ring-accent/50" : ""}`}
             onClick={onOpenLockContacts}
           >
-            {lockRecipient ? `Locking to ${lockRecipient.label}` : "Lock to npub"}
+            {lockRecipient ? "Locking" : "Lock to npub"}
           </button>
         </div>
         <div className="rounded-2xl border border-surface bg-surface-muted p-3 space-y-1">
@@ -11667,33 +24971,37 @@ function EndRepeatSheet({
   rule,
   scheduledDate,
   onSelect,
+  timeZone,
 }: {
   open: boolean;
   onClose: () => void;
   rule: Recurrence;
   scheduledDate?: string;
   onSelect: (untilISO?: string) => void;
+  timeZone?: string;
 }) {
   const [mode, setMode] = useState<"menu" | "calendar">("menu");
-  const [calendarBaseDate, setCalendarBaseDate] = useState(() => (rule.untilISO ? isoDatePart(rule.untilISO) : scheduledDate));
-  const [selectedDate, setSelectedDate] = useState(() => (rule.untilISO ? isoDatePart(rule.untilISO) : ""));
+  const [calendarBaseDate, setCalendarBaseDate] = useState(() =>
+    rule.untilISO ? isoDatePart(rule.untilISO, timeZone) : scheduledDate
+  );
+  const [selectedDate, setSelectedDate] = useState(() => (rule.untilISO ? isoDatePart(rule.untilISO, timeZone) : ""));
 
   useEffect(() => {
     if (!open) return;
     setMode("menu");
-    const baseDate = rule.untilISO ? isoDatePart(rule.untilISO) : scheduledDate;
-    setSelectedDate(rule.untilISO ? isoDatePart(rule.untilISO) : "");
+    const baseDate = rule.untilISO ? isoDatePart(rule.untilISO, timeZone) : scheduledDate;
+    setSelectedDate(rule.untilISO ? isoDatePart(rule.untilISO, timeZone) : "");
     setCalendarBaseDate(baseDate);
-  }, [open, rule.untilISO, scheduledDate]);
+  }, [open, rule.untilISO, scheduledDate, timeZone]);
 
   const handleSelectCalendarDay = useCallback(
     (iso: string) => {
       setSelectedDate(iso);
-      onSelect(new Date(iso).toISOString());
+      onSelect(isoFromDateTime(iso, "12:00", timeZone));
       setMode("menu");
       onClose();
     },
-    [onClose, onSelect],
+    [onClose, onSelect, timeZone],
   );
 
   return (
@@ -11731,7 +25039,12 @@ function EndRepeatSheet({
               <div className="text-sm font-medium text-primary">On date</div>
               {rule.untilISO && (
                 <div className="text-xs text-secondary">
-                  {new Date(rule.untilISO).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}
+                  {(() => {
+                    const dateKey = isoDatePart(rule.untilISO, timeZone);
+                    const parsed = new Date(`${dateKey}T00:00:00`);
+                    if (Number.isNaN(parsed.getTime())) return dateKey;
+                    return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+                  })()}
                 </div>
               )}
             </div>
@@ -11958,31 +25271,510 @@ function Modal({
   );
 }
 
-/* Side drawer (right) */
-function SideDrawer({ title, onClose, children }: React.PropsWithChildren<{ title?: string; onClose: ()=>void }>) {
+function BoardQrScanner({
+  active,
+  onDetected,
+  onError,
+}: {
+  active: boolean;
+  onDetected: (value: string) => boolean | Promise<boolean>;
+  onError?: (message: string) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const scannerRef = useRef<QrScannerLib | null>(null);
+  const stopRequestedRef = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reportError = useCallback((message: string) => {
+    setError(message);
+    if (onError) onError(message);
+  }, [onError]);
+
+  const clearError = useCallback(() => {
+    setError(null);
+  }, []);
+
+  const calculateScanRegion = useCallback((video: HTMLVideoElement) => {
+    const width = video.videoWidth || 0;
+    const height = video.videoHeight || 0;
+    if (!width || !height) {
+      return { x: 0, y: 0, width: 0, height: 0 };
+    }
+    const shortSide = Math.min(width, height);
+    const scale = Math.min(QrScannerLib.DEFAULT_CANVAS_SIZE / shortSide, 1);
+    return {
+      x: 0,
+      y: 0,
+      width,
+      height,
+      downScaledWidth: Math.round(width * scale),
+      downScaledHeight: Math.round(height * scale),
+    };
+  }, []);
+
+  const stopScanner = useCallback(() => {
+    const scanner = scannerRef.current;
+    if (scanner) {
+      try {
+        scanner.stop();
+      } catch (err) {
+        console.warn("Failed to stop scanner", err);
+      }
+      scanner.destroy();
+      scannerRef.current = null;
+    }
+    const video = videoRef.current;
+    if (video && video.srcObject instanceof MediaStream) {
+      video.srcObject.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!active) {
+      stopRequestedRef.current = true;
+      stopScanner();
+      clearError();
+      return;
+    }
+
+    const video = videoRef.current;
+    if (!video) return;
+
+    stopRequestedRef.current = false;
+    let cancelled = false;
+
+    async function start() {
+      try {
+        clearError();
+        const scanner = new QrScannerLib(
+          video,
+          async (result: ScanResult) => {
+            const value = result?.data?.trim();
+            if (!value || stopRequestedRef.current) return;
+            try {
+              const shouldClose = await onDetected(value);
+              if (shouldClose) {
+                stopRequestedRef.current = true;
+                stopScanner();
+              }
+            } catch (err) {
+              console.warn("QR handler failed", err);
+            }
+          },
+          {
+            returnDetailedScanResult: true,
+            highlightScanRegion: false,
+            highlightCodeOutline: false,
+            calculateScanRegion,
+            preferredCamera: "environment",
+            maxScansPerSecond: 12,
+            onDecodeError: (err) => {
+              if (typeof err === "string" && err === QrScannerLib.NO_QR_CODE_FOUND) return;
+            },
+          },
+        );
+
+        video.setAttribute("playsinline", "true");
+        video.setAttribute("muted", "true");
+        video.setAttribute("autoplay", "true");
+        video.playsInline = true;
+        video.muted = true;
+
+        scannerRef.current = scanner;
+        await scanner.start();
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        reportError(message || "Unable to access camera");
+        stopScanner();
+      }
+    }
+
+    start();
+
+    return () => {
+      cancelled = true;
+      stopRequestedRef.current = true;
+      stopScanner();
+    };
+  }, [active, onDetected, reportError, stopScanner, clearError, calculateScanRegion]);
+
   return (
-    <div className="drawer-backdrop" onClick={onClose}>
-      <div className="drawer-panel" onClick={(e) => e.stopPropagation()}>
-        <div className="drawer-panel__header">
-          {title && <div className="text-lg font-semibold text-primary">{title}</div>}
-          <button className="ghost-button button-sm pressable ml-auto" onClick={onClose}>Close</button>
-        </div>
-        {children}
+    <div className="wallet-scanner">
+      <div className={`wallet-scanner__viewport${error ? " wallet-scanner__viewport--error" : ""}`}>
+        {error ? (
+          <div className="wallet-scanner__fallback">{error}</div>
+        ) : (
+          <video ref={videoRef} className="wallet-scanner__video" playsInline muted />
+        )}
+        {!error && <div className="wallet-scanner__guide" aria-hidden="true" />}
       </div>
     </div>
   );
 }
 
+function AddBoardModal({
+  onClose,
+  onCreateBoard,
+  onJoinBoard,
+}: {
+  onClose: () => void;
+  onCreateBoard: (name: string, type: "lists" | "compound") => string | null;
+  onJoinBoard: (nostrId: string, name?: string, relaysCsv?: string) => void;
+}) {
+  const { show: showToast } = useToast();
+  const [newBoardName, setNewBoardName] = useState("");
+  const [newBoardType, setNewBoardType] = useState<"lists" | "compound">("lists");
+  const [joinBoardId, setJoinBoardId] = useState("");
+  const [joinStatus, setJoinStatus] = useState<{ tone: "info" | "error"; message: string } | null>(null);
+  const [scannerActive, setScannerActive] = useState(false);
+  const [scannerStatus, setScannerStatus] = useState<string | null>(null);
+  const joinInputRef = useRef<HTMLInputElement | null>(null);
+  const [infoOpen, setInfoOpen] = useState<string | null>(null);
+  const infoButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const infoPanelRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  const pillButtonClass = useCallback(
+    (active: boolean) => `${active ? "accent-button" : "ghost-button"} button-sm pressable`,
+    [],
+  );
+  const setInfoButtonRef = useCallback(
+    (key: string) => (node: HTMLButtonElement | null) => {
+      infoButtonRefs.current[key] = node;
+    },
+    [],
+  );
+  const setInfoPanelRef = useCallback(
+    (key: string) => (node: HTMLDivElement | null) => {
+      infoPanelRefs.current[key] = node;
+    },
+    [],
+  );
+  const toggleInfo = useCallback((key: string) => {
+    setInfoOpen((prev) => (prev === key ? null : key));
+  }, []);
+
+  useEffect(() => {
+    if (!infoOpen || typeof document === "undefined") return;
+    const handlePointer = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      const panel = infoPanelRefs.current[infoOpen];
+      if (panel?.contains(target)) return;
+      const button = infoButtonRefs.current[infoOpen];
+      if (button?.contains(target)) return;
+      setInfoOpen(null);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setInfoOpen(null);
+    };
+    document.addEventListener("mousedown", handlePointer);
+    document.addEventListener("touchstart", handlePointer);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handlePointer);
+      document.removeEventListener("touchstart", handlePointer);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [infoOpen]);
+
+  const handleCreateBoard = useCallback(() => {
+    const trimmed = newBoardName.trim();
+    if (!trimmed) {
+      showToast("Enter a board name");
+      return;
+    }
+    const createdId = onCreateBoard(trimmed, newBoardType);
+    if (!createdId) return;
+    showToast("Board created");
+    onClose();
+  }, [newBoardName, newBoardType, onCreateBoard, onClose, showToast]);
+
+  const handleJoinBoard = useCallback(() => {
+    const parsed = parseBoardSharePayload(joinBoardId);
+    if (!parsed) {
+      setJoinStatus({ tone: "error", message: "Enter a valid board ID." });
+      return;
+    }
+    setScannerActive(false);
+    onJoinBoard(parsed.boardId, parsed.boardName, parsed.relaysCsv);
+    showToast(parsed.boardName ? `Joined ${parsed.boardName}` : "Board added");
+    onClose();
+  }, [joinBoardId, onJoinBoard, onClose, showToast]);
+
+  const handlePasteBoardId = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard?.readText();
+      if (!text || !text.trim()) {
+        setJoinStatus({ tone: "error", message: "Clipboard is empty." });
+        return;
+      }
+      const parsed = parseBoardSharePayload(text);
+      if (!parsed) {
+        setJoinBoardId(text.trim());
+        setJoinStatus({ tone: "error", message: "Paste a valid board ID." });
+        return;
+      }
+      setJoinBoardId(parsed.boardId);
+      setJoinStatus(parsed.boardName ? { tone: "info", message: `Found "${parsed.boardName}".` } : null);
+      joinInputRef.current?.focus();
+    } catch {
+      showToast("Unable to read clipboard");
+    }
+  }, [showToast]);
+
+  const handleScanDetected = useCallback(
+    async (value: string) => {
+      const parsed = parseBoardSharePayload(value);
+      if (!parsed) {
+        setScannerStatus("Not a Taskify board QR.");
+        return false;
+      }
+      onJoinBoard(parsed.boardId, parsed.boardName, parsed.relaysCsv);
+      showToast(parsed.boardName ? `Joined ${parsed.boardName}` : "Board added");
+      setScannerActive(false);
+      onClose();
+      return true;
+    },
+    [onJoinBoard, onClose, showToast],
+  );
+
+  const handleJoinInputChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setJoinBoardId(event.target.value);
+    setJoinStatus(null);
+    setScannerStatus(null);
+  }, []);
+
+  const toggleScanner = useCallback(() => {
+    setScannerActive((prev) => !prev);
+    setScannerStatus(null);
+  }, []);
+
+  const joinStatusClass = joinStatus?.tone === "error" ? "text-rose-400" : "text-secondary";
+
+  return (
+    <Modal onClose={onClose} title="Add Board" variant="fullscreen">
+      <div className="space-y-2">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <section className="wallet-section wallet-section--compact add-board-section space-y-2">
+            <div className="share-mode-header">
+              <div className="text-sm font-medium">Create board</div>
+              <button
+                type="button"
+                className="share-mode-info-button pressable"
+                aria-label="About creating boards"
+                aria-expanded={infoOpen === "create"}
+                aria-controls="add-board-create-info"
+                onClick={() => toggleInfo("create")}
+                ref={setInfoButtonRef("create")}
+              >
+                <span className="share-mode-info-button__icon" aria-hidden="true">i</span>
+              </button>
+              {infoOpen === "create" && (
+                <div
+                  className="share-mode-info"
+                  role="tooltip"
+                  id="add-board-create-info"
+                  ref={setInfoPanelRef("create")}
+                >
+                  <div className="share-mode-info__text">
+                    Start a fresh board for your tasks. You can rename or share it anytime.
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="space-y-1">
+              <input
+                value={newBoardName}
+                onChange={(e) => setNewBoardName(e.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") handleCreateBoard();
+                }}
+                placeholder="New board name"
+                aria-label="Board name"
+                className="pill-input w-full"
+              />
+            </div>
+            <div className="space-y-2">
+              <div className="share-mode-header">
+                <label className="text-xs uppercase tracking-wide text-secondary">Board type</label>
+                <button
+                  type="button"
+                  className="share-mode-info-button pressable"
+                  aria-label="Board type details"
+                  aria-expanded={infoOpen === "type"}
+                  aria-controls="add-board-type-info"
+                  onClick={() => toggleInfo("type")}
+                  ref={setInfoButtonRef("type")}
+                >
+                  <span className="share-mode-info-button__icon" aria-hidden="true">i</span>
+                </button>
+                {infoOpen === "type" && (
+                  <div
+                    className="share-mode-info"
+                    role="tooltip"
+                    id="add-board-type-info"
+                    ref={setInfoPanelRef("type")}
+                  >
+                    <div className="share-mode-info__row">
+                      <div className="share-mode-info__label">Lists</div>
+                      <div className="share-mode-info__text">Custom columns for tasks.</div>
+                    </div>
+                    <div className="share-mode-info__row">
+                      <div className="share-mode-info__label">Compound</div>
+                      <div className="share-mode-info__text">Combine multiple list boards into one view.</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className={pillButtonClass(newBoardType === "lists")}
+                  onClick={() => setNewBoardType("lists")}
+                >
+                  Lists
+                </button>
+                <button
+                  type="button"
+                  className={pillButtonClass(newBoardType === "compound")}
+                  onClick={() => setNewBoardType("compound")}
+                >
+                  Compound
+                </button>
+              </div>
+            </div>
+            <button
+              className="accent-button button-sm pressable w-full justify-center"
+              onClick={handleCreateBoard}
+              disabled={!newBoardName.trim()}
+            >
+              Create board
+            </button>
+          </section>
+          <section className="wallet-section wallet-section--compact add-board-section space-y-2">
+            <div className="share-mode-header">
+              <div className="text-sm font-medium">Join board</div>
+              <button
+                type="button"
+                className="share-mode-info-button pressable"
+                aria-label="About joining boards"
+                aria-expanded={infoOpen === "join"}
+                aria-controls="add-board-join-info"
+                onClick={() => toggleInfo("join")}
+                ref={setInfoButtonRef("join")}
+              >
+                <span className="share-mode-info-button__icon" aria-hidden="true">i</span>
+              </button>
+              {infoOpen === "join" && (
+                <div
+                  className="share-mode-info"
+                  role="tooltip"
+                  id="add-board-join-info"
+                  ref={setInfoPanelRef("join")}
+                >
+                  <div className="share-mode-info__text">
+                    Paste a Taskify board ID or scan a QR to join a shared board.
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="space-y-1">
+              <div className="flex gap-2">
+                <input
+                  ref={joinInputRef}
+                  value={joinBoardId}
+                  onChange={handleJoinInputChange}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") handleJoinBoard();
+                  }}
+                  placeholder="Paste shared board ID"
+                  aria-label="Board ID"
+                  className="pill-input flex-1 min-w-0"
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                />
+                <button
+                  type="button"
+                  className="ghost-button button-sm pressable"
+                  onClick={handlePasteBoardId}
+                >
+                  Paste
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <button
+                className="accent-button button-sm pressable flex-1 justify-center"
+                onClick={handleJoinBoard}
+                disabled={!joinBoardId.trim()}
+              >
+                Join board
+              </button>
+              <button
+                type="button"
+                className="ghost-button button-sm pressable flex-1 justify-center"
+                onClick={toggleScanner}
+              >
+                {scannerActive ? "Close scanner" : "Scan QR"}
+              </button>
+            </div>
+            {scannerActive && (
+              <div className="rounded-2xl border border-surface bg-surface-muted p-2 space-y-2">
+                <div className="share-mode-header">
+                  <div className="text-xs uppercase tracking-wide text-secondary">Scanner</div>
+                  <button
+                    type="button"
+                    className="share-mode-info-button pressable"
+                    aria-label="About scanning boards"
+                    aria-expanded={infoOpen === "scan"}
+                    aria-controls="add-board-scan-info"
+                    onClick={() => toggleInfo("scan")}
+                    ref={setInfoButtonRef("scan")}
+                  >
+                    <span className="share-mode-info-button__icon" aria-hidden="true">i</span>
+                  </button>
+                  {infoOpen === "scan" && (
+                    <div
+                      className="share-mode-info"
+                      role="tooltip"
+                      id="add-board-scan-info"
+                      ref={setInfoPanelRef("scan")}
+                    >
+                      <div className="share-mode-info__text">
+                        Scanning adds the board automatically. If the camera fails, paste the ID instead.
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <BoardQrScanner
+                  active={scannerActive}
+                  onDetected={handleScanDetected}
+                  onError={setScannerStatus}
+                />
+                {scannerStatus && <div className="text-xs text-rose-400">{scannerStatus}</div>}
+              </div>
+            )}
+            {joinStatus && <div className={`text-xs ${joinStatusClass}`}>{joinStatus.message}</div>}
+          </section>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 /* Settings modal incl. Week start + Manage Boards & Columns */
 function SettingsModal({
+  embedded,
   settings,
   boards,
   currentBoardId,
   setSettings,
   setBoards,
-  bountyListEnabled,
-  activeBountyListKey,
-  bountyListOptions,
+  setTasks,
+  changeBoard,
   shouldReloadForNavigation,
   defaultRelays,
   setDefaultRelays,
@@ -11993,7 +25785,6 @@ function SettingsModal({
   onJoinBoard,
   onRegenerateBoardId,
   onBoardChanged,
-  onRestartTutorial,
   onClose,
   pushWorkState,
   pushError,
@@ -12003,14 +25794,14 @@ function SettingsModal({
   vapidPublicKey,
   onResetWalletTokenTracking,
 }: {
+  embedded?: boolean;
   settings: Settings;
   boards: Board[];
   currentBoardId: string;
   setSettings: (s: Partial<Settings>) => void;
   setBoards: React.Dispatch<React.SetStateAction<Board[]>>;
-  bountyListEnabled: boolean;
-  activeBountyListKey: string | null;
-  bountyListOptions: { key: string; label: string; ref: BountyListRef }[];
+  setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
+  changeBoard: (id: string) => void;
   shouldReloadForNavigation: () => boolean;
   defaultRelays: string[];
   setDefaultRelays: (rls: string[]) => void;
@@ -12024,7 +25815,6 @@ function SettingsModal({
     boardId: string,
     options?: { republishTasks?: boolean; board?: Board },
   ) => void;
-  onRestartTutorial: () => void;
   onClose: () => void;
   pushWorkState: "idle" | "enabling" | "disabling";
   pushError: string | null;
@@ -12034,11 +25824,22 @@ function SettingsModal({
   vapidPublicKey: string;
   onResetWalletTokenTracking: () => void;
 }) {
+  const { show: showToast } = useToast();
   const [newBoardName, setNewBoardName] = useState("");
   const [manageBoardId, setManageBoardId] = useState<string | null>(null);
   const manageBoard = boards.find(b => b.id === manageBoardId);
+  const [contacts, setContacts] = useState<Contact[]>(() => loadContactsFromStorage());
+  const [shareBoardPickerOpen, setShareBoardPickerOpen] = useState(false);
+  const [shareBoardTarget, setShareBoardTarget] = useState<Board | null>(null);
+  const [shareBoardStatus, setShareBoardStatus] = useState<string | null>(null);
+  const [shareBoardBusy, setShareBoardBusy] = useState(false);
   const [relaysCsv, setRelaysCsv] = useState("");
   const [customSk, setCustomSk] = useState("");
+  const [fileServerInput, setFileServerInput] = useState(
+    settings.fileStorageServer || DEFAULT_FILE_STORAGE_SERVER,
+  );
+  const [fileServerStatus, setFileServerStatus] = useState<string | null>(null);
+  const [fileServerSaving, setFileServerSaving] = useState(false);
   const [viewExpanded, setViewExpanded] = useState(false);
   const [walletExpanded, setWalletExpanded] = useState(false);
   const [walletSeedVisible, setWalletSeedVisible] = useState(false);
@@ -12050,6 +25851,7 @@ function SettingsModal({
   const [mintBackupMessage, setMintBackupMessage] = useState("");
   const [mintBackupCache, setMintBackupCache] = useState<MintBackupPayload | null>(() => loadMintBackupCache());
   const [bibleExpanded, setBibleExpanded] = useState(false);
+  const [fastingPerMonthDraft, setFastingPerMonthDraft] = useState(() => String(settings.fastingRemindersPerMonth));
   const [backupExpanded, setBackupExpanded] = useState(false);
   const [showPushAdvanced, setShowPushAdvanced] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -12059,6 +25861,16 @@ function SettingsModal({
   const [reloadNeeded, setReloadNeeded] = useState(false);
   const [walletCounters, setWalletCounters] = useState<Record<string, Record<string, number>>>(() => getWalletCountersByMint());
   const [keysetCounterBusy, setKeysetCounterBusy] = useState<string | null>(null);
+  const pubkeyNpub = useMemo(() => {
+    const trimmed = (pubkeyHex || "").trim();
+    if (!trimmed) return "";
+    try {
+      if (typeof (nip19 as any)?.npubEncode === "function") {
+        return (nip19 as any).npubEncode(trimmed);
+      }
+    } catch {}
+    return trimmed;
+  }, [pubkeyHex]);
   const [walletAdvancedVisible, setWalletAdvancedVisible] = useState(false);
   const [showNewSeedConfirm, setShowNewSeedConfirm] = useState(false);
   const [removeSpentBusy, setRemoveSpentBusy] = useState(false);
@@ -12066,7 +25878,24 @@ function SettingsModal({
   const [debugConsoleState, setDebugConsoleState] = useState<"inactive" | "loading" | "active">("inactive");
   const [debugConsoleMessage, setDebugConsoleMessage] = useState<string | null>(null);
   const debugConsoleScriptRef = useRef<HTMLScriptElement | null>(null);
-  const mintBackupPoolRef = useRef<SimplePool | null>(null);
+  const mintBackupPoolRef = useRef<SessionPool | null>(null);
+  const isReplaceableRejection = useCallback((err: unknown): boolean => {
+    const msg = typeof (err as any)?.message === "string" ? (err as any).message : "";
+    return /have newer event/i.test(msg) || /already exists/i.test(msg) || /duplicate/i.test(msg);
+  }, []);
+  const safePublish = useCallback(
+    async (pool: SessionPool, relays: string[], event: any) => {
+      const result = pool.publish(relays, event);
+      try {
+        await Promise.resolve(result);
+      } catch (err) {
+        if (!isReplaceableRejection(err)) {
+          throw err;
+        }
+      }
+    },
+    [isReplaceableRejection],
+  );
 
   const [newDefaultRelay, setNewDefaultRelay] = useState("");
   const [newBoardRelay, setNewBoardRelay] = useState("");
@@ -12101,6 +25930,37 @@ function SettingsModal({
       return !manageBoard.children.some((childId) => compoundChildMatchesBoard(childId, board));
     });
   }, [boards, manageBoard]);
+  const shareableContacts = useMemo(
+    () => contacts.filter((contact) => contactHasNpub(contact)),
+    [contacts],
+  );
+  useEffect(() => {
+    const refreshContacts = () => setContacts(loadContactsFromStorage());
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === LS_LIGHTNING_CONTACTS) {
+        refreshContacts();
+      }
+    };
+    window.addEventListener("taskify:contacts-updated", refreshContacts);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener("taskify:contacts-updated", refreshContacts);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
+  useEffect(() => {
+    if (manageBoard?.nostr) return;
+    if (shareBoardPickerOpen) setShareBoardPickerOpen(false);
+    setShareBoardTarget(null);
+    setShareBoardStatus(null);
+    setShareBoardBusy(false);
+  }, [manageBoard?.nostr, shareBoardPickerOpen]);
+  useEffect(() => {
+    setFileServerInput(settings.fileStorageServer || DEFAULT_FILE_STORAGE_SERVER);
+  }, [settings.fileStorageServer]);
+  useEffect(() => {
+    setFastingPerMonthDraft(String(settings.fastingRemindersPerMonth));
+  }, [settings.fastingRemindersMode, settings.fastingRemindersPerMonth]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -12117,8 +25977,100 @@ function SettingsModal({
     })();
     return () => { cancelled = true; };
   }, [manageBoard?.nostr?.boardId]);
+  const readNostrSecret = useCallback((): string | null => {
+    try {
+      const raw = kvStorage.getItem(LS_NOSTR_SK);
+      if (raw && /^[0-9a-fA-F]{64}$/.test(raw.trim())) {
+        return raw.trim().toLowerCase();
+      }
+    } catch {}
+    return null;
+  }, []);
+  const handleSaveFileServer = useCallback(async () => {
+    const normalized = normalizeFileServerUrl(fileServerInput);
+    if (!normalized && fileServerInput.trim()) {
+      setFileServerStatus("Enter a valid file storage server URL (e.g., https://nostr.build).");
+      return;
+    }
+    const targetServer = normalized || DEFAULT_FILE_STORAGE_SERVER;
+    setFileServerSaving(true);
+    setFileServerStatus(null);
+    try {
+      setSettings({ fileStorageServer: targetServer });
+      setFileServerInput(targetServer);
+      const secret = readNostrSecret();
+      if (!secret) {
+        setFileServerStatus("Add your Nostr private key first.");
+        return;
+      }
+      const relayList = (defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS))
+        .map((r) => r.trim())
+        .filter(Boolean);
+      if (!relayList.length) {
+        setFileServerStatus("Add at least one relay to publish your file server.");
+        return;
+      }
+      await publishFileServerPreference([targetServer], { relays: relayList, signer: secret });
+      setFileServerStatus("Published file storage server");
+      showToast("File storage server saved", 2000);
+    } catch (error: any) {
+      setFileServerStatus(error?.message || "Unable to save file storage server.");
+    } finally {
+      setFileServerSaving(false);
+    }
+  }, [defaultRelays, fileServerInput, readNostrSecret, setSettings, showToast]);
+  const handleShareBoardToContact = useCallback(
+    async (contact: Contact) => {
+      if (!shareBoardTarget?.nostr) {
+        setShareBoardStatus("Enable sharing first.");
+        return;
+      }
+      const recipient = normalizeNostrPubkey(contact.npub);
+      if (!recipient) {
+        setShareBoardStatus("Contact is missing a valid npub.");
+        return;
+      }
+      const secret = readNostrSecret();
+      if (!secret) {
+        setShareBoardStatus("Add your Nostr secret key first.");
+        return;
+      }
+      const relaySource = Array.isArray(shareBoardTarget.nostr.relays)
+        ? shareBoardTarget.nostr.relays
+        : defaultRelays.length
+          ? defaultRelays
+          : Array.from(DEFAULT_NOSTR_RELAYS);
+      const relayList = relaySource
+        .map((r) => (typeof r === "string" ? r.trim() : ""))
+        .filter(Boolean);
+      let senderNpub: string | null = null;
+      try {
+        const pubkey = getPublicKey(hexToBytes(secret));
+        senderNpub = nip19.npubEncode(hexToBytes(pubkey));
+      } catch {
+        senderNpub = null;
+      }
+      setShareBoardBusy(true);
+      setShareBoardStatus(null);
+      try {
+        const envelope = buildBoardShareEnvelope(
+          shareBoardTarget.nostr.boardId,
+          shareBoardTarget.name,
+          relayList,
+          senderNpub ? { npub: senderNpub } : undefined,
+        );
+        await sendShareMessage(envelope, recipient, secret, relayList);
+        setShareBoardPickerOpen(false);
+        showToast(`Board sent to ${contactPrimaryName(contact)}`);
+      } catch (err: any) {
+        setShareBoardStatus(err?.message || "Unable to share board.");
+      } finally {
+        setShareBoardBusy(false);
+      }
+    },
+    [defaultRelays, readNostrSecret, shareBoardTarget, showToast],
+  );
   // Mint selector moved to Wallet modal; no need to read here.
-  const { show: showToast } = useToast();
   const cleanupStaleBoardEvents = useCallback(async () => {
     if (staleCleanupBusy) return;
     if (!manageBoard?.nostr?.boardId) {
@@ -12403,6 +26355,64 @@ function SettingsModal({
       setRemoveSpentBusy(false);
     }
   }, [collectSpentSecrets, setReloadNeeded, setRemoveSpentBusy, setRemoveSpentStatus, shortMintLabel, showToast]);
+  const handleMarkHistoryEntriesOlderSpent = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, "cashuHistory");
+    if (!raw) {
+      showToast("No wallet history entries to mark.", 3000);
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      showToast("Unable to read wallet history.", 3000);
+      return;
+    }
+    if (!Array.isArray(parsed)) {
+      showToast("No wallet history entries to mark.", 3000);
+      return;
+    }
+    const now = Date.now();
+    const threshold = now - HISTORY_MARK_SPENT_CUTOFF_MS;
+    let updatedCount = 0;
+    const nextHistory = parsed.map((entry) => {
+      if (!entry || typeof entry !== "object") return entry;
+      const createdAt =
+        typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : 0;
+      if (createdAt > threshold) return entry;
+      const tokenState = entry.tokenState;
+      if (!tokenState || !Array.isArray(tokenState.proofs) || tokenState.proofs.length === 0) {
+        return entry;
+      }
+      const summary = typeof entry.summary === "string" ? entry.summary : "";
+      if (tokenState.lastState === "SPENT" || summary.includes("(spent)")) {
+        return entry;
+      }
+      const updated = markHistoryEntrySpentRaw(entry as HistoryEntryRaw, now);
+      if (!updated) return entry;
+      updatedCount += 1;
+      return updated;
+    });
+    if (!updatedCount) {
+      showToast("No history entries older than 5 days needed marking.", 3000);
+      return;
+    }
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_WALLET, "cashuHistory", JSON.stringify(nextHistory));
+    } catch {
+      showToast("Unable to update wallet history.", 3000);
+      return;
+    }
+    showToast(`Marked ${updatedCount} history entr${updatedCount === 1 ? "y" : "ies"} as spent`, 3000);
+    window.dispatchEvent(
+      new CustomEvent(MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT, {
+        detail: { cutoffMs: HISTORY_MARK_SPENT_CUTOFF_MS },
+      }),
+    );
+  }, [showToast]);
   const handleIncrementKeysetCounter = useCallback(
     (mintUrl: string, keysetId: string) => {
       const normalizedMint = normalizeMint(mintUrl);
@@ -12437,9 +26447,7 @@ function SettingsModal({
     }
     if (document.querySelector("#eruda")) {
       setDebugConsoleState("active");
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem(DEBUG_CONSOLE_STORAGE_KEY, "true");
-      }
+      kvStorage.setItem(DEBUG_CONSOLE_STORAGE_KEY, "true");
       showToast("Debug console already enabled.", 2500);
       return;
     }
@@ -12453,9 +26461,7 @@ function SettingsModal({
         try {
           (window as any)?.eruda?.init?.();
           setDebugConsoleState("active");
-          if (typeof localStorage !== "undefined") {
-            localStorage.setItem(DEBUG_CONSOLE_STORAGE_KEY, "true");
-          }
+          kvStorage.setItem(DEBUG_CONSOLE_STORAGE_KEY, "true");
           showToast("Debug console enabled.", 2500);
         } catch (error: any) {
           setDebugConsoleState("inactive");
@@ -12490,9 +26496,7 @@ function SettingsModal({
         eruda?.destroy?.();
       } catch {}
     }
-    if (typeof localStorage !== "undefined") {
-      localStorage.removeItem(DEBUG_CONSOLE_STORAGE_KEY);
-    }
+    kvStorage.removeItem(DEBUG_CONSOLE_STORAGE_KEY);
     setDebugConsoleState("inactive");
     showToast("Debug console disabled.", 2000);
   }, [debugConsoleScriptRef, setDebugConsoleMessage, setDebugConsoleState, showToast]);
@@ -12509,10 +26513,8 @@ function SettingsModal({
       setDebugConsoleState("active");
       return;
     }
-    if (typeof localStorage !== "undefined") {
-      const persisted = localStorage.getItem(DEBUG_CONSOLE_STORAGE_KEY) === "true";
-      if (persisted) enableDebugConsole();
-    }
+    const persisted = kvStorage.getItem(DEBUG_CONSOLE_STORAGE_KEY) === "true";
+    if (persisted) enableDebugConsole();
   }, [enableDebugConsole]);
   const sortedP2pkKeys = useMemo(() => {
     return [...p2pkKeys].sort((a, b) => {
@@ -12662,7 +26664,7 @@ function SettingsModal({
 
   const ensureMintBackupPool = useCallback(() => {
     if (mintBackupPoolRef.current) return mintBackupPoolRef.current;
-    mintBackupPoolRef.current = new SimplePool();
+    mintBackupPoolRef.current = new SessionPool();
     return mintBackupPoolRef.current;
   }, []);
 
@@ -12687,11 +26689,15 @@ function SettingsModal({
         timestamp: Math.floor(Date.now() / 1000),
       });
       const pool = ensureMintBackupPool();
-      const signed = finalizeEvent({ ...template, pubkey: keys.publicKeyHex }, keys.privateKeyHex);
-      await pool.publish(mintBackupRelays, signed);
+      const created_at = Math.max(template.created_at || 0, Math.floor(Date.now() / 1000));
+      const signed = finalizeEvent(
+        { ...template, pubkey: keys.publicKeyHex, created_at },
+        keys.privateKeyHex,
+      );
+      await safePublish(pool, mintBackupRelays, signed);
       persistMintBackupCacheState({
         mints,
-        timestamp: template.created_at || Math.floor(Date.now() / 1000),
+        timestamp: signed.created_at || created_at,
       });
       setMintBackupState("success");
       setMintBackupMessage("Mint list backed up to Nostr.");
@@ -12700,7 +26706,7 @@ function SettingsModal({
       setMintBackupState("error");
       setMintBackupMessage(error?.message || "Unable to back up mints.");
     }
-  }, [ensureMintBackupPool, mintBackupRelays, persistMintBackupCacheState, settings.walletMintBackupEnabled]);
+  }, [ensureMintBackupPool, mintBackupRelays, persistMintBackupCacheState, safePublish, settings.walletMintBackupEnabled]);
 
   const handleRestoreMintBackup = useCallback(async () => {
     setMintBackupState("restoring");
@@ -12896,24 +26902,29 @@ function SettingsModal({
   }
 
   const collectBackupData = useCallback((): TaskifyBackupPayload => {
-    const bibleTrackerRaw = localStorage.getItem(LS_BIBLE_TRACKER);
+    const bibleTrackerRaw = kvStorage.getItem(LS_BIBLE_TRACKER);
     let cashuHistory: unknown = [];
     try {
-      const historyRaw = localStorage.getItem("cashuHistory");
+      const historyRaw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, "cashuHistory");
       const parsed = historyRaw ? JSON.parse(historyRaw) : [];
       cashuHistory = Array.isArray(parsed) ? parsed : [];
     } catch {
       cashuHistory = [];
     }
     return {
-      tasks: JSON.parse(localStorage.getItem(LS_TASKS) || "[]"),
-      boards: JSON.parse(localStorage.getItem(LS_BOARDS) || "[]"),
-      settings: JSON.parse(localStorage.getItem(LS_SETTINGS) || "{}"),
-      scriptureMemory: JSON.parse(localStorage.getItem(LS_SCRIPTURE_MEMORY) || "{}"),
+      tasks: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASKS) || "[]"),
+      calendarEvents: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_CALENDAR_EVENTS) || "[]"),
+      externalCalendarEvents: JSON.parse(
+        idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_EXTERNAL_CALENDAR_EVENTS) || "[]",
+      ),
+      boards: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARDS) || "[]"),
+      settings: JSON.parse(kvStorage.getItem(LS_SETTINGS) || "{}"),
+      scriptureMemory: JSON.parse(kvStorage.getItem(LS_SCRIPTURE_MEMORY) || "{}"),
       bibleTracker: bibleTrackerRaw ? JSON.parse(bibleTrackerRaw) : null,
-      defaultRelays: JSON.parse(localStorage.getItem(LS_NOSTR_RELAYS) || "[]"),
-      contacts: JSON.parse(localStorage.getItem(LS_LIGHTNING_CONTACTS) || "[]"),
-      nostrSk: localStorage.getItem(LS_NOSTR_SK) || "",
+      defaultRelays: JSON.parse(kvStorage.getItem(LS_NOSTR_RELAYS) || "[]"),
+      contacts: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_LIGHTNING_CONTACTS) || "[]"),
+      contactsSyncMeta: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META) || "{}"),
+      nostrSk: kvStorage.getItem(LS_NOSTR_SK) || "",
       cashu: {
         proofs: loadProofStore(),
         activeMint: getActiveMint(),
@@ -12968,67 +26979,12 @@ function SettingsModal({
       throw new Error(message);
     }
     const now = Date.now();
-    localStorage.setItem(LS_LAST_CLOUD_BACKUP, String(now));
+    kvStorage.setItem(LS_LAST_CLOUD_BACKUP, String(now));
     return now;
   }, [collectBackupData, workerBaseUrl]);
 
   const applyBackupData = useCallback((data: Partial<TaskifyBackupPayload>) => {
-    if (!data || typeof data !== "object") {
-      throw new Error("Invalid backup data");
-    }
-    if ("tasks" in data && data.tasks !== undefined) {
-      localStorage.setItem(LS_TASKS, JSON.stringify(data.tasks));
-    }
-    if ("boards" in data && data.boards !== undefined) {
-      localStorage.setItem(LS_BOARDS, JSON.stringify(data.boards));
-    }
-    if ("settings" in data && data.settings !== undefined) {
-      localStorage.setItem(LS_SETTINGS, JSON.stringify(data.settings));
-    }
-    if ("scriptureMemory" in data && data.scriptureMemory !== undefined) {
-      localStorage.setItem(LS_SCRIPTURE_MEMORY, JSON.stringify(data.scriptureMemory));
-    }
-    if ("bibleTracker" in data && data.bibleTracker !== undefined) {
-      localStorage.setItem(LS_BIBLE_TRACKER, JSON.stringify(data.bibleTracker));
-    }
-    if ("defaultRelays" in data && data.defaultRelays !== undefined) {
-      localStorage.setItem(LS_NOSTR_RELAYS, JSON.stringify(data.defaultRelays));
-    }
-    if ("contacts" in data && data.contacts !== undefined) {
-      localStorage.setItem(LS_LIGHTNING_CONTACTS, JSON.stringify(data.contacts));
-    }
-    if (typeof data.nostrSk === "string" && data.nostrSk) {
-      localStorage.setItem(LS_NOSTR_SK, data.nostrSk);
-    }
-    const cashuData: any = (data as any)?.cashu;
-    if (cashuData && typeof cashuData === "object") {
-      if ("proofs" in cashuData && cashuData.proofs !== undefined) {
-        saveProofStore(cashuData.proofs);
-      }
-      if ("activeMint" in cashuData) {
-        setActiveMint(cashuData.activeMint || null);
-      }
-      if ("history" in cashuData) {
-        try {
-          const history = Array.isArray(cashuData.history) ? cashuData.history : [];
-          localStorage.setItem("cashuHistory", JSON.stringify(history));
-        } catch {
-          localStorage.removeItem("cashuHistory");
-        }
-      }
-      if ("trackedMints" in cashuData && cashuData.trackedMints !== undefined) {
-        replaceMintList(Array.isArray(cashuData.trackedMints) ? cashuData.trackedMints : []);
-      }
-      if ("pendingTokens" in cashuData && cashuData.pendingTokens !== undefined) {
-        const entries = Array.isArray(cashuData.pendingTokens)
-          ? (cashuData.pendingTokens as PendingTokenEntry[])
-          : [];
-        replacePendingTokens(entries);
-      }
-      if ("walletSeed" in cashuData && cashuData.walletSeed) {
-        restoreWalletSeedBackup(cashuData.walletSeed as WalletSeedBackupPayload);
-      }
-    }
+    applyBackupDataToStorage(data);
     setReloadNeeded(true);
   }, [setReloadNeeded]);
 
@@ -13037,11 +26993,11 @@ function SettingsModal({
     if (!file) return;
     file.text().then((txt) => {
       try {
-        const data = JSON.parse(txt);
-        applyBackupData(data);
+        applyBackupData(parseBackupJsonPayload(txt));
         alert("Backup restored. Press close to reload.");
-      } catch {
-        alert("Invalid backup file");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Invalid backup file.";
+        alert(message);
       }
     });
     e.target.value = "";
@@ -13055,9 +27011,9 @@ function SettingsModal({
     const attemptBackup = async () => {
       try {
         if (typeof crypto === "undefined" || !crypto.subtle) return;
-        const skHex = localStorage.getItem(LS_NOSTR_SK) || "";
+        const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
         if (!/^[0-9a-fA-F]{64}$/.test(skHex)) return;
-        const lastRaw = localStorage.getItem(LS_LAST_CLOUD_BACKUP);
+        const lastRaw = kvStorage.getItem(LS_LAST_CLOUD_BACKUP);
         const lastMs = lastRaw ? Number.parseInt(lastRaw, 10) : 0;
         const now = Date.now();
         if (Number.isFinite(lastMs)) {
@@ -13085,14 +27041,14 @@ function SettingsModal({
       setCloudBackupMessage("Browser crypto APIs are unavailable.");
       return;
     }
-    const skHex = localStorage.getItem(LS_NOSTR_SK) || "";
+    const skHex = kvStorage.getItem(LS_NOSTR_SK) || "";
     if (!/^[0-9a-fA-F]{64}$/.test(skHex)) {
       setCloudBackupState("error");
       setCloudBackupMessage("Add your Nostr secret key in Keys to use cloud backups.");
       return;
     }
     const now = Date.now();
-    const lastManualRaw = localStorage.getItem(LS_LAST_MANUAL_CLOUD_BACKUP);
+    const lastManualRaw = kvStorage.getItem(LS_LAST_MANUAL_CLOUD_BACKUP);
     const lastManualMs = lastManualRaw ? Number.parseInt(lastManualRaw, 10) : 0;
     if (Number.isFinite(lastManualMs) && now - lastManualMs < MANUAL_CLOUD_BACKUP_INTERVAL_MS) {
       const waitSeconds = Math.ceil((MANUAL_CLOUD_BACKUP_INTERVAL_MS - (now - lastManualMs)) / 1000);
@@ -13104,7 +27060,7 @@ function SettingsModal({
     setCloudBackupMessage("");
     try {
       const timestamp = await uploadCloudBackup(skHex);
-      localStorage.setItem(LS_LAST_MANUAL_CLOUD_BACKUP, String(timestamp));
+      kvStorage.setItem(LS_LAST_MANUAL_CLOUD_BACKUP, String(timestamp));
       setCloudBackupState("success");
       setCloudBackupMessage("Backup saved to cloud.");
     } catch (err: any) {
@@ -13115,51 +27071,10 @@ function SettingsModal({
   }, [uploadCloudBackup, workerBaseUrl]);
 
   const handleRestoreFromCloud = useCallback(async () => {
-    if (!workerBaseUrl) {
-      setCloudRestoreState("error");
-      setCloudRestoreMessage("Cloud backup service is unavailable.");
-      return;
-    }
-    const normalized = normalizeSecretKeyInput(cloudRestoreKey);
-    if (!normalized) {
-      setCloudRestoreState("error");
-      setCloudRestoreMessage("Enter a valid nsec or 64-hex private key.");
-      return;
-    }
-    if (typeof crypto === "undefined" || !crypto.subtle) {
-      setCloudRestoreState("error");
-      setCloudRestoreMessage("Browser crypto APIs are unavailable.");
-      return;
-    }
     setCloudRestoreState("loading");
     setCloudRestoreMessage("");
     try {
-      const npub = deriveNpubFromSecretKeyHex(normalized);
-      if (!npub) {
-        throw new Error("Unable to derive npub from the provided key.");
-      }
-      const res = await fetch(`${workerBaseUrl}/api/backups?npub=${encodeURIComponent(npub)}`);
-      if (res.status === 404) {
-        throw new Error("No cloud backup found for that key.");
-      }
-      if (!res.ok) {
-        throw new Error(`Backup request failed (${res.status})`);
-      }
-      const body = await res.json();
-      const backup = body?.backup;
-      if (!backup || typeof backup !== "object" || typeof backup.ciphertext !== "string" || typeof backup.iv !== "string") {
-        throw new Error("Invalid backup payload received.");
-      }
-      const decrypted = await decryptBackupWithSecretKey(normalized, {
-        ciphertext: backup.ciphertext,
-        iv: backup.iv,
-      });
-      let parsed: Partial<TaskifyBackupPayload>;
-      try {
-        parsed = JSON.parse(decrypted);
-      } catch {
-        throw new Error("Cloud backup could not be decoded.");
-      }
+      const parsed = await loadCloudBackupPayload(workerBaseUrl, cloudRestoreKey);
       applyBackupData(parsed);
       alert("Backup restored. Press close to reload.");
       setCloudRestoreState("success");
@@ -13234,15 +27149,16 @@ function SettingsModal({
 
   const handleClose = useCallback(() => {
     onClose();
-    if (reloadNeeded) window.location.reload();
+    if (reloadNeeded) {
+      setTimeout(() => window.location.reload(), 150);
+    }
   }, [onClose, reloadNeeded]);
 
   function addBoard() {
     if (shouldReloadForNavigation()) return;
     const name = newBoardName.trim();
     if (!name) return;
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    if (uuidRegex.test(name)) {
+    if (BOARD_ID_REGEX.test(name)) {
       onJoinBoard(name);
       setNewBoardName("");
       return;
@@ -13838,10 +27754,8 @@ function SettingsModal({
     if (id) archiveBoard(id);
   }
 
-  return (
-    <>
-    <Modal onClose={handleClose} title="Settings">
-      <div className="space-y-2">
+  const settingsBody = (
+    <div className="space-y-2">
 
         {/* Boards & Columns */}
         <section className="wallet-section space-y-3">
@@ -14110,24 +28024,6 @@ function SettingsModal({
                   </div>
                 </div>
                 <div>
-                  <div className="text-sm font-medium mb-1">Add lists from task view</div>
-                  <div className="text-xs text-secondary mb-2">Place an Add list button beside your board columns.</div>
-                  <div className="flex gap-2">
-                    <button
-                      className={pillButtonClass(settings.listAddButtonEnabled)}
-                      onClick={() => setSettings({ listAddButtonEnabled: true })}
-                    >
-                      Show
-                    </button>
-                    <button
-                      className={pillButtonClass(!settings.listAddButtonEnabled)}
-                      onClick={() => setSettings({ listAddButtonEnabled: false })}
-                    >
-                      Hide
-                    </button>
-                  </div>
-                </div>
-                <div>
                   <div className="text-sm font-medium mb-1">Week starts on</div>
                   <div className="text-xs text-secondary mb-2">Affects when weekly recurring tasks re-appear.</div>
                   <div className="flex gap-2">
@@ -14230,6 +28126,22 @@ function SettingsModal({
                 </div>
               </div>
               <div>
+                <div className="text-sm font-medium mb-1">Wallet sync (NIP-60/61)</div>
+                <div className="text-xs text-secondary mb-2">
+                  Sync balances, history, and mint list to your Nostr relays for backup and multi-device restore.
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    className={pillButtonClass(settings.walletNostrSyncEnabled)}
+                    onClick={() => setSettings({ walletNostrSyncEnabled: true })}
+                  >On</button>
+                  <button
+                    className={pillButtonClass(!settings.walletNostrSyncEnabled)}
+                    onClick={() => setSettings({ walletNostrSyncEnabled: false })}
+                  >Off</button>
+                </div>
+              </div>
+              <div>
                 <div className="text-sm font-medium mb-1">npub.cash lightning address</div>
                 <div className="text-xs text-secondary mb-2">Share a lightning address powered by npub.cash using your Taskify Nostr keys.</div>
                 <div className="flex gap-2">
@@ -14260,39 +28172,24 @@ function SettingsModal({
                 </div>
               )}
               <div>
-                <div className="text-sm font-medium mb-1">Bounty tracking</div>
-                <div className="text-xs text-secondary mb-2">Sync bounty cards across boards. Disable to hide the Bounties column entirely.</div>
+                <div className="text-sm font-medium mb-1">Contacts sync/backup</div>
+                <div className="text-xs text-secondary mb-2">
+                  Publish and pull your wallet contacts over Nostr. Turn off to keep contacts local only.
+                </div>
                 <div className="flex gap-2">
                   <button
-                    className={pillButtonClass(bountyListEnabled)}
-                    onClick={() => setSettings({ walletBountiesEnabled: true })}
+                    className={pillButtonClass(settings.walletContactsSyncEnabled)}
+                    onClick={() => setSettings({ walletContactsSyncEnabled: true })}
                   >On</button>
                   <button
-                    className={pillButtonClass(!bountyListEnabled)}
-                    onClick={() => setSettings({ walletBountiesEnabled: false })}
+                    className={pillButtonClass(!settings.walletContactsSyncEnabled)}
+                    onClick={() => setSettings({ walletContactsSyncEnabled: false })}
                   >Off</button>
                 </div>
               </div>
-              {bountyListEnabled && (
-                <div>
-                  <div className="text-sm font-medium mb-1">Bounties list</div>
-                  <div className="text-xs text-secondary mb-2">Choose which shared board/list powers the Bounties column when you add tasks or attach rewards.</div>
-                  <select
-                    className="pill-input w-full"
-                    value={activeBountyListKey || ""}
-                    onChange={(e) => {
-                      const next = bountyListOptions.find((opt) => opt.key === e.target.value);
-                      if (next) {
-                        setSettings({ walletBountyList: { ...next.ref } });
-                      }
-                    }}
-                  >
-                    {bountyListOptions.map((option) => (
-                      <option key={option.key} value={option.key}>{option.label}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              <div className="text-xs text-secondary">
+                Open wallet bounties from Wallet → Bounties. Pinning now replaces the old "add to bounties" flow.
+              </div>
               <div>
                 <div className="text-sm font-medium mb-1">Nostr mint backup</div>
                 <div className="text-xs text-secondary mb-2">Automatically back up your saved mint list to Taskify's Nostr relays using your wallet seed.</div>
@@ -14630,6 +28527,22 @@ function SettingsModal({
                     <div>
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                         <div className="flex-1">
+                          <div className="text-sm font-medium">Mark history entries older than five days as spent</div>
+                          <div className="text-xs text-secondary mt-1">
+                            Treat stale wallet entries as spent so we stop re-checking them on every refresh.
+                          </div>
+                        </div>
+                        <button
+                          className="accent-button button-sm pressable shrink-0"
+                          onClick={handleMarkHistoryEntriesOlderSpent}
+                        >
+                          Mark spent
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <div className="flex-1">
                           <div className="text-sm font-medium">Debug console</div>
                           <div className="text-xs text-secondary mt-1">
                             Load the in-app eruda console for troubleshooting on mobile browsers.
@@ -14803,6 +28716,108 @@ function SettingsModal({
                   </div>
                 </>
               )}
+              <div>
+                <div className="text-sm font-medium mb-2">Fasting reminders</div>
+                <div className="flex gap-2">
+                  <button
+                    className={pillButtonClass(settings.fastingRemindersEnabled)}
+                    onClick={() => setSettings({ fastingRemindersEnabled: true })}
+                  >
+                    On
+                  </button>
+                  <button
+                    className={pillButtonClass(!settings.fastingRemindersEnabled)}
+                    onClick={() => setSettings({ fastingRemindersEnabled: false })}
+                  >
+                    Off
+                  </button>
+                </div>
+                <div className="text-xs text-secondary mt-2">
+                  Create fasting reminder tasks on your Week board.
+                </div>
+              </div>
+              {settings.fastingRemindersEnabled && (
+                <>
+                  <div>
+                    <div className="text-sm font-medium mb-2">Schedule mode</div>
+                    <div className="flex gap-2">
+                      <button
+                        className={pillButtonClass(settings.fastingRemindersMode === "weekday")}
+                        onClick={() => setSettings({ fastingRemindersMode: "weekday" })}
+                      >
+                        Weekday
+                      </button>
+                      <button
+                        className={pillButtonClass(settings.fastingRemindersMode === "random")}
+                        onClick={() => setSettings({ fastingRemindersMode: "random" })}
+                      >
+                        Random
+                      </button>
+                    </div>
+                    <div className="text-xs text-secondary mt-2">
+                      {settings.fastingRemindersMode === "random"
+                        ? "Taskify randomly picks days in the month."
+                        : "Taskify schedules reminders on a consistent weekday."}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium mb-2">
+                      {settings.fastingRemindersMode === "random" ? "Days per month" : "Times per month"}
+                    </div>
+                    <input
+                      className="pill-input w-full"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={settings.fastingRemindersMode === "random" ? 31 : 5}
+                      value={fastingPerMonthDraft}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setFastingPerMonthDraft(value);
+                        if (!value.trim()) return;
+                        const raw = Number(value);
+                        if (!Number.isFinite(raw)) return;
+                        const max = settings.fastingRemindersMode === "random" ? 31 : 5;
+                        const nextValue = Math.max(1, Math.min(max, Math.round(raw)));
+                        setSettings({ fastingRemindersPerMonth: nextValue });
+                      }}
+                      onBlur={() => {
+                        if (!fastingPerMonthDraft.trim()) {
+                          setFastingPerMonthDraft(String(settings.fastingRemindersPerMonth));
+                          return;
+                        }
+                        const raw = Number(fastingPerMonthDraft);
+                        if (!Number.isFinite(raw)) {
+                          setFastingPerMonthDraft(String(settings.fastingRemindersPerMonth));
+                          return;
+                        }
+                        const max = settings.fastingRemindersMode === "random" ? 31 : 5;
+                        const nextValue = Math.max(1, Math.min(max, Math.round(raw)));
+                        setFastingPerMonthDraft(String(nextValue));
+                        if (nextValue !== settings.fastingRemindersPerMonth) {
+                          setSettings({ fastingRemindersPerMonth: nextValue });
+                        }
+                      }}
+                    />
+                  </div>
+                  {settings.fastingRemindersMode === "weekday" && (
+                    <div>
+                      <div className="text-sm font-medium mb-2">Day of week</div>
+                      <select
+                        value={String(settings.fastingRemindersWeekday)}
+                        onChange={(event) => setSettings({ fastingRemindersWeekday: Number(event.target.value) as Weekday })}
+                        className="pill-select w-full"
+                      >
+                        {WD_FULL.map((label, day) => (
+                          <option key={label} value={String(day)}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </section>
@@ -14887,17 +28902,9 @@ function SettingsModal({
               className="ghost-button button-sm pressable"
               onClick={async ()=>{
                 try {
-                  const sk = localStorage.getItem(LS_NOSTR_SK) || "";
+                  const sk = kvStorage.getItem(LS_NOSTR_SK) || "";
                   if (!sk) return;
-                  let nsec = "";
-                  try {
-                    // Prefer nip19.nsecEncode when available
-                    // @ts-expect-error - guard at runtime below
-                    nsec = typeof (nip19 as any)?.nsecEncode === 'function' ? (nip19 as any).nsecEncode(sk) : sk;
-                  } catch {
-                    nsec = sk;
-                  }
-                  await navigator.clipboard?.writeText(nsec);
+                  await navigator.clipboard?.writeText(toNsec(sk));
                 } catch {}
               }}
             >Copy nsec</button>
@@ -14908,13 +28915,30 @@ function SettingsModal({
           </div>
           {showAdvanced && (
             <>
+              <div className="mb-3">
+                <div className="text-sm font-medium mb-1">Encrypted sync backup</div>
+                <div className="flex gap-2">
+                  <button
+                    className={pillButtonClass(settings.nostrBackupEnabled)}
+                    onClick={() => setSettings({ nostrBackupEnabled: true })}
+                  >
+                    On
+                  </button>
+                  <button
+                    className={pillButtonClass(!settings.nostrBackupEnabled)}
+                    onClick={() => setSettings({ nostrBackupEnabled: false })}
+                  >
+                    Off
+                  </button>
+                </div>
+              </div>
               {/* Public key */}
               <div className="mb-3">
-                <div className="text-xs text-secondary mb-1">Your Nostr public key (hex)</div>
+                <div className="text-xs text-secondary mb-1">Your Nostr public key (npub)</div>
                 <div className="flex gap-2 items-center">
-                  <input readOnly value={pubkeyHex || "(generating…)"}
+                  <input readOnly value={pubkeyNpub || "(generating…)"}
                          className="pill-input flex-1"/>
-                  <button className="ghost-button button-sm pressable" onClick={async ()=>{ if(pubkeyHex) { try { await navigator.clipboard?.writeText(pubkeyHex); } catch {} } }}>Copy</button>
+                  <button className="ghost-button button-sm pressable" onClick={async ()=>{ if(pubkeyNpub) { try { await navigator.clipboard?.writeText(pubkeyNpub); } catch {} } }}>Copy</button>
                 </div>
               </div>
 
@@ -14932,21 +28956,39 @@ function SettingsModal({
                     className="ghost-button button-sm pressable"
                     onClick={async ()=>{
                       try {
-                        const sk = localStorage.getItem(LS_NOSTR_SK) || "";
+                        const sk = kvStorage.getItem(LS_NOSTR_SK) || "";
                         if (!sk) return;
-                        let nsec = "";
-                        try {
-                          // Prefer nip19.nsecEncode when available
-                          // @ts-expect-error - guard at runtime below
-                          nsec = typeof (nip19 as any)?.nsecEncode === 'function' ? (nip19 as any).nsecEncode(sk) : sk;
-                        } catch {
-                          nsec = sk;
-                        }
-                        await navigator.clipboard?.writeText(nsec);
+                        await navigator.clipboard?.writeText(toNsec(sk));
                       } catch {}
                     }}
                   >Copy private key (nsec)</button>
                 </div>
+              </div>
+
+              {/* File storage server */}
+              <div className="mb-3">
+                <div className="text-xs text-secondary mb-1">File storage server</div>
+                <div className="flex gap-2 mb-1">
+                  <input
+                    className="pill-input flex-1"
+                    value={fileServerInput}
+                    onChange={(e)=>setFileServerInput(e.target.value)}
+                    placeholder={DEFAULT_FILE_STORAGE_SERVER}
+                  />
+                  <button
+                    className="ghost-button button-sm pressable"
+                    onClick={handleSaveFileServer}
+                    disabled={fileServerSaving}
+                  >
+                    {fileServerSaving ? "Saving…" : "Save"}
+                  </button>
+                </div>
+                <div className="text-xs text-secondary">
+                  Used for profile photo uploads (NIP-96). Default: {DEFAULT_FILE_STORAGE_SERVER}
+                </div>
+                {fileServerStatus && (
+                  <div className="text-xs text-secondary mt-1">{fileServerStatus}</div>
+                )}
               </div>
 
               {/* Default relays */}
@@ -15058,12 +29100,6 @@ function SettingsModal({
           )}
         </section>
 
-        {/* Tutorial */}
-        <section className="wallet-section space-y-3">
-          <div className="text-sm font-medium mb-2">Tutorial</div>
-          <button className="accent-button button-sm pressable" onClick={onRestartTutorial}>View tutorial again</button>
-        </section>
-
         {/* Development donation */}
         <section className="wallet-section space-y-3">
           <div className="text-sm font-medium mb-2">Support development</div>
@@ -15110,12 +29146,28 @@ function SettingsModal({
           </div>
         </section>
 
-        <div className="flex justify-end">
-          <button className="ghost-button button-sm pressable" onClick={handleClose}>Close</button>
-        </div>
+        {!embedded && (
+          <div className="flex justify-end">
+            <button className="ghost-button button-sm pressable" onClick={handleClose}>Close</button>
+          </div>
+        )}
       </div>
-    </Modal>
-    {showArchivedBoards && (
+  );
+
+  return (
+    <>
+      {embedded ? (
+        <div className="modal-panel modal-panel--embedded">
+          <div className="modal-panel__body modal-panel__body--embedded">
+            {settingsBody}
+          </div>
+        </div>
+      ) : (
+        <Modal onClose={handleClose} title="Settings">
+          {settingsBody}
+        </Modal>
+      )}
+      {showArchivedBoards && (
       <Modal onClose={() => setShowArchivedBoards(false)} title="Archived boards">
         {archivedBoards.length === 0 ? (
           <div className="text-sm text-secondary">No archived boards.</div>
@@ -15337,7 +29389,7 @@ function SettingsModal({
             </div>
           </>
         ) : (
-          <div className="text-xs text-secondary">The Week board has fixed columns (Sun–Sat, Bounties).</div>
+          <div className="text-xs text-secondary">The Week board has fixed columns (Sun–Sat).</div>
         )}
 
         <div className="mt-6">
@@ -15374,6 +29426,16 @@ function SettingsModal({
                   <input readOnly value={manageBoard.nostr.boardId}
                          className="pill-input flex-1 min-w-0"/>
                   <button className="ghost-button button-sm pressable" onClick={async ()=>{ try { await navigator.clipboard?.writeText(manageBoard.nostr!.boardId); } catch {} }}>Copy</button>
+                  <button
+                    className="ghost-button button-sm pressable"
+                    onClick={() => {
+                      setShareBoardTarget(manageBoard);
+                      setShareBoardStatus(null);
+                      setShareBoardPickerOpen(true);
+                    }}
+                  >
+                    Share to contact
+                  </button>
                 </div>
                   {showAdvanced && (
                     <>
@@ -15509,6 +29571,72 @@ function SettingsModal({
         </div>
       </Modal>
     )}
+    <ActionSheet
+      open={shareBoardPickerOpen}
+      onClose={() => {
+        if (shareBoardBusy) return;
+        setShareBoardPickerOpen(false);
+        setShareBoardStatus(null);
+        setShareBoardTarget(null);
+      }}
+      title="Send board ID"
+      stackLevel={75}
+    >
+      {shareBoardTarget ? (
+        <div className="text-sm text-secondary mb-2">
+          Choose a contact to send <span className="font-semibold">{shareBoardTarget.name}</span>.
+        </div>
+      ) : (
+        <div className="text-sm text-secondary mb-2">Select a board to share first.</div>
+      )}
+      {shareBoardStatus && (
+        <div className="text-sm text-rose-400 mb-2">{shareBoardStatus}</div>
+      )}
+      {shareableContacts.length ? (
+        <div className="space-y-2">
+          {shareableContacts.map((contact) => {
+            const label = contactPrimaryName(contact);
+            const subtitle = formatContactNpub(contact.npub);
+            return (
+              <button
+                key={contact.id}
+                type="button"
+                className="contact-row pressable"
+                disabled={shareBoardBusy || !shareBoardTarget}
+                onClick={() => shareBoardTarget && handleShareBoardToContact(contact)}
+              >
+                <div className="contact-avatar">{contactInitials(label)}</div>
+                <div className="contact-row__text">
+                  <div className="contact-row__name">{label}</div>
+                  {subtitle ? (
+                    <div className="contact-row__meta">
+                      <span className="contact-row__meta-text">{subtitle}</span>
+                    </div>
+                  ) : null}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
+      )}
+      <div className="flex gap-2 mt-3">
+        <button
+          type="button"
+          className="ghost-button button-sm pressable flex-1 justify-center"
+          onClick={() => {
+            if (shareBoardBusy) return;
+            setShareBoardPickerOpen(false);
+            setShareBoardStatus(null);
+            setShareBoardTarget(null);
+          }}
+          disabled={shareBoardBusy}
+        >
+          Cancel
+        </button>
+      </div>
+    </ActionSheet>
     </>
   );
 }

@@ -23,6 +23,15 @@ interface R2Bucket {
   list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<R2ListResult>;
 }
 
+interface Cache {
+  match(request: Request): Promise<Response | undefined>;
+  put(request: Request, response: Response): Promise<void>;
+}
+
+interface CacheStorage {
+  default: Cache;
+}
+
 export interface Env {
   ASSETS: AssetFetcher;
   TASKIFY_DB: D1Database;
@@ -147,6 +156,7 @@ const PREVIEW_MAX_BYTES = 600_000;
 const PREVIEW_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const DEFAULT_REFERER = "https://www.google.com/";
+const NIP05_CACHE_MAX_AGE_MS = 15 * MINUTE_MS;
 const THREE_MONTHS_MS = 90 * 24 * 60 * MINUTE_MS;
 const ONE_WEEK_MS = 7 * 24 * 60 * MINUTE_MS;
 const BACKUP_CLEANUP_STATE_KEY = "backups-cleanup-state.json";
@@ -236,6 +246,17 @@ interface SchedulerController {
   waitUntil(promise: Promise<unknown>): void;
 }
 
+function parseNip05Address(input: string | null | undefined): { name: string; domain: string; normalized: string } | null {
+  const value = (input || "").trim();
+  if (!value) return null;
+  const atIndex = value.indexOf("@");
+  if (atIndex <= 0 || atIndex === value.length - 1) return null;
+  const name = value.slice(0, atIndex).trim().toLowerCase();
+  const domain = value.slice(atIndex + 1).trim().toLowerCase();
+  if (!name || !domain) return null;
+  return { name, domain, normalized: `${name}@${domain}` };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method === "OPTIONS") {
@@ -263,6 +284,9 @@ export default {
       }
       if (url.pathname === "/api/preview" && request.method === "GET") {
         return await handlePreviewProxy(url);
+      }
+      if (url.pathname === "/api/nip05" && request.method === "GET") {
+        return await handleNip05Lookup(url);
       }
       if (url.pathname === "/api/devices" && request.method === "PUT") {
         return await handleRegisterDevice(request, env);
@@ -403,6 +427,66 @@ async function handleLoadBackup(url: URL, env: Env): Promise<Response> {
   }
   const { lastReadAt: _lastReadAt, ...responsePayload } = storedPayload;
   return jsonResponse({ backup: responsePayload });
+}
+
+async function handleNip05Lookup(url: URL): Promise<Response> {
+  const addressParam = url.searchParams.get("address") ?? url.searchParams.get("addr") ?? url.searchParams.get("nip05");
+  const parsed = parseNip05Address(addressParam);
+  if (!parsed) {
+    return jsonResponse({ error: "Invalid NIP-05 address" }, 400);
+  }
+
+  const { name, domain, normalized } = parsed;
+  const cacheStorage = (globalThis as any).caches as CacheStorage | undefined;
+  const cacheKey = cacheStorage ? new Request(`https://cache.taskify/nip05/${encodeURIComponent(normalized)}`) : null;
+  if (cacheStorage && cacheKey) {
+    try {
+      const cached = await cacheStorage.default.match(cacheKey);
+      if (cached) {
+        const cachedAt = getCacheTimestamp(cached);
+        if (cachedAt !== null && Date.now() - cachedAt < NIP05_CACHE_MAX_AGE_MS) {
+          return cached;
+        }
+      }
+    } catch {}
+  }
+
+  const searchParam = encodeURIComponent(name);
+  const isLocalhost =
+    /^localhost(?::\d+)?$/i.test(domain) || /^127\.0\.0\.1(?::\d+)?$/i.test(domain) || domain === "[::1]";
+
+  const buildUrls = (scheme: "https" | "http") => [
+    `${scheme}://${domain}/.well-known/nostr.json?name=${searchParam}`,
+    `${scheme}://${domain}/.well-known/nostr.json`,
+  ];
+
+  const urls = [...buildUrls("https"), ...(isLocalhost ? [] : buildUrls("http"))];
+  let lastError = "NIP-05 lookup failed";
+  for (const target of urls) {
+    try {
+      const res = await fetch(target, {
+        headers: { Accept: "application/json" },
+        redirect: "follow",
+      });
+      if (!res.ok) {
+        lastError = `NIP-05 lookup failed (${res.status})`;
+        continue;
+      }
+      const record = await res.json();
+      const response = jsonResponse({ nip05: normalized, resolvedFrom: target, record });
+      if (cacheStorage && cacheKey) {
+        response.headers.set("Cache-Control", `public, max-age=${Math.floor(NIP05_CACHE_MAX_AGE_MS / 1000)}`);
+        const now = new Date();
+        response.headers.set("Date", now.toUTCString());
+        response.headers.set("X-Cache-Timestamp", String(now.getTime()));
+        cacheStorage.default.put(cacheKey, response.clone()).catch(() => {});
+      }
+      return response;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  return jsonResponse({ error: lastError }, 502);
 }
 
 async function cleanupExpiredBackups(env: Env): Promise<void> {
@@ -1099,9 +1183,9 @@ class PreviewCollector {
     if (!rel) return;
     const href = element.getAttribute("href");
     if (!href) return;
-    if (/apple-touch-icon/.test(rel)) {
+    if (/\bapple-touch-icon\b/.test(rel)) {
       this.addImage(href, 90, "icon");
-    } else if (/icon/.test(rel)) {
+    } else if (/\bicon\b/.test(rel)) {
       this.addImage(href, 70, "icon");
     }
   }
@@ -2842,6 +2926,21 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: JSON_HEADERS,
   });
+}
+
+function getCacheTimestamp(response: Response): number | null {
+  const header = response.headers.get("X-Cache-Timestamp") || response.headers.get("Date");
+  if (!header) {
+    return null;
+  }
+
+  const numeric = Number(header);
+  if (Number.isFinite(numeric)) {
+    return numeric;
+  }
+
+  const parsed = Date.parse(header);
+  return Number.isNaN(parsed) ? null : parsed;
 }
 
 async function parseJson(request: Request): Promise<any> {

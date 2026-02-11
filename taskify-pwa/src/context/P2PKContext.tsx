@@ -9,6 +9,7 @@ import { bytesToHex } from "@noble/hashes/utils";
 import { generateSecretKey, nip19 } from "nostr-tools";
 import { LS_P2PK_KEYS } from "../localStorageKeys";
 import { normalizeNostrPubkey, deriveCompressedPubkeyFromSecret } from "../lib/nostr";
+import { kvStorage } from "../storage/kvStorage";
 
 export type P2PKKey = {
   id: string;
@@ -64,7 +65,7 @@ function normalizeStoredPubkey(value: string): string | null {
 
 function loadStoredKeys(): { keys: P2PKKey[]; primaryKeyId: string | null } {
   try {
-    const raw = localStorage.getItem(LS_P2PK_KEYS);
+    const raw = kvStorage.getItem(LS_P2PK_KEYS);
     if (!raw) return { keys: [], primaryKeyId: null };
     const parsed = JSON.parse(raw);
     if (
@@ -120,7 +121,7 @@ export function P2PKProvider({ children }: { children: React.ReactNode }) {
       setKeys(nextKeys);
       setPrimaryKeyId(nextPrimary);
       try {
-        localStorage.setItem(
+        kvStorage.setItem(
           LS_P2PK_KEYS,
           JSON.stringify({
             keys: nextKeys,

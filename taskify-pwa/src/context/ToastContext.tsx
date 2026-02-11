@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
 type ToastContextValue = {
   show: (message?: string, durationMs?: number) => void;
@@ -22,10 +22,21 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     timerRef.current = window.setTimeout(() => setVisible(false), durationMs);
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        window.clearTimeout(timerRef.current);
+      }
+    };
+  }, []);
+
   return (
     <ToastContext.Provider value={{ show }}>
       {children}
-      <div className="pointer-events-none fixed left-1/2 top-3 z-[10000] -translate-x-1/2">
+      <div
+        className="pointer-events-none fixed left-1/2 z-[10000] -translate-x-1/2"
+        style={{ top: "calc(env(safe-area-inset-top, 0px) + 0.75rem)" }}
+      >
         <div
           className={
             "transition-opacity duration-200 " + (visible ? "opacity-100" : "opacity-0")

@@ -432,7 +432,7 @@ function generateDocBinary(buffer: ArrayBuffer): { previewText?: string; fullTex
 
 function generateSpreadsheetMarkup(buffer: ArrayBuffer): { previewHtml?: string; fullHtml?: string } {
   try {
-    const workbook = read(buffer, { type: "array", blankrows: false });
+    const workbook = read(buffer, { type: "array" });
     const sheetName = workbook.SheetNames[0];
     if (!sheetName) return {};
     const sheet = workbook.Sheets[sheetName];

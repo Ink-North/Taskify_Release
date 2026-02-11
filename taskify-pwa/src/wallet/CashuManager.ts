@@ -20,6 +20,7 @@ import {
   persistWalletCounter,
   persistWalletCounterSnapshot,
 } from "./seed";
+import { assertValidProofsDleq } from "./dleq";
 
 export type MintQuoteState = "UNPAID" | "PAID" | "ISSUED";
 
@@ -59,6 +60,36 @@ export class CashuManager {
     this.mintUrl = mintUrl.replace(/\/$/, "");
     this.getP2PKPrivkey = options?.getP2PKPrivkey;
     this.onP2PKUsage = options?.onP2PKUsage;
+  }
+
+  private resolveMintPubkeyForProof(proof: Proof): string | null {
+    if (!proof || typeof proof !== "object") return null;
+    if (!this.wallet) return null;
+    const keysetId = typeof proof.id === "string" ? proof.id : "";
+    if (!keysetId) return null;
+    const amount = typeof proof.amount === "number" ? Math.floor(proof.amount) : Number(proof.amount) || 0;
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    try {
+      const keyset = (this.wallet as any).getKeyset?.(keysetId);
+      const keys = keyset?.keys;
+      const pubkey = keys?.[amount];
+      if (typeof pubkey === "string" && pubkey.trim()) return pubkey.trim();
+    } catch {
+      // fall back below
+    }
+    try {
+      const keyset = (this.wallet as any).keyChain?.getKeyset?.(keysetId);
+      const keys = keyset?.keys;
+      const pubkey = keys?.[amount];
+      if (typeof pubkey === "string" && pubkey.trim()) return pubkey.trim();
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  private validateDleqProofs(proofs: Proof[]) {
+    assertValidProofsDleq(proofs, (proof) => this.resolveMintPubkeyForProof(proof));
   }
 
   private static extractQuoteKey(quote?: { quote?: string } | null): string | null {
@@ -112,6 +143,7 @@ export class CashuManager {
         return [];
       }
       const signedChange = this.autoSignProofs(change);
+      this.validateDleqProofs(signedChange);
       this.mergeProofs(signedChange);
       this.clearMeltBlanksByQuote(target);
       return signedChange;
@@ -333,6 +365,11 @@ export class CashuManager {
     setProofs(this.mintUrl, sanitized);
   }
 
+  replaceProofsFromSync(proofs: Proof[]) {
+    // Overwrite cache and storage with proofs from an external sync source (e.g., NIP-60).
+    this.persistProofs(proofs);
+  }
+
   private removeProofsBySecrets(secrets: Set<string>) {
     if (!secrets.size) return;
     const filtered = this.proofCache.filter((proof) => !secrets.has(proof?.secret ?? ""));
@@ -419,15 +456,32 @@ export class CashuManager {
     return this.proofCache.reduce((a, p) => a + (p?.amount || 0), 0);
   }
 
-  async createMintInvoice(amount: number, description?: string) {
+  async createMintInvoice(amount: number, description?: string, options?: { pubkey?: string; method?: "bolt11" | "bolt12" }) {
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new Error("Amount must be greater than zero");
     }
     const normalizedAmount = Math.floor(amount);
     const walletAny = this.wallet as Wallet & {
-      createMintQuoteBolt11?: (amount: number, description?: string) => Promise<MintQuoteResponse>;
+      createMintQuoteBolt11?: (amount: number | { amount: number; unit: string; description?: string; pubkey?: string }, description?: string) => Promise<MintQuoteResponse>;
+      createMintQuoteBolt12?: (payload: { amount: number; unit: string; description?: string; pubkey?: string }) => Promise<MintQuoteResponse>;
     };
+    if (options?.method === "bolt12" && typeof walletAny?.createMintQuoteBolt12 === "function") {
+      return walletAny.createMintQuoteBolt12({
+        amount: normalizedAmount,
+        unit: this.unit,
+        description,
+        pubkey: options.pubkey,
+      });
+    }
     if (typeof walletAny?.createMintQuoteBolt11 === "function") {
+      if (options?.pubkey) {
+        return walletAny.createMintQuoteBolt11({
+          amount: normalizedAmount,
+          unit: this.unit,
+          description,
+          pubkey: options.pubkey,
+        });
+      }
       return walletAny.createMintQuoteBolt11(normalizedAmount, description);
     }
     return this.wallet.createMintQuote(normalizedAmount, description);
@@ -455,6 +509,7 @@ export class CashuManager {
     const config: Record<string, any> = { proofsWeHave: [...this.proofCache] };
     const proofs = await this.wallet.mintProofs(amount, quoteId, config);
     const signed = this.autoSignProofs(proofs);
+    this.validateDleqProofs(signed);
     this.mergeProofs(signed);
     return signed;
   }
@@ -470,6 +525,7 @@ export class CashuManager {
     }
     const newProofs = await this.wallet.receive(encoded, receiveConfig);
     const signed = this.autoSignProofs(newProofs);
+    this.validateDleqProofs(signed);
     this.mergeProofs(signed);
     privkeyMap.forEach((entry, pubkey) => {
       if (entry.count > 0) this.onP2PKUsage?.(pubkey, entry.count);
@@ -544,6 +600,7 @@ export class CashuManager {
       } satisfies OutputConfig;
     }
     const { keep, send } = await this.wallet.send(amount, selected, { proofsWeHave: [...this.proofCache] }, outputConfig);
+    this.validateDleqProofs([...keep, ...send]);
     this.persistAfterSpend(selected, keep);
     const token = getEncodedToken({ mint: this.mintUrl, proofs: send, unit: this.unit });
     const lockInfo: SendTokenLockInfo = options?.p2pk ? { type: "p2pk", options: options.p2pk } : undefined;
@@ -692,6 +749,7 @@ export class CashuManager {
 
     if (res?.change?.length) {
       const signedChange = this.autoSignProofs(res.change);
+      this.validateDleqProofs(signedChange);
       this.mergeProofs(signedChange);
       res.change = signedChange;
       if (responseKey) this.clearMeltBlanksByQuote(responseKey);

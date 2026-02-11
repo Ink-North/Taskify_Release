@@ -1,4 +1,7 @@
 export const LS_LIGHTNING_CONTACTS = "cashu_contacts_v1";
+export const LS_CONTACTS_SYNC_META = "cashu_contacts_sync_meta_v1";
+export const LS_NIP51_CONTACTS_MIGRATED = "nip51_contacts_migrated_v1";
+export const LS_CONTACT_NIP05_CACHE = "cashu_contact_nip05_cache_v1";
 export const LS_URL_PREVIEW_CACHE = "taskify_preview_cache_v1";
 export const LS_P2PK_KEYS = "cashu_p2pk_keys_v1";
 export const LS_ECASH_OPEN_REQUESTS = "cashu_open_payment_requests_v1";
@@ -6,3 +9,9 @@ export const LS_SPENT_NOSTR_PAYMENTS = "cashu_nostr_spent_events_v1";
 export const LS_BTC_USD_PRICE_CACHE = "cashu_btc_usd_price_v1";
 export const LS_MINT_BACKUP_ENABLED = "cashu_mint_backup_enabled_v1";
 export const LS_MINT_BACKUP_CACHE = "cashu_mint_backup_cache_v1";
+export const LS_DM_DELETED_EVENTS = "taskify_dm_deleted_events_v1";
+export const LS_DM_BLOCKED_PEERS = "taskify_dm_blocked_peers_v1";
+export const LS_PROFILE_EVENT_IDS = "taskify_profile_event_ids_v1";
+export const LS_PROFILE_METADATA_CACHE = "taskify_profile_metadata_cache_v1";
+export const LS_CONTACT_PROFILE_CACHE = "taskify_contact_profile_cache_v1";
+export const LS_RELAY_INFO_CACHE = "taskify_relay_info_cache_v1";

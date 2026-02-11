@@ -1,5 +1,6 @@
 import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
+import { kvStorage } from "../storage/kvStorage";
 
 const LS_WALLET_SEED = "cashu_wallet_seed_v1";
 const LS_WALLET_COUNTERS = "cashu_wallet_seed_counters_v1";
@@ -24,17 +25,6 @@ export type WalletSeedBackupPayload = {
 
 let seedCache: WalletSeedRecord | null = null;
 let counterCache: WalletCounterStore | null = null;
-
-function getStorage(): Storage | null {
-  try {
-    if (typeof window !== "undefined" && window.localStorage) {
-      return window.localStorage;
-    }
-  } catch {
-    // ignore storage access issues (e.g., SSR or private mode restrictions)
-  }
-  return null;
-}
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
@@ -76,10 +66,8 @@ function splitCounterKey(key: string): [string, string] | null {
 }
 
 function readSeedRecordFromStorage(): WalletSeedRecord | null {
-  const storage = getStorage();
-  if (!storage) return null;
   try {
-    const raw = storage.getItem(LS_WALLET_SEED);
+    const raw = kvStorage.getItem(LS_WALLET_SEED);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     const mnemonicRaw = typeof parsed?.mnemonic === "string" ? parsed.mnemonic : "";
@@ -101,10 +89,8 @@ function readSeedRecordFromStorage(): WalletSeedRecord | null {
 
 function persistSeedRecord(record: WalletSeedRecord) {
   seedCache = record;
-  const storage = getStorage();
-  if (!storage) return;
   try {
-    storage.setItem(
+    kvStorage.setItem(
       LS_WALLET_SEED,
       JSON.stringify({
         mnemonic: record.mnemonic,
@@ -142,10 +128,8 @@ function ensureSeedRecord(): WalletSeedRecord {
 }
 
 function readCounterStoreFromStorage(): WalletCounterStore {
-  const storage = getStorage();
-  if (!storage) return {};
   try {
-    const raw = storage.getItem(LS_WALLET_COUNTERS);
+    const raw = kvStorage.getItem(LS_WALLET_COUNTERS);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return {};
@@ -176,10 +160,8 @@ function loadCounterStore(): WalletCounterStore {
 
 function persistCounterStore(store: WalletCounterStore) {
   counterCache = { ...store };
-  const storage = getStorage();
-  if (!storage) return;
   try {
-    storage.setItem(LS_WALLET_COUNTERS, JSON.stringify(counterCache));
+    kvStorage.setItem(LS_WALLET_COUNTERS, JSON.stringify(counterCache));
   } catch {
     // ignore persistence failures
   }

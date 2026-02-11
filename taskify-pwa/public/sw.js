@@ -11,7 +11,7 @@ self.addEventListener('activate', (event) => {
 });
 
 const CACHE_PREFIX = 'taskify-cache-';
-const CACHE = `${CACHE_PREFIX}v2`;
+const CACHE = `${CACHE_PREFIX}v4`;
 const CONFIG_CACHE = `${CACHE_PREFIX}config`;
 const DEFAULT_WORKER_BASE_URL = self.location.origin;
 let workerBaseUrl = DEFAULT_WORKER_BASE_URL;
@@ -20,6 +20,11 @@ let updateNotified = false;
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+
+  if (shouldBypassRelayTraffic(event.request)) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
 
   event.respondWith(
     (async () => {
@@ -49,12 +54,31 @@ async function fetchAndUpdateCache(cache, request, cachedResponse) {
   try {
     const networkResponse = await fetch(request);
     if (networkResponse && networkResponse.ok) {
-      try {
-        await cache.put(request, networkResponse.clone());
-      } catch (err) {
-        console.warn('SW cache put failed', err);
+      let cacheUpdated = false;
+      if (networkResponse.type !== 'opaque') {
+        let cacheError = null;
+        try {
+          await cache.put(request, networkResponse.clone());
+          cacheUpdated = true;
+        } catch (err) {
+          cacheError = err;
+          const message = (err && err.message) || '';
+          if (message && message.toLowerCase().includes('quotaexceeded')) {
+            try {
+              await clearOldCaches();
+              await cache.put(request, networkResponse.clone());
+              cacheUpdated = true;
+              cacheError = null;
+            } catch (retryErr) {
+              cacheError = retryErr;
+            }
+          }
+        }
+        if (cacheError) {
+          console.warn('SW cache put failed', cacheError);
+        }
       }
-      if (await shouldNotifyUpdate(request, cachedResponse, networkResponse)) {
+      if (cacheUpdated && await shouldNotifyUpdate(request, cachedResponse, networkResponse)) {
         await notifyClientsAboutUpdate();
       }
     }
@@ -245,6 +269,27 @@ self.addEventListener('message', (event) => {
   workerBaseUrlReady = Promise.resolve();
   persistWorkerBaseUrl(normalized);
 });
+
+function shouldBypassRelayTraffic(request) {
+  try {
+    const acceptHeader = (request.headers.get('accept') || '').toLowerCase();
+    if (acceptHeader.includes('application/nostr+json')) return true;
+
+    const url = new URL(request.url);
+    if (url.protocol === 'ws:' || url.protocol === 'wss:') return true;
+
+    const isSameOrigin = url.origin === self.location.origin;
+    if (isSameOrigin) return false;
+
+    const isHttp = url.protocol === 'http:' || url.protocol === 'https:';
+    const looksLikeRelayRoot = url.pathname === '/' || url.pathname === '';
+    const hostLooksLikeRelay = /relay|nostr/i.test(url.hostname);
+
+    return isHttp && looksLikeRelayRoot && hostLooksLikeRelay;
+  } catch {
+    return false;
+  }
+}
 
 function buildReminderTitle(item) {
   const raw = typeof item?.title === 'string' ? item.title : '';

@@ -13,6 +13,18 @@ const walletVendors = [
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: {
+      buffer: "buffer",
+      process: "process/browser",
+      stream: "stream-browserify",
+      util: "util",
+      events: "events",
+    },
+  },
+  define: {
+    global: "globalThis",
+  },
   build: {
     rollupOptions: {
       output: {
@@ -31,5 +43,8 @@ export default defineConfig({
         },
       },
     },
+  },
+  optimizeDeps: {
+    include: ["@gandlaf21/bc-ur", "buffer", "process", "stream-browserify", "util", "events"],
   },
 });

@@ -1,4 +1,6 @@
 import type { Proof } from "@cashu/cashu-ts";
+import { idbKeyValue } from "../storage/idbKeyValue";
+import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
 
 const LS_KEY = "cashu_proofs_v1";
 const LS_ACTIVE_MINT = "cashu_active_mint_v1";
@@ -14,7 +16,16 @@ export type PendingTokenEntry = {
   amount?: number;
   lastTriedAt?: number;
   lastError?: string;
+  source?: PendingTokenSource;
 };
+
+export type PendingTokenSource =
+  | {
+      type: "nutzap";
+      eventId: string;
+      senderPubkey?: string;
+      relay?: string;
+    };
 
 export type ProofStore = {
   [mintUrl: string]: Proof[];
@@ -38,12 +49,12 @@ function generatePendingTokenId(): string {
 }
 
 export function loadStore(): ProofStore {
-  return safeParse<ProofStore>(localStorage.getItem(LS_KEY), {});
+  return safeParse<ProofStore>(idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_KEY), {});
 }
 
 function loadMintListRaw(): string[] {
   try {
-    return safeParse<string[]>(localStorage.getItem(LS_MINT_LIST), []);
+    return safeParse<string[]>(idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_MINT_LIST), []);
   } catch {
     return [];
   }
@@ -51,7 +62,7 @@ function loadMintListRaw(): string[] {
 
 function persistMintList(urls: string[]) {
   try {
-    localStorage.setItem(LS_MINT_LIST, JSON.stringify(urls));
+    idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_MINT_LIST, JSON.stringify(urls));
   } catch {
     // ignore persistence errors
   }
@@ -105,7 +116,22 @@ export function removeMintFromList(url: string): string[] {
 }
 
 function loadPendingTokenEntries(): PendingTokenEntry[] {
-  return safeParse<PendingTokenEntry[]>(localStorage.getItem(LS_PENDING_TOKENS), []);
+  return safeParse<PendingTokenEntry[]>(idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_PENDING_TOKENS), []);
+}
+
+function normalizePendingTokenSource(source: any): PendingTokenSource | undefined {
+  if (!source || typeof source !== "object") return undefined;
+  if (source.type !== "nutzap") return undefined;
+  const eventId = typeof source.eventId === "string" ? source.eventId.trim() : "";
+  if (!eventId) return undefined;
+  const senderPubkey = typeof source.senderPubkey === "string" ? source.senderPubkey.trim() : undefined;
+  const relay = typeof source.relay === "string" ? source.relay.trim() : undefined;
+  return {
+    type: "nutzap",
+    eventId,
+    senderPubkey: senderPubkey || undefined,
+    relay: relay || undefined,
+  };
 }
 
 function normalizePendingTokens(entries: PendingTokenEntry[]): PendingTokenEntry[] {
@@ -121,6 +147,7 @@ function normalizePendingTokens(entries: PendingTokenEntry[]): PendingTokenEntry
       amount: typeof entry.amount === "number" && Number.isFinite(entry.amount) ? entry.amount : undefined,
       lastTriedAt: entry.lastTriedAt,
       lastError: entry.lastError,
+      source: normalizePendingTokenSource((entry as any).source),
     });
   }
   return normalized;
@@ -128,7 +155,7 @@ function normalizePendingTokens(entries: PendingTokenEntry[]): PendingTokenEntry
 
 function savePendingTokenEntries(entries: PendingTokenEntry[]) {
   const normalized = normalizePendingTokens(entries);
-  localStorage.setItem(LS_PENDING_TOKENS, JSON.stringify(normalized));
+  idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_PENDING_TOKENS, JSON.stringify(normalized));
 }
 
 export function saveStore(store: ProofStore) {
@@ -138,7 +165,7 @@ export function saveStore(store: ProofStore) {
       normalized[mintUrl] = proofs;
     }
   }
-  localStorage.setItem(LS_KEY, JSON.stringify(normalized));
+  idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_KEY, JSON.stringify(normalized));
   ensureActiveMintSelection(normalized);
 }
 
@@ -146,7 +173,12 @@ export function listPendingTokens(): PendingTokenEntry[] {
   return loadPendingTokenEntries();
 }
 
-export function addPendingToken(mintUrl: string, token: string, amount?: number): PendingTokenEntry {
+export function addPendingToken(
+  mintUrl: string,
+  token: string,
+  amount?: number,
+  source?: PendingTokenSource,
+): PendingTokenEntry {
   const normalizedMint = normalizeMintUrl(mintUrl);
   const entry: PendingTokenEntry = {
     id: generatePendingTokenId(),
@@ -155,6 +187,7 @@ export function addPendingToken(mintUrl: string, token: string, amount?: number)
     addedAt: Date.now(),
     attempts: 0,
     amount: typeof amount === "number" && Number.isFinite(amount) ? amount : undefined,
+    source: normalizePendingTokenSource(source),
   };
   const existing = loadPendingTokenEntries();
   const deduped = existing.filter((item) => item.token !== token);
@@ -180,6 +213,24 @@ export function markPendingTokenAttempt(id: string, error?: string) {
       attempts: (entry.attempts ?? 0) + 1,
       lastTriedAt: Date.now(),
       lastError: error,
+    };
+  });
+  if (changed) {
+    savePendingTokenEntries(next);
+  }
+}
+
+export function setPendingTokenSource(id: string, source: PendingTokenSource | null | undefined) {
+  if (!id) return;
+  const existing = loadPendingTokenEntries();
+  let changed = false;
+  const normalizedSource = source ? normalizePendingTokenSource(source) : undefined;
+  const next = existing.map((entry) => {
+    if (entry.id !== id) return entry;
+    changed = true;
+    return {
+      ...entry,
+      source: normalizedSource,
     };
   });
   if (changed) {
@@ -228,15 +279,15 @@ export function clearProofs(mintUrl: string) {
 
 export function getActiveMint(): string {
   try {
-    return localStorage.getItem(LS_ACTIVE_MINT) || "https://mint.solife.me";
+    return idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_ACTIVE_MINT) || "https://mint.solife.me";
   } catch {
     return "https://mint.solife.me";
   }
 }
 
 export function setActiveMint(url: string | null) {
-  if (!url) localStorage.removeItem(LS_ACTIVE_MINT);
-  else localStorage.setItem(LS_ACTIVE_MINT, url);
+  if (!url) idbKeyValue.removeItem(TASKIFY_STORE_WALLET, LS_ACTIVE_MINT);
+  else idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_ACTIVE_MINT, url);
 }
 
 function normalizeMintUrl(url: string): string {
@@ -271,7 +322,7 @@ function ensureActiveMintSelection(store: ProofStore) {
       setActiveMint(fallbackMint);
     }
   } catch {
-    // noop: localStorage might be unavailable during SSR/tests
+    // noop: persistence might be unavailable during SSR/tests
   }
 }
 

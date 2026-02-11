@@ -15,9 +15,8 @@ import { secp256k1 } from "@noble/curves/secp256k1";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import QrScannerLib from "qr-scanner";
-import qrScannerWorkerPath from "qr-scanner/qr-scanner-worker.min.js?url";
 import { QRCodeCanvas } from "qrcode.react";
-import { finalizeEvent, getPublicKey, nip04, nip19, nip44, SimplePool, type EventTemplate } from "nostr-tools";
+import { finalizeEvent, getEventHash, getPublicKey, nip04, nip19, nip44, type EventTemplate } from "nostr-tools";
 import { useCashu } from "../context/CashuContext";
 import { useNwc } from "../context/NwcContext";
 import { useToast } from "../context/ToastContext";
@@ -29,7 +28,6 @@ import {
   loadStore,
   listPendingTokens,
   removeMintFromList,
-  replaceMintList,
   type PendingTokenEntry,
 } from "../wallet/storage";
 import {
@@ -47,37 +45,77 @@ import {
   LS_SPENT_NOSTR_PAYMENTS,
   LS_BTC_USD_PRICE_CACHE,
   LS_MINT_BACKUP_ENABLED,
-  LS_MINT_BACKUP_CACHE,
+  LS_CONTACTS_SYNC_META,
+  LS_NIP51_CONTACTS_MIGRATED,
+  LS_CONTACT_NIP05_CACHE,
+  LS_CONTACT_PROFILE_CACHE,
+  LS_DM_BLOCKED_PEERS,
+  LS_DM_DELETED_EVENTS,
+  LS_PROFILE_EVENT_IDS,
+  LS_PROFILE_METADATA_CACHE,
 } from "../localStorageKeys";
 import { LS_NOSTR_SK } from "../nostrKeys";
+import { kvStorage } from "../storage/kvStorage";
+import { idbKeyValue } from "../storage/idbKeyValue";
+import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
+import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "../lib/fileStorage";
+import { buildContactShareEnvelope, sendShareMessage, type SharedTaskPayload } from "../lib/shareInbox";
 import { normalizeNostrPubkey } from "../lib/nostr";
-import type { CreateSendTokenOptions } from "../wallet/CashuManager";
+import {
+  fetchLatestPrivateContactsList,
+  publishNip51PrivateContactsList,
+  type Nip51PrivateContact,
+} from "../lib/nip51Contacts";
+import { SessionPool } from "../nostr/SessionPool";
+import { NostrSession } from "../nostr/NostrSession";
+import { loadMyLatestProfileEvent, publishMyProfile } from "../nostr/ProfilePublisher";
+import { uploadAvatarToNip96 } from "../nostr/Nip96Client";
+import {
+  markHistoryEntrySpentRaw,
+  MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
+  type MarkHistoryEntriesOldSpentEventDetail,
+} from "../lib/walletHistory";
+import type { CreateSendTokenOptions } from "../mint/MintSession";
 import {
   NpubCashError,
-  acknowledgeNpubCashClaims,
   claimPendingEcashFromNpubCash,
   deriveNpubCashIdentity,
 } from "../wallet/npubCash";
 import { ActionSheet } from "./ActionSheet";
-import type { Contact } from "../lib/contacts";
-import { loadContactsFromStorage, makeContactId, saveContactsToStorage } from "../lib/contacts";
+import type { Contact, ContactProfile, ContactSyncEnvelope } from "../lib/contacts";
+import {
+  contactDisplayLabel,
+  contactHasNpub,
+  contactHasLightning,
+  contactPrimaryName,
+  formatContactNpub,
+  formatContactUsername,
+  loadContactsFromStorage,
+  makeContactId,
+  mergeContactsFromSync,
+  normalizeContact,
+  sanitizeUsername,
+  parseContactSyncEnvelope,
+  saveContactsToStorage,
+} from "../lib/contacts";
+import { parseShareEnvelope } from "../lib/shareInbox";
 import { COINBASE_SPOT_PRICE_URL } from "../lib/pricing";
 import { getWalletSeedMnemonic } from "../wallet/seed";
 import {
   createMintBackupTemplate,
-  decryptMintBackupPayload,
   deriveMintBackupKeys,
   loadMintBackupCache,
-  MINT_BACKUP_D_TAG,
   MINT_BACKUP_CLIENT_TAG,
-  MINT_BACKUP_KIND,
   persistMintBackupCache as persistMintBackupCacheToStorage,
   type MintBackupPayload,
 } from "../wallet/mintBackup";
+import type { WalletMessageItem } from "../types/walletMessages";
 
-QrScannerLib.WORKER_PATH = qrScannerWorkerPath;
 type ScanResult = QrScannerLib.ScanResult;
+
+const WALLET_SCAN_TARGET_SIZE = 800;
+const WALLET_SCAN_MAX_SCANS_PER_SECOND = 25;
 
 const AnimatedEllipsis = () => {
   const [step, setStep] = useState(0);
@@ -97,9 +135,32 @@ const AnimatedEllipsis = () => {
   return <span className="inline-block w-4 text-left">{dots}</span>;
 };
 
+const ShareArrowIcon = (props: React.SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+    <path d="M14.5 6.5 9 10.5l5.5 4" />
+    <circle cx="17.5" cy="4.5" r="2.25" />
+    <circle cx="17.5" cy="19.5" r="2.25" />
+    <circle cx="6.5" cy="12" r="2.25" />
+  </svg>
+);
+
 const LNURL_DECODE_LIMIT = 2048;
-const SMALL_ICON_BUTTON_STYLE = { "--icon-size": "2rem" } as React.CSSProperties;
 const CONTACT_PANEL_HEIGHT = "min(calc(100dvh - 6.5rem), calc(100vh - 6.5rem))";
+const PROFILE_SHARE_CACHE_KEY = "taskify.profileSharePayload.v1";
+const HISTORY_ID_TIMESTAMP_REGEX = /(\d{10,})/;
+const MINT_QUOTE_SUBSCRIPTION_WINDOW_MS = 60 * 60 * 1000;
+const UNPAID_MINT_QUOTE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
+const PAYMENT_HISTORY_EVENT_ID_REGEX = /^payment-request-(?:recv|pending)-([a-f0-9]{32,})$/i;
+
+function deriveTimestampFromId(value: string): number {
+  if (typeof value !== "string" || !value) return Date.now();
+  const match = value.match(HISTORY_ID_TIMESTAMP_REGEX);
+  if (!match) return Date.now();
+  const parsed = Number(match[1]);
+  if (!Number.isFinite(parsed) || parsed <= 0) return Date.now();
+  if (parsed >= 1_000_000_000_000) return parsed;
+  return parsed * 1000;
+}
 
 function normalizeProofAmount(value: unknown): number {
   if (typeof value === "number") {
@@ -116,6 +177,95 @@ function normalizeProofAmount(value: unknown): number {
 function sumProofAmounts(proofs: any[]): number {
   if (!Array.isArray(proofs)) return 0;
   return proofs.reduce((sum: number, proof: any) => sum + normalizeProofAmount(proof?.amount), 0);
+}
+
+function extractMinibitsPaymentSender(value: string): string | null {
+  const trimmed = (value || "").trim();
+  if (!trimmed) return null;
+  const match = /(?:^|\s)(?:nostr:)?(npub1[0-9a-z]{20,})\s+sent\s+you\b/i.exec(trimmed);
+  return match?.[1] ?? null;
+}
+
+function normalizeCashuTokenCandidate(value: string): string | null {
+  let candidate = (value || "").trim();
+  if (!candidate) return null;
+  candidate = candidate
+    .replace(/^[("'`<\u2018\u2019\u201C\u201D]+/, "")
+    .replace(/[)"'`>\u2018\u2019\u201C\u201D]+$/, "");
+  candidate = candidate.replace(/\u200b|\u200c|\u200d|\uFEFF/g, "").replace(/\s+/g, "");
+  if (!candidate) return null;
+  if (/^cashu:/i.test(candidate)) {
+    candidate = extractCashuUriPayload(candidate);
+    if (!candidate) return null;
+    candidate = candidate.replace(/\u200b|\u200c|\u200d|\uFEFF/g, "").replace(/\s+/g, "");
+  }
+  candidate = candidate.replace(/[)\]}>.,!?;:"'\u2018\u2019\u201C\u201D`]+$/g, "");
+  if (!candidate) return null;
+  try {
+    return getDecodedToken(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractFirstCashuTokenFromText(value: string): string | null {
+  const text = value || "";
+  if (!/cashu/i.test(text)) return null;
+
+  try {
+    if (containsNut16Frame(text)) {
+      const assembled = assembleNut16FromText(text);
+      const normalized = normalizeCashuTokenCandidate(assembled.token);
+      if (normalized) return normalized;
+    }
+  } catch {
+    // fall through to regex extraction
+  }
+
+  const matches = text.match(/cashu:[^\s]+|cashu[A-Za-z0-9_+/=-]{10,}/gi) ?? [];
+  for (const match of matches) {
+    const normalized = normalizeCashuTokenCandidate(match);
+    if (normalized) return normalized;
+  }
+
+  // Some clients wrap long tokens across whitespace/newlines.
+  const parts = text.split(/\s+/).filter(Boolean);
+  const tokenChunkPattern = /^[A-Za-z0-9_+/=-]{10,}[)\]}>.,!?;:"'\u2018\u2019\u201C\u201D`]*$/;
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i]!;
+    if (!/^cashu/i.test(part)) continue;
+    let combined = part;
+    let normalized = normalizeCashuTokenCandidate(combined);
+    if (normalized) return normalized;
+    for (let j = i + 1; j < parts.length && j < i + 32; j += 1) {
+      const chunk = parts[j]!;
+      if (!tokenChunkPattern.test(chunk)) break;
+      combined += chunk;
+      if (combined.length > 16_384) break;
+      normalized = normalizeCashuTokenCandidate(combined);
+      if (normalized) return normalized;
+    }
+  }
+  return null;
+}
+
+function getWalletMessageStatusLabel(
+  type?: WalletMessageItem["type"],
+  status?: WalletMessageItem["status"],
+): string | null {
+  if (status === "accepted") {
+    if (type === "board") return "Board added";
+    if (type === "contact") return "Contact added";
+    if (type === "task") return "Task added";
+    return "Added";
+  }
+  if (status === "deleted") {
+    if (type === "board") return "Board dismissed";
+    if (type === "contact") return "Contact dismissed";
+    if (type === "task") return "Task dismissed";
+    return "Dismissed";
+  }
+  return null;
 }
 
 function mintListsEqual(a: string[], b: string[]): boolean {
@@ -225,6 +375,255 @@ function decodeLnurlString(lnurl: string): string {
     return new TextDecoder().decode(Uint8Array.from(bytes));
   } catch {
     throw new Error("Invalid LNURL");
+  }
+}
+
+function encodeContactPayload(payload: ContactSharePayload): string {
+  const json = JSON.stringify(payload);
+  try {
+    if (typeof btoa === "function") {
+      return `taskify:contact:${btoa(unescape(encodeURIComponent(json)))}`;
+    }
+  } catch {
+    // fall through
+  }
+  return `taskify:contact:${encodeURIComponent(json)}`;
+}
+
+function decodeContactPayload(value: string): ContactSharePayload | null {
+  const normalized = value.replace(/^taskify:contact:/i, "");
+  let decoded = normalized;
+  try {
+    if (typeof atob === "function") {
+      decoded = decodeURIComponent(escape(atob(normalized)));
+    } else {
+      decoded = decodeURIComponent(normalized);
+    }
+  } catch {
+    // ignore decode errors
+  }
+  try {
+    const parsed = JSON.parse(decoded);
+    if (parsed && typeof parsed === "object" && parsed.v === 1) {
+      return parsed as ContactSharePayload;
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return null;
+}
+
+function parseProfileContent(content: string): ContactProfile {
+  try {
+    const parsed = JSON.parse(content);
+    if (!parsed || typeof parsed !== "object") return {};
+    const pictureRaw =
+      typeof (parsed as any).picture === "string"
+        ? (parsed as any).picture
+        : typeof (parsed as any).image === "string"
+          ? (parsed as any).image
+          : typeof (parsed as any).avatar === "string"
+            ? (parsed as any).avatar
+            : undefined;
+    return {
+      username: typeof (parsed as any).name === "string" ? (parsed as any).name.trim() : undefined,
+      displayName:
+        typeof (parsed as any).display_name === "string"
+          ? (parsed as any).display_name.trim()
+          : undefined,
+      lud16:
+        typeof (parsed as any).lud16 === "string"
+          ? (parsed as any).lud16.trim()
+          : typeof (parsed as any).lightning_address === "string"
+          ? (parsed as any).lightning_address.trim()
+          : undefined,
+      nip05: typeof (parsed as any).nip05 === "string" ? (parsed as any).nip05.trim() : undefined,
+      about: typeof (parsed as any).about === "string" ? (parsed as any).about.trim() : undefined,
+      picture: typeof pictureRaw === "string" ? pictureRaw.trim() : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+type CachedProfileMetadata = {
+  profile: {
+    username: string;
+    displayName: string;
+    lud16: string;
+    nip05: string;
+    about: string;
+    picture: string;
+  };
+  updatedAt: number | null;
+  eventId: string | null;
+};
+
+function normalizeCachedProfileForm(raw: any): CachedProfileMetadata["profile"] | null {
+  if (!raw || typeof raw !== "object") return null;
+  const username = typeof raw.username === "string" ? raw.username.trim() : "";
+  const displayName = typeof raw.displayName === "string" ? raw.displayName.trim() : "";
+  const lud16 = typeof raw.lud16 === "string" ? raw.lud16.trim() : "";
+  const nip05 = typeof raw.nip05 === "string" ? raw.nip05.trim() : "";
+  const about = typeof raw.about === "string" ? raw.about.trim() : "";
+  const picture = typeof raw.picture === "string" ? raw.picture.trim() : "";
+  return { username, displayName, lud16, nip05, about, picture };
+}
+
+function readProfileMetadataCache(pubkey: string): CachedProfileMetadata | null {
+  if (!pubkey) return null;
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_PROFILE_METADATA_CACHE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return null;
+    const cached = (parsed as Record<string, unknown>)[pubkey];
+    if (!cached || typeof cached !== "object") return null;
+    const profile = normalizeCachedProfileForm((cached as any).profile);
+    if (!profile) return null;
+    const updatedAt = Number.isFinite((cached as any).updatedAt)
+      ? Math.floor((cached as any).updatedAt)
+      : null;
+    const eventId = typeof (cached as any).eventId === "string" ? (cached as any).eventId : null;
+    return { profile, updatedAt, eventId };
+  } catch {
+    return null;
+  }
+}
+
+function persistProfileMetadataCache(pubkey: string, cache: CachedProfileMetadata | null): void {
+  if (!pubkey) return;
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_PROFILE_METADATA_CACHE);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    const next = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? { ...parsed } : {};
+    if (cache) {
+      next[pubkey] = cache;
+    } else {
+      delete next[pubkey];
+    }
+    idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_PROFILE_METADATA_CACHE, JSON.stringify(next));
+  } catch {
+    // ignore persistence issues
+  }
+}
+
+type CachedContactProfile = { profile: ContactProfile; updatedAt: number; pictureDataUrl?: string };
+
+function normalizeCachedContactProfile(raw: any): CachedContactProfile | null {
+  if (!raw || typeof raw !== "object") return null;
+  const updatedAt = Number.isFinite((raw as any).updatedAt) ? Math.floor((raw as any).updatedAt) : 0;
+  const profileRaw = (raw as any).profile;
+  if (!profileRaw || typeof profileRaw !== "object") return null;
+  const normalizeString = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+  const normalizeOptionalString = (value: unknown) => {
+    const normalized = normalizeString(value);
+    return normalized || undefined;
+  };
+  const relays = Array.isArray((profileRaw as any).relays)
+    ? Array.from(
+        new Set(
+          (profileRaw as any).relays
+            .map((relay: unknown) => (typeof relay === "string" ? relay.trim() : ""))
+            .filter(Boolean),
+        ),
+      )
+    : undefined;
+  const profile: ContactProfile = {
+    username: normalizeOptionalString((profileRaw as any).username),
+    displayName: normalizeOptionalString((profileRaw as any).displayName),
+    about: normalizeOptionalString((profileRaw as any).about),
+    picture: normalizeOptionalString((profileRaw as any).picture),
+    lud16: normalizeOptionalString((profileRaw as any).lud16),
+    nip05: normalizeOptionalString((profileRaw as any).nip05),
+    relays,
+  };
+  const hasData = Object.values(profile).some((value) => {
+    if (Array.isArray(value)) return value.length > 0;
+    return typeof value === "string" && value.trim().length > 0;
+  });
+  if (!hasData) return null;
+  const pictureDataUrlCandidate =
+    typeof (raw as any).pictureDataUrl === "string" && (raw as any).pictureDataUrl.trim()
+      ? (raw as any).pictureDataUrl.trim()
+      : undefined;
+  const pictureDataUrl = pictureDataUrlCandidate && isDataUrl(pictureDataUrlCandidate)
+    ? pictureDataUrlCandidate
+    : undefined;
+  return { profile, updatedAt, pictureDataUrl };
+}
+
+function loadContactProfileCache(): Record<string, CachedContactProfile> {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACT_PROFILE_CACHE);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const next: Record<string, CachedContactProfile> = {};
+    Object.entries(parsed).forEach(([hex, value]) => {
+      const normalized = normalizeCachedContactProfile(value);
+      if (normalized) {
+        next[hex.toLowerCase()] = normalized;
+      }
+    });
+    return next;
+  } catch {
+    return {};
+  }
+}
+
+function persistContactProfileCache(cache: Record<string, CachedContactProfile>): void {
+  try {
+    idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACT_PROFILE_CACHE, JSON.stringify(cache));
+  } catch {
+    // ignore persistence issues
+  }
+}
+
+const PROFILE_PHOTO_CACHE_LIMIT_BYTES = 350_000;
+const PROFILE_PHOTO_MAX_DIMENSION = 720;
+
+function estimateDataUrlSize(value: string): number {
+  const parts = value.split(",", 2);
+  if (parts.length < 2) return value.length;
+  const base64 = parts[1];
+  return Math.ceil((base64.length * 3) / 4);
+}
+
+function isDataUrl(value: string): boolean {
+  return /^data:image\//i.test(value.trim());
+}
+
+function shouldCacheProfilePhoto(value: string): boolean {
+  return /^https?:\/\//i.test(value.trim());
+}
+
+async function fetchProfilePhotoDataUrl(url: string, timeoutMs = 8000): Promise<string | null> {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(url, { signal: controller?.signal, cache: "force-cache" });
+    if (!response.ok) return null;
+    const contentType = response.headers.get("content-type");
+    if (contentType && !contentType.toLowerCase().startsWith("image/")) return null;
+    const blob = await response.blob();
+    if (!blob || blob.size > PROFILE_PHOTO_CACHE_LIMIT_BYTES) return null;
+    const dataUrl = await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const result = typeof reader.result === "string" ? reader.result : null;
+        resolve(result && result.trim() ? result : null);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+    return dataUrl;
+  } catch {
+    return null;
+  } finally {
+    if (timer) {
+      window.clearTimeout(timer);
+    }
   }
 }
 
@@ -383,28 +782,8 @@ function generatePrivateKey(): { hex: string; bytes: Uint8Array } {
 
 function randomPastTimestampSeconds(maxOffsetSeconds = 2 * 24 * 60 * 60): number {
   const now = Math.floor(Date.now() / 1000);
-  const clampedMax = Math.max(0, Math.floor(maxOffsetSeconds));
-  const offset = clampedMax > 0 ? Math.floor(Math.random() * (clampedMax + 1)) : 0;
+  const offset = Math.floor(Math.random() * maxOffsetSeconds);
   return Math.max(0, now - offset);
-}
-
-function PencilIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <path d="M4 13.75V16h2.25l8.43-8.43a1.59 1.59 0 0 0 0-2.25l-1.5-1.5a1.59 1.59 0 0 0-2.25 0L4 13.75z" />
-      <path d="M11.5 4.5l2.5 2.5" />
-    </svg>
-  );
-}
-
-function TrashIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <path d="M5 6h10l-.85 10.2a1.5 1.5 0 0 1-1.5 1.3H7.35a1.5 1.5 0 0 1-1.5-1.3L5 6z" />
-      <path d="M3 6h14" />
-      <path d="M8.5 6V4.5A1.5 1.5 0 0 1 10 3h0a1.5 1.5 0 0 1 1.5 1.5V6" />
-    </svg>
-  );
 }
 
 function LockIcon(props: React.SVGProps<SVGSVGElement>) {
@@ -427,9 +806,71 @@ function ChevronDownIcon(props: React.SVGProps<SVGSVGElement>) {
 
 function BackIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <path d="m11.5 5.5-4 4 4 4" />
-      <path d="M14.5 14.5v-9" />
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.25}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="m14.75 6.75-6 5.25 6 5.25" />
+    </svg>
+  );
+}
+
+function PencilIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <path d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L8.032 18.62a3.75 3.75 0 0 1-1.579 0.942l-2.469 0.74 0.74-2.47a3.75 3.75 0 0 1 0.943-1.578L16.862 4.487Z" />
+      <path d="M16.862 4.487 19.5 7.125" />
+    </svg>
+  );
+}
+
+function CloseIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <path d="m7 7 10 10M17 7 7 17" />
+    </svg>
+  );
+}
+
+function CheckIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <path d="m6 12 4.5 4.5L18 8" />
+    </svg>
+  );
+}
+
+function VerifiedBadgeIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M10.788 3.21c.448-1.077 1.976-1.077 2.424 0l.967 2.329a1.125 1.125 0 0 0 1.304.674l2.457-.624c1.119-.285 2.114.71 1.829 1.829l-.624 2.457a1.125 1.125 0 0 0 .674 1.304l2.329.967c1.077.448 1.077 1.976 0 2.424l-2.329.967a1.125 1.125 0 0 0-.674 1.304l.624 2.457c.285 1.119-.71 2.114-1.829 1.829l-2.457-.624a1.125 1.125 0 0 0-1.304.674l-.967 2.329c-.448 1.077-1.976 1.077-2.424 0l-.967-2.329a1.125 1.125 0 0 0-1.304-.674l-2.457.624c-1.119.285-2.114-.71-1.829-1.829l.624-2.457a1.125 1.125 0 0 0-.674-1.304l-2.329-.967c-1.077-.448-1.077-1.976 0-2.424l2.329-.967a1.125 1.125 0 0 0 .674-1.304l-.624-2.457c-.285-1.119.71-2.114 1.829-1.829l2.457.624a1.125 1.125 0 0 0 1.304-.674l.967-2.329Z"
+      />
+      <path
+        d="m9.4 12.75 1.9 1.9 3.85-3.85"
+        fill="none"
+        stroke="var(--surface-base)"
+        strokeWidth={1.6}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function PersonIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <circle cx="12" cy="8.25" r="3.25" />
+      <path d="M5.5 19c.25-3.2 3.1-5 6.5-5s6.25 1.8 6.5 5" />
     </svg>
   );
 }
@@ -452,6 +893,83 @@ type LnurlWithdrawData = {
   minWithdrawable: number;
   maxWithdrawable: number;
   defaultDescription?: string;
+};
+
+type WalletDmAttachment =
+  | {
+      type: "board";
+      boardName?: string | null;
+      boardId?: string | null;
+      taskId?: string | null;
+      status?: string | null;
+    }
+  | {
+      type: "contact";
+      contactName?: string | null;
+      displayName?: string | null;
+      username?: string | null;
+      npub?: string | null;
+      nip05?: string | null;
+      address?: string | null;
+      picture?: string | null;
+      taskId?: string | null;
+      status?: string | null;
+    }
+  | {
+      type: "task";
+      task?: SharedTaskPayload | null;
+      taskId?: string | null;
+      status?: string | null;
+    }
+  | { type: "payment"; amountSat?: number | null; detail?: string | null; raw?: string | null }
+  | { type: "text" };
+
+type DecryptedNostrDm = {
+  content: string;
+  senderPubkey?: string | null;
+  recipientPubkey?: string | null;
+};
+
+type WalletDmMessage = {
+  id: string;
+  eventId: string;
+  peerPubkey: string;
+  isIncoming: boolean;
+  createdAt: number;
+  content: string;
+  preview: string;
+  attachment?: WalletDmAttachment;
+};
+
+type WalletDmThread = {
+  peerPubkey: string;
+  messages: WalletDmMessage[];
+  lastCreatedAt: number;
+  lastPreview: string;
+  isStranger: boolean;
+};
+
+type ContactViewMode = "list" | "detail" | "edit";
+
+type ContactEditDraft = {
+  id: string | null;
+  name: string;
+  displayName: string;
+  username: string;
+  address: string;
+  npub: string;
+  nip05: string;
+  about: string;
+  picture: string;
+  isProfile?: boolean;
+};
+
+type Nip05CheckState = {
+  status: "pending" | "valid" | "invalid";
+  nip05: string;
+  npub: string;
+  checkedAt: number;
+  contactUpdatedAt: number | null;
 };
 
 type NostrEvent = {
@@ -510,6 +1028,63 @@ type NostrIdentity = {
   pubkey: string;
 };
 
+type PublicFollow = {
+  pubkey: string;
+  relay?: string;
+  petname?: string;
+  username?: string;
+  nip05?: string;
+};
+
+type ContactSyncMeta = {
+  lastEventId: string | null;
+  lastUpdatedAt: number | null;
+  fingerprint: string | null;
+  publicFollows: PublicFollow[];
+};
+
+type ContactSharePayload = {
+  v: 1;
+  kind: "nostr" | "custom";
+  npub?: string;
+  relays?: string[];
+  name?: string;
+  displayName?: string;
+  lud16?: string;
+  nip05?: string;
+  picture?: string;
+};
+
+function loadNip05Cache(): Record<string, Nip05CheckState> {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACT_NIP05_CACHE);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const entries: Record<string, Nip05CheckState> = {};
+    Object.entries(parsed as Record<string, any>).forEach(([key, value]) => {
+      if (!value || typeof value !== "object") return;
+      const status = (value as any).status;
+      const nip05 = typeof (value as any).nip05 === "string" ? (value as any).nip05 : "";
+      const npub = typeof (value as any).npub === "string" ? (value as any).npub : "";
+      const checkedAt = Number((value as any).checkedAt) || 0;
+      const contactUpdatedAtRaw = Number((value as any).contactUpdatedAt);
+      if (!nip05 || !npub) return;
+      if (status !== "pending" && status !== "valid" && status !== "invalid") return;
+      entries[key] = {
+        status,
+        nip05,
+        npub,
+        checkedAt: checkedAt || Date.now(),
+        contactUpdatedAt: Number.isFinite(contactUpdatedAtRaw) ? contactUpdatedAtRaw : null,
+      };
+    });
+    return entries;
+  } catch {
+    return {};
+  }
+}
+
 function isMintTokenAlreadySpentError(err: unknown): boolean {
   if (!err || typeof err !== "object") {
     return false;
@@ -556,12 +1131,118 @@ function isMintTokenAlreadySpentError(err: unknown): boolean {
   return false;
 }
 
+function normalizePublicFollow(raw: any): PublicFollow | null {
+  if (!raw || typeof raw !== "object") return null;
+  const pubkey = typeof raw.pubkey === "string" ? raw.pubkey.trim() : "";
+  const relay = typeof raw.relay === "string" ? raw.relay.trim() : "";
+  const petname = typeof raw.petname === "string" ? raw.petname.trim() : "";
+  const username = typeof raw.username === "string" ? sanitizeUsername(raw.username) : "";
+  const nip05 = typeof raw.nip05 === "string" ? raw.nip05.trim() : "";
+  if (!pubkey) return null;
+  return {
+    pubkey,
+    relay: relay || undefined,
+    petname: petname || undefined,
+    username: username || undefined,
+    nip05: nip05 || undefined,
+  };
+}
+
+function normalizePublicFollowsList(raw: any): PublicFollow[] {
+  const list = Array.isArray(raw) ? raw : [];
+  const byPubkey = new Map<string, PublicFollow>();
+  list.forEach((entry) => {
+    const normalized = normalizePublicFollow(entry);
+    if (!normalized) return;
+    const key = normalized.pubkey.toLowerCase();
+    const existing = byPubkey.get(key);
+    if (!existing) {
+      byPubkey.set(key, normalized);
+      return;
+    }
+    byPubkey.set(key, {
+      pubkey: normalized.pubkey,
+      relay: normalized.relay || existing.relay,
+      petname: normalized.petname || existing.petname,
+      username: normalized.username || existing.username,
+      nip05: normalized.nip05 || existing.nip05,
+    });
+  });
+  return Array.from(byPubkey.values());
+}
+
+function extractPublicFollowsFromTags(rawTags: any): PublicFollow[] {
+  const tags = Array.isArray(rawTags) ? rawTags : [];
+  const byPubkey = new Map<string, PublicFollow>();
+  tags.forEach((tag) => {
+    if (!Array.isArray(tag) || tag[0] !== "p") return;
+    const pubkey = typeof tag[1] === "string" ? tag[1].trim() : "";
+    if (!pubkey) return;
+    const relay = typeof tag[2] === "string" ? tag[2].trim() : "";
+    const petname = typeof tag[3] === "string" ? tag[3].trim() : "";
+    const key = pubkey.toLowerCase();
+    const existing = byPubkey.get(key);
+    if (!existing) {
+      byPubkey.set(key, { pubkey, relay: relay || undefined, petname: petname || undefined });
+      return;
+    }
+    byPubkey.set(key, {
+      pubkey,
+      relay: existing.relay || relay || undefined,
+      petname: existing.petname || petname || undefined,
+      username: existing.username,
+      nip05: existing.nip05,
+    });
+  });
+  return Array.from(byPubkey.values());
+}
+
+async function enrichPublicFollowsWithProfiles(
+  follows: PublicFollow[],
+  relays: string[],
+  pool: SessionPool,
+  options?: { maxLookups?: number },
+): Promise<PublicFollow[]> {
+  const maxLookups = typeof options?.maxLookups === "number" ? options.maxLookups : 64;
+  const missingPubkeys = follows
+    .filter((follow) => !follow.nip05 && !follow.username)
+    .slice(0, maxLookups)
+    .map((follow) => follow.pubkey);
+  if (!missingPubkeys.length) return follows;
+
+  try {
+    const metadataEvents = await pool.list(relays, [{ kinds: [0], authors: missingPubkeys }]);
+    if (!metadataEvents?.length) return follows;
+    const profilesByPubkey = new Map<string, ContactProfile>();
+    metadataEvents.forEach((event) => {
+      if (!event?.pubkey || typeof event.content !== "string") return;
+      try {
+        const profile = parseProfileContent(event.content);
+        profilesByPubkey.set(event.pubkey.toLowerCase(), profile);
+      } catch {
+        // ignore malformed profiles
+      }
+    });
+    if (!profilesByPubkey.size) return follows;
+    return follows.map((follow) => {
+      const profile = profilesByPubkey.get(follow.pubkey.toLowerCase());
+      if (!profile) return follow;
+      return {
+        ...follow,
+        username: follow.username || profile.username,
+        nip05: follow.nip05 || profile.nip05,
+      };
+    });
+  } catch {
+    return follows;
+  }
+}
+
 const SATS_PER_BTC = 100_000_000;
 const BACKGROUND_REFRESH_INTERVAL_MS = 300_000;
 const PRICE_REFRESH_MS = BACKGROUND_REFRESH_INTERVAL_MS;
 const PRICE_REFRESH_STAGGER_MS = 0;
 const NPUB_CASH_REFRESH_STAGGER_MS = 20_000;
-const NOSTR_BACKGROUND_STAGGER_MS = 40_000;
 const TOKEN_STATE_BACKGROUND_STAGGER_MS = 60_000;
 const TOKEN_STATE_BACKGROUND_WINDOW_MS = 5 * 24 * 60 * 60 * 1000;
 const SUBSCRIPTION_RETRY_DELAY_MS = 300_000;
@@ -657,7 +1338,7 @@ function QrCodeCard({
   label,
   copyLabel = "Copy",
   extraActions,
-  size = 220,
+  size = 320,
   className,
   hideLabel = false,
   flat = false,
@@ -676,12 +1357,19 @@ function QrCodeCard({
   hideCopyButton?: boolean;
 }) {
   const trimmed = value?.trim();
+  const [animSpeed, setAnimSpeed] = useState<"S" | "M" | "F">("F");
+  const [animDensity, setAnimDensity] = useState<"S" | "M" | "L">("L");
   const [copied, setCopied] = useState(false);
   const [frameIndex, setFrameIndex] = useState(0);
   const animation = useMemo(() => {
     if (!enableNut16Animation) return null;
-    return createNut16Animation(trimmed);
-  }, [enableNut16Animation, trimmed]);
+    const chunkSizeMap: Record<typeof animDensity, number> = { S: 140, M: 200, L: 260 };
+    const intervalMap: Record<typeof animSpeed, number> = { F: 30, M: 60, S: 90 };
+    return createNut16Animation(trimmed, {
+      chunkSize: chunkSizeMap[animDensity],
+      intervalMs: intervalMap[animSpeed],
+    });
+  }, [enableNut16Animation, trimmed, animSpeed, animDensity]);
   const animationKey = animation
     ? `${animation.version}:${animation.digest}:${animation.frames.length}`
     : trimmed;
@@ -741,9 +1429,35 @@ function QrCodeCard({
 
   const isQrTooLong = qrByteLength > 2953;
 
+  const showControls = !!animation && animation.frames.length > 1;
+
   return (
     <div className={classes.join(" ")}>
-      {!hideLabel && label && <div className="wallet-qr-card__label">{label}</div>}
+      {(showControls || (!hideLabel && label)) && (
+        <div className="wallet-qr-card__header">
+          {!hideLabel && label && <div className="wallet-qr-card__label">{label}</div>}
+          {showControls && (
+            <div className="wallet-qr-card__controls wallet-qr-card__controls--compact">
+              <button
+                type="button"
+                className="wallet-qr-card__control-pill"
+                onClick={() => setAnimSpeed((prev) => (prev === "S" ? "M" : prev === "M" ? "F" : "S"))}
+                aria-label={`QR speed ${animSpeed}`}
+              >
+                Speed: {animSpeed}
+              </button>
+              <button
+                type="button"
+                className="wallet-qr-card__control-pill"
+                onClick={() => setAnimDensity((prev) => (prev === "S" ? "M" : prev === "M" ? "L" : "S"))}
+                aria-label={`QR size ${animDensity}`}
+              >
+                Size: {animDensity}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       <div className="wallet-qr-card__code" aria-live="polite">
         <div className="wallet-qr-card__canvas" aria-hidden={isQrTooLong ? undefined : true}>
           {isQrTooLong ? (
@@ -778,7 +1492,6 @@ function QrCodeCard({
 
 function QrScanner({ active, onDetected, onError }: { active: boolean; onDetected: (value: string) => boolean | Promise<boolean>; onError?: (message: string) => void; }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const overlayRef = useRef<HTMLDivElement | null>(null);
   const scannerRef = useRef<QrScannerLib | null>(null);
   const stopRequestedRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -790,6 +1503,25 @@ function QrScanner({ active, onDetected, onError }: { active: boolean; onDetecte
 
   const clearError = useCallback(() => {
     setError(null);
+  }, []);
+
+  const calculateScanRegion = useCallback((video: HTMLVideoElement) => {
+    const width = video.videoWidth || 0;
+    const height = video.videoHeight || 0;
+    if (!width || !height) {
+      return { x: 0, y: 0, width: 0, height: 0 };
+    }
+    const shortSide = Math.min(width, height);
+    const targetSize = Math.min(WALLET_SCAN_TARGET_SIZE, shortSide);
+    const scale = Math.min(targetSize / shortSide, 1);
+    return {
+      x: 0,
+      y: 0,
+      width,
+      height,
+      downScaledWidth: Math.round(width * scale),
+      downScaledHeight: Math.round(height * scale),
+    };
   }, []);
 
   const stopScanner = useCallback(() => {
@@ -819,7 +1551,6 @@ function QrScanner({ active, onDetected, onError }: { active: boolean; onDetecte
     }
 
     const video = videoRef.current;
-    const overlay = overlayRef.current || undefined;
     if (!video) return;
 
     stopRequestedRef.current = false;
@@ -845,11 +1576,11 @@ function QrScanner({ active, onDetected, onError }: { active: boolean; onDetecte
           },
           {
             returnDetailedScanResult: true,
-            highlightScanRegion: true,
-            highlightCodeOutline: true,
-            overlay,
+            highlightScanRegion: false,
+            highlightCodeOutline: false,
+            calculateScanRegion,
             preferredCamera: "environment",
-            maxScansPerSecond: 12,
+            maxScansPerSecond: WALLET_SCAN_MAX_SCANS_PER_SECOND,
             onDecodeError: (err) => {
               if (typeof err === "string" && err === QrScannerLib.NO_QR_CODE_FOUND) return;
             },
@@ -879,7 +1610,7 @@ function QrScanner({ active, onDetected, onError }: { active: boolean; onDetecte
       stopRequestedRef.current = true;
       stopScanner();
     };
-  }, [active, onDetected, reportError, stopScanner, clearError]);
+  }, [active, onDetected, reportError, stopScanner, clearError, calculateScanRegion]);
 
   return (
     <div className="wallet-scanner space-y-3">
@@ -889,12 +1620,12 @@ function QrScanner({ active, onDetected, onError }: { active: boolean; onDetecte
         ) : (
           <>
             <video ref={videoRef} className="wallet-scanner__video" playsInline muted />
-            <div ref={overlayRef} className="wallet-scanner__guide" aria-hidden="true" />
           </>
         )}
+        {!error && <div className="wallet-scanner__guide" aria-hidden="true" />}
       </div>
       <div className="wallet-scanner__hint text-xs text-secondary text-center">
-        {error ? "Camera unavailable. Try entering the code manually." : "Align a QR code inside the frame."}
+        {error ? "Camera unavailable. Try entering the code manually." : "Point your camera at a QR code to scan."}
       </div>
     </div>
   );
@@ -916,9 +1647,83 @@ function LightningGlyph({ className }: { className?: string }) {
   );
 }
 
+function WalletGlyphIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.1} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <line x1="12" y1="4" x2="12" y2="20" />
+      <line x1="8" y1="8" x2="16" y2="8" />
+      <line x1="7" y1="12" x2="17" y2="12" />
+      <line x1="8" y1="16" x2="16" y2="16" />
+      <line x1="12" y1="2.75" x2="12" y2="5.25" />
+      <line x1="12" y1="18.75" x2="12" y2="21.25" />
+    </svg>
+  );
+}
+
+function ChatBubbleIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <rect x="3.5" y="6" width="17" height="12" rx="2" ry="2" />
+      <path d="M4 8l8 5 8-5" />
+    </svg>
+  );
+}
+
+function formatShortDate(tsSeconds: number): string {
+  if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) return "";
+  const date = new Date(tsSeconds * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const sameYear = date.getFullYear() === now.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  if (sameYear) return `${month}-${day}`;
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function formatDmDay(tsSeconds: number): string {
+  if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) return "";
+  const date = new Date(tsSeconds * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function formatDmTime(tsSeconds: number): string {
+  if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) return "";
+  const date = new Date(tsSeconds * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function truncatePreview(value: string, limit = 72): string {
+  const trimmed = (value || "").trim();
+  if (trimmed.length <= limit) return trimmed;
+  return `${trimmed.slice(0, limit)}…`;
+}
+
+function shortenNpubDisplay(npub: string | null | undefined, lead = 8, tail = 6): string {
+  if (!npub) return "";
+  const value = npub.trim();
+  if (value.length <= lead + tail + 1) return value;
+  return `${value.slice(0, lead)}…${value.slice(-tail)}`;
+}
+
+function tryParseJson<T = any>(value: string | null | undefined): T | null {
+  if (typeof value !== "string") return null;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
+}
+
 export default function CashuWalletModal({
   open,
   onClose,
+  onOpenBounties,
+  page = "wallet",
+  showTabSwitcher = true,
+  showBottomNav = false,
   walletConversionEnabled,
   walletPrimaryCurrency,
   setWalletPrimaryCurrency,
@@ -929,9 +1734,19 @@ export default function CashuWalletModal({
   paymentRequestsBackgroundChecksEnabled,
   tokenStateResetNonce,
   mintBackupEnabled: mintBackupEnabledProp,
+  contactsSyncEnabled,
+  fileStorageServer,
+  messageItems,
+  onAcceptMessage,
+  onDismissMessage,
+  onMarkMessagesRead,
 }: {
   open: boolean;
   onClose: () => void;
+  onOpenBounties?: () => void;
+  page?: "wallet" | "contacts";
+  showTabSwitcher?: boolean;
+  showBottomNav?: boolean;
   walletConversionEnabled: boolean;
   walletPrimaryCurrency: "sat" | "usd";
   setWalletPrimaryCurrency: (currency: "sat" | "usd") => void;
@@ -942,11 +1757,35 @@ export default function CashuWalletModal({
   paymentRequestsBackgroundChecksEnabled: boolean;
   tokenStateResetNonce: number;
   mintBackupEnabled: boolean;
+  contactsSyncEnabled: boolean;
+  fileStorageServer: string;
+  messageItems: WalletMessageItem[];
+  messagesUnreadCount: number;
+  onAcceptMessage: (id: string) => void;
+  onDismissMessage: (id: string) => void;
+  onMarkMessagesRead: (dmEventIds: string[]) => void;
 }) {
+  const walletDebugEnabled = import.meta.env.DEV && (() => {
+    try {
+      return kvStorage.getItem("taskify.wallet.debug") === "1";
+    } catch {
+      return false;
+    }
+  })();
+  const nip17TimestampMode: "random" | "now" = (() => {
+    try {
+      const value = (kvStorage.getItem("taskify.nip17.timestamp") || "").trim().toLowerCase();
+      return value === "now" ? "now" : "random";
+    } catch {
+      return "random";
+    }
+  })();
+
   useEffect(() => {
     if (!open) return;
+    if (!walletDebugEnabled) return;
     console.debug("[wallet] CashuWalletModal render start");
-  }, [open]);
+  }, [open, walletDebugEnabled]);
   const {
     mintUrl,
     setMintUrl,
@@ -1026,6 +1865,88 @@ export default function CashuWalletModal({
   type HistoryEntryType = "lightning" | "ecash";
   type HistoryEntryDirection = "in" | "out";
   type HistoryDetailKind = "token" | "invoice" | "note";
+  type HistoryEntryKind = "bounty-attachment";
+
+  function markHistoryTokenStateSpent(tokenState: HistoryTokenState, timestamp: number): HistoryTokenState {
+    const nextProofs = tokenState.proofs.map((proof) =>
+      proof.lastState === "SPENT" ? proof : { ...proof, lastState: "SPENT" as const },
+    );
+    const nextTokenState: HistoryTokenState = {
+      ...tokenState,
+      proofs: nextProofs,
+      lastState: "SPENT",
+      lastSummary: tokenState.lastSummary || "SPENT",
+      lastCheckedAt: timestamp,
+      notifiedSpent: true,
+      suppressChecks: true,
+    };
+    delete (nextTokenState as Partial<HistoryTokenState>).lastError;
+    delete (nextTokenState as Partial<HistoryTokenState>).lastErrorAt;
+    delete (nextTokenState as Partial<HistoryTokenState>).errorCount;
+    return nextTokenState;
+  }
+
+  function deriveSpentHistoryTokenStateFromToken(token: string, timestamp: number): HistoryTokenState | undefined {
+    const derived = deriveHistoryTokenStateFromToken(token);
+    if (!derived) return undefined;
+    return markHistoryTokenStateSpent(derived, timestamp);
+  }
+  const markHistoryTokenStateSpentRef = useRef(markHistoryTokenStateSpent);
+  markHistoryTokenStateSpentRef.current = markHistoryTokenStateSpent;
+  const deriveSpentHistoryTokenStateFromTokenRef = useRef(deriveSpentHistoryTokenStateFromToken);
+  deriveSpentHistoryTokenStateFromTokenRef.current = deriveSpentHistoryTokenStateFromToken;
+
+  function deriveHistoryTokenStateFromToken(token: string): HistoryTokenState | undefined {
+    const trimmed = typeof token === "string" ? token.trim() : "";
+    if (!trimmed) return undefined;
+    try {
+      const decoded: any = getDecodedToken(trimmed);
+      const tokenEntries: any[] = Array.isArray(decoded?.token)
+        ? decoded.token
+        : decoded?.proofs
+          ? [decoded]
+          : [];
+      for (const entry of tokenEntries) {
+        const mint = typeof entry?.mint === "string" ? normalizeMintUrl(entry.mint) : null;
+        const proofsRaw = Array.isArray(entry?.proofs) ? entry.proofs : [];
+        const storedProofs = proofsRaw
+          .map((proof: any) => {
+            if (!proof || typeof proof !== "object") return null;
+            const secret = typeof proof.secret === "string" ? proof.secret : null;
+            const id = typeof proof.id === "string" ? proof.id : null;
+            const C = typeof proof.C === "string" ? proof.C : null;
+            if (!secret || !id || !C) return null;
+            const stored: StoredProofForState = {
+              secret,
+              id,
+              C,
+              amount: normalizeProofAmount(proof.amount),
+            };
+            if (typeof proof.witness === "string" && proof.witness) {
+              stored.witness = proof.witness;
+            }
+            const computed = typeof proof.Y === "string" && proof.Y ? proof.Y : computeProofY(secret);
+            if (computed) stored.Y = computed;
+            const proofState =
+              typeof proof.lastState === "string" && proof.lastState
+                ? sanitizeProofStateValue(proof.lastState.toUpperCase())
+                : undefined;
+            if (proofState) stored.lastState = proofState;
+            return stored;
+          })
+          .filter((proof): proof is StoredProofForState => !!proof);
+        if (!mint || !storedProofs.length) continue;
+        return {
+          mintUrl: mint,
+          proofs: storedProofs,
+          lastState: aggregateStoredProofStates(storedProofs) ?? "UNSPENT",
+        };
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
 
   function isCashuTokenDetail(detail: string | undefined, detailKind?: HistoryDetailKind): boolean {
     if (!detail) return false;
@@ -1064,26 +1985,14 @@ export default function CashuWalletModal({
     createdAt?: number;
     fiatValueUsd?: number;
     stateLabel?: string;
+    entryKind?: HistoryEntryKind;
+    relatedTaskTitle?: string;
   }
 
   type HistoryEntryInput = Partial<HistoryItem> & {
     id?: string;
     summary: string;
   };
-
-  const HISTORY_ID_TIMESTAMP_REGEX = /(\d{10,})/;
-  const deriveTimestampFromId = (value: string): number => {
-    if (typeof value !== "string" || !value) return Date.now();
-    const match = value.match(HISTORY_ID_TIMESTAMP_REGEX);
-    if (!match) return Date.now();
-    const parsed = Number(match[1]);
-    if (!Number.isFinite(parsed) || parsed <= 0) return Date.now();
-    if (parsed >= 1_000_000_000_000) return parsed;
-    return parsed * 1000;
-  };
-
-  const MINT_QUOTE_SUBSCRIPTION_WINDOW_MS = 60 * 60 * 1000;
-  const UNPAID_MINT_QUOTE_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 
   type ManualSendNoteGroup = {
     amount: number;
@@ -1135,6 +2044,191 @@ export default function CashuWalletModal({
     | { type: "lnurl"; data: string }
     | { type: "paymentRequest"; request: string };
   const [pendingScan, setPendingScan] = useState<PendingScan | null>(null);
+  const [scannedContact, setScannedContact] = useState<Contact | null>(null);
+  const [walletTab, setWalletTab] = useState<"wallet" | "messages" | "contacts">("wallet");
+  const isContactsPage = page === "contacts";
+  const [dmMessages, setDmMessages] = useState<WalletDmMessage[]>([]);
+  const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
+  const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string } | null>(null);
+  const dmLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dmDeletedEventsRef = useRef<Set<string>>(new Set());
+  const [dmDeletedEventsVersion, setDmDeletedEventsVersion] = useState(0);
+  const dmBlockedPeersRef = useRef<Set<string>>(new Set());
+  const [, setDmBlockedPeersVersion] = useState(0);
+  const dmPeerProfilesRef = useRef<Map<string, ContactProfile>>(new Map());
+  const dmPeerProfileLoadingRef = useRef<Set<string>>(new Set());
+  const [, setDmPeerProfilesVersion] = useState(0);
+  const dmProcessedEventsRef = useRef<Set<string>>(new Set());
+  const dmSubscriptionCloseRef = useRef<(() => void) | null>(null);
+  const dmLastSyncRef = useRef<number>(0);
+  const [dmView, setDmView] = useState<"list" | "thread" | "strangers">("list");
+  const [activeThreadPeer, setActiveThreadPeer] = useState<string | null>(null);
+  const [dmSearch, setDmSearch] = useState("");
+  const [showStrangersOnly, setShowStrangersOnly] = useState(false);
+  useEffect(() => {
+    if (showTabSwitcher || isContactsPage) return;
+    if (walletTab !== "wallet") {
+      setWalletTab("wallet");
+    }
+  }, [isContactsPage, showTabSwitcher, walletTab]);
+  const toggleDmMessageExpanded = useCallback((eventId: string) => {
+    setDmExpandedMessages((prev) => {
+      const next = new Set(prev);
+      if (next.has(eventId)) {
+        next.delete(eventId);
+      } else {
+        next.add(eventId);
+      }
+      return next;
+    });
+  }, []);
+  const isDmMessageExpanded = useCallback(
+    (eventId: string) => dmExpandedMessages.has(eventId),
+    [dmExpandedMessages],
+  );
+  const copyMessageValue = useCallback(
+    async (value: string, label: string) => {
+      if (!value) return;
+      try {
+        await navigator.clipboard?.writeText(value);
+        showToast(`${label} copied`, 2000);
+      } catch {
+        showToast("Unable to copy", 2000);
+      }
+    },
+    [showToast],
+  );
+  const persistDeletedDmEvents = useCallback((events: Set<string>) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_DELETED_EVENTS, JSON.stringify(Array.from(events)));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  const persistBlockedPeers = useCallback((peers: Set<string>) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_BLOCKED_PEERS, JSON.stringify(Array.from(peers)));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      const rawDeleted = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_DELETED_EVENTS);
+      if (rawDeleted) {
+        const parsed = JSON.parse(rawDeleted);
+        if (Array.isArray(parsed)) {
+          const filtered = parsed
+            .map((id) => (typeof id === "string" ? id.trim() : ""))
+            .filter(Boolean);
+          dmDeletedEventsRef.current = new Set(filtered);
+          setDmDeletedEventsVersion((v) => v + 1);
+        }
+      }
+    } catch {
+      dmDeletedEventsRef.current = new Set();
+    }
+    try {
+      const rawBlocked = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_BLOCKED_PEERS);
+      if (rawBlocked) {
+        const parsed = JSON.parse(rawBlocked);
+        if (Array.isArray(parsed)) {
+          const filtered = parsed
+            .map((id) => (typeof id === "string" ? id.trim().toLowerCase() : ""))
+            .filter(Boolean);
+          dmBlockedPeersRef.current = new Set(filtered);
+          setDmBlockedPeersVersion((v) => v + 1);
+        }
+      }
+    } catch {
+      dmBlockedPeersRef.current = new Set();
+    }
+  }, []);
+  useEffect(() => {
+    if (!dmMessages.length) return;
+    const removed = new Set<string>();
+    const filtered = dmMessages.filter((msg) => {
+      if (dmDeletedEventsRef.current.has(msg.eventId)) {
+        removed.add(msg.eventId);
+        return false;
+      }
+      return true;
+    });
+    if (!removed.size && filtered.length === dmMessages.length) return;
+    setDmMessages(filtered);
+    if (removed.size) {
+      setDmExpandedMessages((prev) => {
+        const next = new Set(prev);
+        removed.forEach((id) => next.delete(id));
+        return next;
+      });
+    }
+  }, [dmDeletedEventsVersion, dmMessages]);
+  const buildDmCopyValue = useCallback(
+    (
+      msg: WalletDmMessage,
+      extras?: {
+        paymentToken?: string | null;
+        boardId?: string | null;
+        contactNpub?: string | null;
+        taskPayload?: SharedTaskPayload | null;
+      },
+    ) => {
+      if (msg.attachment?.type === "board") {
+        return extras?.boardId?.trim() || msg.attachment.boardId || msg.content || msg.eventId;
+      }
+      if (msg.attachment?.type === "contact") {
+        return extras?.contactNpub?.trim() || msg.attachment.npub || msg.content || msg.eventId;
+      }
+      if (msg.attachment?.type === "task") {
+        const payload = msg.attachment.task || extras?.taskPayload;
+        if (payload) {
+          try {
+            return JSON.stringify(payload);
+          } catch {}
+        }
+        return msg.content || msg.eventId;
+      }
+      if (msg.attachment?.type === "payment") {
+        return extras?.paymentToken?.trim() || msg.attachment.raw || msg.content || msg.eventId;
+      }
+      return msg.content || msg.preview || msg.eventId;
+    },
+    [],
+  );
+  const handleDeleteDmMessage = useCallback(
+    (eventId: string) => {
+      if (!eventId) return;
+      dmDeletedEventsRef.current.add(eventId);
+      persistDeletedDmEvents(dmDeletedEventsRef.current);
+      setDmDeletedEventsVersion((v) => v + 1);
+      dmProcessedEventsRef.current.add(eventId);
+      setDmMessages((prev) => prev.filter((msg) => msg.eventId !== eventId));
+      setDmExpandedMessages((prev) => {
+        if (!prev.has(eventId)) return prev;
+        const next = new Set(prev);
+        next.delete(eventId);
+        return next;
+      });
+      setDmMessageActions((prev) => (prev?.eventId === eventId ? null : prev));
+    },
+    [persistDeletedDmEvents],
+  );
+  const cancelDmLongPress = useCallback(() => {
+    if (dmLongPressTimerRef.current) {
+      clearTimeout(dmLongPressTimerRef.current);
+      dmLongPressTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => {
+    return () => {
+      cancelDmLongPress();
+    };
+  }, [cancelDmLongPress]);
+  useEffect(() => {
+    cancelDmLongPress();
+    setDmMessageActions(null);
+  }, [activeThreadPeer, cancelDmLongPress, dmView]);
   const [receiveMode, setReceiveMode] = useState<null | "ecash" | "lightning" | "lnurlWithdraw">(null);
   const [receiveLockVisible, setReceiveLockVisible] = useState(false);
   const [ecashReceiveView, setEcashReceiveView] = useState<"overview" | "amount" | "request">(
@@ -1165,7 +2259,7 @@ export default function CashuWalletModal({
   useEffect(() => {
     if (!walletConversionEnabled) return;
     try {
-      const raw = localStorage.getItem(LS_BTC_USD_PRICE_CACHE);
+      const raw = kvStorage.getItem(LS_BTC_USD_PRICE_CACHE);
       if (!raw) return;
       const parsed: { price?: unknown; updatedAt?: unknown } = JSON.parse(raw);
       const cachedPrice = Number(parsed?.price);
@@ -1204,7 +2298,8 @@ export default function CashuWalletModal({
   const [sendAmt, setSendAmt] = useState("");
   const [sendTokenStr, setSendTokenStr] = useState("");
   const [nutTokenCopied, setNutTokenCopied] = useState(false);
-  const [ecashSendView, setEcashSendView] = useState<"amount" | "token">("amount");
+  const [ecashSendView, setEcashSendView] = useState<"amount" | "token" | "contact">("amount");
+  const [ecashSendRecipient, setEcashSendRecipient] = useState<Contact | null>(null);
   const [lastSendTokenAmount, setLastSendTokenAmount] = useState<number | null>(null);
   const [lastSendTokenMint, setLastSendTokenMint] = useState<string | null>(null);
   const [creatingSendToken, setCreatingSendToken] = useState(false);
@@ -1226,7 +2321,12 @@ export default function CashuWalletModal({
   const textEncoderRef = useRef<TextEncoder | null>(null);
   const [claimingEventIds, setClaimingEventIds] = useState<string[]>([]);
   const defaultNostrRelays = useMemo(() => Array.from(new Set(DEFAULT_NOSTR_RELAYS)), []);
-  const nostrPoolRef = useRef<SimplePool | null>(null);
+  const preferredFileServer = useMemo(
+    () => normalizeFileServerUrl(fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER,
+    [fileStorageServer],
+  );
+  const nostrPoolRef = useRef<SessionPool | null>(null);
+  const nostrPoolClosingRef = useRef(false);
   const nostrSubscriptionActiveRef = useRef(false);
   const nostrIdentityRef = useRef<{ secret: string; pubkey: string } | null>(null);
 
@@ -1252,12 +2352,57 @@ export default function CashuWalletModal({
 
   const ensureNostrPool = useCallback(() => {
     if (!nostrPoolRef.current) {
-      console.debug("[wallet] Initialising nostr pool", defaultNostrRelays);
-      // Disable periodic pings to avoid rapid reconnect loops when relays are slow.
-      nostrPoolRef.current = new SimplePool({ enablePing: false });
+      if (walletDebugEnabled) {
+        console.debug("[wallet] Initialising nostr pool", defaultNostrRelays);
+      }
+      nostrPoolRef.current = new SessionPool();
+      nostrPoolClosingRef.current = false;
     }
     return nostrPoolRef.current;
-  }, [defaultNostrRelays]);
+  }, [defaultNostrRelays, walletDebugEnabled]);
+
+  const closeNostrPool = useCallback(
+    async (destroy?: boolean) => {
+      if (nostrPoolClosingRef.current) return;
+      const pool = nostrPoolRef.current;
+      if (!pool) return;
+      nostrPoolClosingRef.current = true;
+      try {
+        if (destroy && typeof (pool as any).destroy === "function") {
+          await (pool as any).destroy();
+        } else if (defaultNostrRelays.length && typeof pool.close === "function") {
+          pool.close(defaultNostrRelays);
+        }
+      } catch (err: any) {
+        const msg = err?.message || "";
+        if (!/closing or closed/i.test(msg)) {
+          console.warn("[wallet] Failed to close Nostr pool", err);
+        }
+      } finally {
+        nostrPoolRef.current = null;
+        nostrPoolClosingRef.current = false;
+      }
+    },
+    [defaultNostrRelays],
+  );
+
+  const isReplaceableRejection = useCallback((err: unknown): boolean => {
+    const msg = typeof (err as any)?.message === "string" ? (err as any).message : "";
+    return /have newer event/i.test(msg) || /already exists/i.test(msg) || /duplicate/i.test(msg);
+  }, []);
+  const safePublish = useCallback(
+    async (pool: SessionPool, relays: string[], event: any) => {
+      const result = pool.publish(relays, event);
+      try {
+        await Promise.resolve(result);
+      } catch (err) {
+        if (!isReplaceableRejection(err)) {
+          throw err;
+        }
+      }
+    },
+    [isReplaceableRejection],
+  );
 
   const resetSendLockSettings = useCallback(() => {
     setLockSendToPubkey(false);
@@ -1266,7 +2411,7 @@ export default function CashuWalletModal({
   }, []);
 
   const readNostrIdentity = useCallback((): { identity: NostrIdentity | null; reason: string | null } => {
-    const raw = (localStorage.getItem(LS_NOSTR_SK) || "").trim();
+    const raw = (kvStorage.getItem(LS_NOSTR_SK) || "").trim();
     if (!raw) {
       return { identity: null, reason: "Add your Taskify Nostr key in Settings → Nostr." };
     }
@@ -1282,16 +2427,49 @@ export default function CashuWalletModal({
     }
   }, []);
 
+  const readProfileEventId = useCallback((pubkey: string): string | null => {
+    if (!pubkey) return null;
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_PROFILE_EVENT_IDS);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== "object") return null;
+      const cached = parsed[pubkey];
+      return typeof cached === "string" && cached.trim() ? cached.trim() : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const persistProfileEventId = useCallback((pubkey: string, eventId: string | null) => {
+    if (!pubkey) return;
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_PROFILE_EVENT_IDS);
+      const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      const next = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? { ...parsed } : {};
+      if (eventId && eventId.trim()) {
+        next[pubkey] = eventId.trim();
+      } else {
+        delete next[pubkey];
+      }
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_PROFILE_EVENT_IDS, JSON.stringify(next));
+    } catch {
+      // ignore persistence issues
+    }
+  }, []);
+
   const ensureNostrIdentity = useCallback((): NostrIdentity | null => {
     if (nostrIdentityRef.current) return nostrIdentityRef.current;
     const { identity } = readNostrIdentity();
     if (identity) {
       nostrIdentityRef.current = identity;
-      console.debug("[wallet] Loaded nostr identity", identity.pubkey.slice(0, 8));
+      if (walletDebugEnabled) {
+        console.debug("[wallet] Loaded nostr identity", identity.pubkey.slice(0, 8));
+      }
       return identity;
     }
     return null;
-  }, [readNostrIdentity]);
+  }, [readNostrIdentity, walletDebugEnabled]);
 
   const fingerprintIncomingToken = useCallback((token: string | null | undefined) => {
     if (typeof token !== "string") return null;
@@ -1343,6 +2521,9 @@ export default function CashuWalletModal({
         }
         return storedFingerprint === fingerprint;
       }
+      if (fingerprint && spentIncomingTokenFingerprintsRef.current.has(fingerprint)) {
+        return true;
+      }
       return false;
     }
     if (fingerprint && spentIncomingTokenFingerprintsRef.current.has(fingerprint)) {
@@ -1353,7 +2534,7 @@ export default function CashuWalletModal({
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(LS_SPENT_NOSTR_PAYMENTS);
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_SPENT_NOSTR_PAYMENTS);
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
@@ -1388,17 +2569,56 @@ export default function CashuWalletModal({
     }
   }, [paymentRequestLockEnabled, paymentRequestLockPubkey, activeP2pkKey]);
 
-  const PAYMENT_REQUEST_DEBUG = import.meta.env.DEV;
+  const PAYMENT_REQUEST_DEBUG = walletDebugEnabled;
   const PAYMENT_REQUEST_LOOKBACK_SECONDS = 3 * 24 * 60 * 60; // 72 hours
-
+  const PAYMENT_REQUEST_SAFETY_WINDOW_SECONDS = 45;
+  const PAYMENT_REQUEST_DEEP_SYNC_LOOKBACK_SECONDS = 14 * 24 * 60 * 60; // 14 days
+  const DM_SYNC_LOOKBACK_SECONDS = 30 * 24 * 60 * 60; // 30 days of NIP-17/DM history
   const decryptNostrPaymentMessage = useCallback(
-    async (event: NostrEvent, secretHex: string): Promise<string | null> => {
+    async (event: NostrEvent, identityPubkey: string, secretHex: string): Promise<DecryptedNostrDm | null> => {
+      const normalizedIdentity = (identityPubkey || "").toLowerCase();
       try {
         if (event.kind === 4) {
           if (PAYMENT_REQUEST_DEBUG) {
             console.debug("[wallet] payment request DM kind=4", event.id);
           }
-          return await nip04.decrypt(secretHex, event.pubkey, event.content);
+          const pTag = Array.isArray(event.tags)
+            ? event.tags.find((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
+            : null;
+          const recipientPubkey = pTag?.[1];
+          const normalizedSender = (event.pubkey || "").toLowerCase();
+          const normalizedRecipient = (recipientPubkey || "").toLowerCase();
+          const peerPubkeyForDecrypt =
+            normalizedSender === normalizedIdentity ? recipientPubkey : event.pubkey;
+
+          if (!peerPubkeyForDecrypt) return null;
+          if (normalizedSender !== normalizedIdentity && normalizedRecipient !== normalizedIdentity) {
+            return null;
+          }
+
+          let content: string;
+          try {
+            content = await nip04.decrypt(secretHex, peerPubkeyForDecrypt, event.content);
+          } catch (err) {
+            if (nip44?.v2) {
+              try {
+                const dmKey = nip44.v2.utils.getConversationKey(secretHex, peerPubkeyForDecrypt);
+                content = await nip44.v2.decrypt(event.content, dmKey);
+              } catch (inner) {
+                if (PAYMENT_REQUEST_DEBUG) {
+                  console.debug("[wallet] Failed to decrypt DM", event.id, inner);
+                }
+                return null;
+              }
+            } else {
+              if (PAYMENT_REQUEST_DEBUG) {
+                console.debug("[wallet] Failed to decrypt DM", event.id, err);
+              }
+              return null;
+            }
+          }
+
+          return { content, senderPubkey: event.pubkey, recipientPubkey };
         }
         if (event.kind === 1059 && nip44?.v2) {
           if (PAYMENT_REQUEST_DEBUG) {
@@ -1415,8 +2635,9 @@ export default function CashuWalletModal({
           if (!sealEvent || sealEvent.kind !== 13 || typeof sealEvent.content !== "string") {
             return null;
           }
-          if (typeof sealEvent.pubkey !== "string") return null;
-          const dmKey = nip44.v2.utils.getConversationKey(secretHex, sealEvent.pubkey);
+          const senderPubkey = typeof sealEvent.pubkey === "string" ? sealEvent.pubkey : null;
+          if (!senderPubkey) return null;
+          const dmKey = nip44.v2.utils.getConversationKey(secretHex, senderPubkey);
           const dmJson = await nip44.v2.decrypt(sealEvent.content, dmKey);
           let rumor: NostrEvent | null = null;
           try {
@@ -1427,10 +2648,22 @@ export default function CashuWalletModal({
           if (!rumor || rumor.kind !== 14 || typeof rumor.content !== "string") {
             return null;
           }
-          return rumor.content;
+          const recipientTag = Array.isArray(rumor.tags)
+            ? rumor.tags.find((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
+            : null;
+          const wrapRecipientTag = Array.isArray(event.tags)
+            ? event.tags.find((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
+            : null;
+          return {
+            content: rumor.content,
+            senderPubkey,
+            recipientPubkey: recipientTag?.[1] || wrapRecipientTag?.[1],
+          };
         }
       } catch (err) {
-        console.warn("Failed to decrypt payment request message", err);
+        if (PAYMENT_REQUEST_DEBUG) {
+          console.debug("[wallet] Failed to decrypt payment request message", event.id, err);
+        }
       }
       return null;
     },
@@ -1448,10 +2681,50 @@ export default function CashuWalletModal({
     } catch {
       // fall through to string heuristics
     }
-    if (/^cashu:/i.test(trimmed) || /^cashu[a-z0-9]/i.test(trimmed)) {
-      return trimmed;
-    }
+    const token = extractFirstCashuTokenFromText(trimmed);
+    if (token) return token;
     return null;
+  }, []);
+
+  const resolvePeerPubkey = useCallback(
+    (event: NostrEvent, identityPubkey: string, senderPubkey?: string | null, recipientPubkey?: string | null): string => {
+      const normalizedIdentity = normalizeNostrPubkey(identityPubkey) ?? identityPubkey;
+      const normalizedSender = senderPubkey ? normalizeNostrPubkey(senderPubkey) ?? senderPubkey : null;
+      const normalizedRecipient = recipientPubkey ? normalizeNostrPubkey(recipientPubkey) ?? recipientPubkey : null;
+
+      if (normalizedSender && normalizedSender !== normalizedIdentity) {
+        return normalizedSender;
+      }
+      if (normalizedRecipient && normalizedRecipient !== normalizedIdentity) {
+        return normalizedRecipient;
+      }
+
+      const normalizedAuthor = normalizeNostrPubkey(event.pubkey) ?? event.pubkey;
+      if (normalizedAuthor !== normalizedIdentity) {
+        return normalizedAuthor;
+      }
+      const pTag = Array.isArray(event.tags)
+        ? event.tags.find((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
+        : null;
+      const peer = pTag?.[1];
+      const normalizedPeer = peer ? normalizeNostrPubkey(peer) ?? peer : null;
+      if (normalizedPeer && normalizedPeer !== normalizedIdentity) {
+        return normalizedPeer;
+      }
+      return normalizedSender || normalizedAuthor;
+    },
+    [normalizeNostrPubkey],
+  );
+
+  const stopDmSubscription = useCallback(() => {
+    if (dmSubscriptionCloseRef.current) {
+      try {
+        dmSubscriptionCloseRef.current();
+      } catch {
+        // ignore
+      }
+      dmSubscriptionCloseRef.current = null;
+    }
   }, []);
 
 
@@ -1487,9 +2760,39 @@ export default function CashuWalletModal({
   const [lnurlPayData, setLnurlPayData] = useState<LnurlPayData | null>(null);
   const [lightningSendView, setLightningSendView] = useState<"input" | "invoice" | "address">("input");
   const [contacts, setContacts] = useState<Contact[]>(() => loadContactsFromStorage());
+  const [contactsOpen, setContactsOpen] = useState(false);
+  const [nip05Checks, setNip05Checks] = useState<Record<string, Nip05CheckState>>(() =>
+    typeof window !== "undefined" ? loadNip05Cache() : {},
+  );
+  const ensureNip05VerificationRef = useRef<
+    ((contactId: string, nip05?: string | null, npub?: string | null, contactUpdatedAt?: number | null) => void) | null
+  >(null);
+  const isNip05VerifiedForRef = useRef<
+    ((contactId: string, nip05?: string | null, npub?: string | null) => boolean) | null
+  >(null);
+  const contactsRef = useRef<Contact[]>(contacts);
+  const skipContactsEventRef = useRef(false);
+  const skipContactsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    contactsRef.current = contacts;
+  }, [contacts]);
+  useEffect(() => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACT_NIP05_CACHE, JSON.stringify(nip05Checks));
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("taskify:nip05-cache-updated"));
+      }
+    } catch {
+      // ignore persistence issues
+    }
+  }, [nip05Checks]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const handleContactsUpdated = () => {
+      if (skipContactsEventRef.current) {
+        skipContactsEventRef.current = false;
+        return;
+      }
       setContacts(loadContactsFromStorage());
     };
     const handleStorage = (event: StorageEvent) => {
@@ -1502,51 +2805,357 @@ export default function CashuWalletModal({
     return () => {
       window.removeEventListener("taskify:contacts-updated", handleContactsUpdated);
       window.removeEventListener("storage", handleStorage);
+      if (skipContactsTimerRef.current) {
+        clearTimeout(skipContactsTimerRef.current);
+        skipContactsTimerRef.current = null;
+      }
     };
   }, []);
-  const [contactsOpen, setContactsOpen] = useState(false);
-  const [contactsManagerOpen, setContactsManagerOpen] = useState(false);
-  const [contactFormVisible, setContactFormVisible] = useState(false);
-  const [contactForm, setContactForm] = useState<{
-    id: string | null;
-    name: string;
-    address: string;
-    paymentRequest: string;
-    npub: string;
-  }>({
+  useEffect(() => {
+    if (contactsOpen) {
+      setContacts(loadContactsFromStorage());
+    }
+  }, [contactsOpen]);
+  const resetContactForm = useCallback(() => {}, []);
+  const [contactsTabOpen, setContactsTabOpen] = useState(false);
+  const contactsPanelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (showTabSwitcher) return;
+    if (isContactsPage && !contactsTabOpen) {
+      setContactsTabOpen(true);
+    } else if (!isContactsPage && contactsTabOpen) {
+      setContactsTabOpen(false);
+    }
+  }, [contactsTabOpen, isContactsPage, showTabSwitcher]);
+  const [contactSyncState, setContactSyncState] = useState<{
+    status: "idle" | "loading" | "error" | "success";
+    message?: string;
+    updatedAt?: number | null;
+  }>({ status: "idle", updatedAt: null });
+  const [contactsPublishState, setContactsPublishState] = useState<"idle" | "publishing" | "error" | "success">("idle");
+  const [, setContactsPublishMessage] = useState("");
+  const initialContactSyncMeta = useMemo<ContactSyncMeta>(() => {
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          lastEventId: typeof parsed?.lastEventId === "string" ? parsed.lastEventId : null,
+          lastUpdatedAt: Number(parsed?.lastUpdatedAt) || null,
+          fingerprint: typeof parsed?.fingerprint === "string" ? parsed.fingerprint : null,
+          publicFollows: normalizePublicFollowsList(parsed?.publicFollows),
+        };
+      }
+    } catch {
+      // ignore parse issues
+    }
+    return { lastEventId: null, lastUpdatedAt: null, fingerprint: null, publicFollows: [] };
+  }, []);
+  const contactSyncMetaRef = useRef<ContactSyncMeta>(initialContactSyncMeta);
+  const [contactSyncMeta, setContactSyncMeta] = useState<ContactSyncMeta>(initialContactSyncMeta);
+  const persistContactSyncMeta = useCallback(
+    (meta: Partial<ContactSyncMeta>) => {
+      let nextState: ContactSyncMeta | null = null;
+      setContactSyncMeta((prev) => {
+        const nextPublicFollows =
+          meta.publicFollows !== undefined
+            ? normalizePublicFollowsList(meta.publicFollows)
+            : prev.publicFollows ?? [];
+        const next: ContactSyncMeta = {
+          lastEventId: meta.lastEventId ?? prev.lastEventId ?? null,
+          lastUpdatedAt: meta.lastUpdatedAt ?? prev.lastUpdatedAt ?? null,
+          fingerprint: meta.fingerprint ?? prev.fingerprint ?? null,
+          publicFollows: nextPublicFollows,
+        };
+        nextState = next;
+        try {
+          idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META, JSON.stringify(next));
+        } catch {
+          // ignore persistence issues
+        }
+        return next;
+      });
+      if (nextState) {
+        contactSyncMetaRef.current = nextState;
+      }
+      return nextState;
+    },
+    [contactSyncMetaRef],
+  );
+  const [profileForm, setProfileForm] = useState<{
+    username: string;
+    displayName: string;
+    lud16: string;
+    nip05: string;
+    about: string;
+    picture: string;
+  }>(() => {
+    const { identity } = readNostrIdentity();
+    const cached = identity ? readProfileMetadataCache(identity.pubkey) : null;
+    return (
+      cached?.profile ?? {
+        username: "",
+        displayName: "",
+        lud16: "",
+        nip05: "",
+        about: "",
+        picture: "",
+      }
+    );
+  });
+  const [profileSharePayload, setProfileSharePayload] = useState<string | null>(() => {
+    try {
+      const cached = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, PROFILE_SHARE_CACHE_KEY);
+      if (!cached) return null;
+      const parsed = JSON.parse(cached);
+      if (typeof parsed === "string") return parsed;
+    } catch {
+      // ignore cache issues
+    }
+    return null;
+  });
+  const profileEventIdRef = useRef<string | null>(null);
+  const profileFormRef = useRef(profileForm);
+  useEffect(() => {
+    profileFormRef.current = profileForm;
+  }, [profileForm]);
+  useEffect(() => {
+    if (!profileSharePayload) return;
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, PROFILE_SHARE_CACHE_KEY, JSON.stringify(profileSharePayload));
+    } catch {
+      // ignore persistence issues
+    }
+  }, [profileSharePayload]);
+  const [profileStatus, setProfileStatus] = useState<"idle" | "loading" | "ready" | "publishing" | "error">(() => {
+    const { identity } = readNostrIdentity();
+    const cached = identity ? readProfileMetadataCache(identity.pubkey) : null;
+    return cached?.profile ? "ready" : "idle";
+  });
+  const [profileMessage, setProfileMessage] = useState("");
+  const [profileUpdatedAt, setProfileUpdatedAt] = useState<number | null>(() => {
+    const { identity } = readNostrIdentity();
+    const cached = identity ? readProfileMetadataCache(identity.pubkey) : null;
+    return cached?.updatedAt ?? null;
+  });
+  useEffect(() => {
+    const { identity } = readNostrIdentity();
+    if (!identity) return;
+    const cached = readProfileMetadataCache(identity.pubkey);
+    if (cached?.eventId && !profileEventIdRef.current) {
+      profileEventIdRef.current = cached.eventId;
+      persistProfileEventId(identity.pubkey, cached.eventId);
+    }
+  }, [persistProfileEventId, readNostrIdentity]);
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
+  const [contactLookupInput, setContactLookupInput] = useState("");
+  const [contactLookupBusy, setContactLookupBusy] = useState(false);
+  const [contactLookupError, setContactLookupError] = useState("");
+  const [showCustomContactFields, setShowCustomContactFields] = useState(false);
+  const [contactView, setContactView] = useState<ContactViewMode>("list");
+  const [activeContactId, setActiveContactId] = useState<string | "profile" | null>(null);
+  const [shareContactPickerOpen, setShareContactPickerOpen] = useState(false);
+  const [shareContactSource, setShareContactSource] = useState<Contact | null>(null);
+  const [shareContactStatus, setShareContactStatus] = useState<string | null>(null);
+  const [shareContactBusy, setShareContactBusy] = useState(false);
+  const [contactEditDraft, setContactEditDraft] = useState<ContactEditDraft>({
     id: null,
     name: "",
+    displayName: "",
+    username: "",
     address: "",
-    paymentRequest: "",
     npub: "",
+    nip05: "",
+    about: "",
+    picture: "",
+    isProfile: false,
   });
-  const [contactFormError, setContactFormError] = useState("");
+  const [contactEditError, setContactEditError] = useState("");
+  const [profilePhotoError, setProfilePhotoError] = useState("");
+  const [profilePhotoBusy, setProfilePhotoBusy] = useState(false);
+  const profilePhotoInputRef = useRef<HTMLInputElement | null>(null);
+  const profilePhotoUploadRef = useRef<{ blob: Blob; name?: string; contentType?: string } | null>(null);
+  const [publicFollowPickerOpen, setPublicFollowPickerOpen] = useState(false);
+  const resetContactEditDraft = useCallback(() => {
+    setContactEditDraft({
+      id: null,
+      name: "",
+      displayName: "",
+      username: "",
+      address: "",
+      npub: "",
+      nip05: "",
+      about: "",
+      picture: "",
+      isProfile: false,
+    });
+    setContactEditError("");
+    setProfilePhotoError("");
+    setProfilePhotoBusy(false);
+    profilePhotoUploadRef.current = null;
+  }, []);
+  const closeContactsTab = useCallback(() => {
+    setContactsTabOpen(false);
+    setProfileEditorOpen(false);
+    resetContactEditDraft();
+    setContactView("list");
+    setActiveContactId(null);
+    setShowCustomContactFields(false);
+    setWalletTab("wallet");
+  }, [resetContactEditDraft]);
+  const handleStartAddContact = useCallback(() => {
+    resetContactEditDraft();
+    setContactEditError("");
+    setContactLookupError("");
+    setContactLookupInput("");
+    setShowCustomContactFields(false);
+    setContactView("edit");
+  }, [resetContactEditDraft]);
+  const handleBackToContactsList = useCallback(() => {
+    setContactView("list");
+    setActiveContactId(null);
+  }, []);
+  const contactsPublishQueuedRef = useRef(false);
   const [contactsContext, setContactsContext] = useState<"lightning" | "ecash" | null>(null);
   const contactsContextRef = useRef<"lightning" | "ecash" | null>(null);
+  const contactsFingerprintRef = useRef<string | null>(null);
+  const nip51MigrationInFlightRef = useRef(false);
+  const contactProfilesRefreshedRef = useRef(false);
+  const computeContactsFingerprint = useCallback(
+    (list: Contact[]): string => {
+      const normalized = list
+        .map((contact) => {
+          const relays = Array.isArray(contact.relays)
+            ? Array.from(
+                new Set(
+                  contact.relays
+                    .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
+                    .filter(Boolean),
+                ),
+              ).sort()
+            : [];
+          return {
+            id: contact.id,
+            kind: contact.kind,
+            name: (contact.name || "").trim(),
+            address: (contact.address || "").trim(),
+            paymentRequest: (contact.paymentRequest || "").trim(),
+            npub: (contact.npub || "").trim(),
+            username: sanitizeUsername(contact.username || ""),
+            displayName: (contact.displayName || "").trim(),
+            nip05: (contact.nip05 || "").trim(),
+            about: (contact.about || "").trim(),
+            picture: (contact.picture || "").trim(),
+            relays,
+          };
+        })
+        .sort((a, b) => a.id.localeCompare(b.id));
+      let encoder = textEncoderRef.current;
+      if (!encoder) {
+        encoder = new TextEncoder();
+        textEncoderRef.current = encoder;
+      }
+      return bytesToHex(sha256(encoder.encode(JSON.stringify(normalized))));
+    },
+    [],
+  );
 
-  const resetContactForm = useCallback(() => {
-    setContactForm({ id: null, name: "", address: "", paymentRequest: "", npub: "" });
-    setContactFormError("");
-    setContactFormVisible(false);
+  const upsertContact = useCallback(
+    (input: Partial<Contact> & { id?: string }) => {
+      const shouldUpdatePaymentRequest =
+        Object.prototype.hasOwnProperty.call(input, "paymentRequest") ||
+        Object.prototype.hasOwnProperty.call(input as any, "creq") ||
+        Object.prototype.hasOwnProperty.call(input as any, "cashuPaymentRequest");
+      const normalized = normalizeContact({
+        ...input,
+        id: input.id || makeContactId(),
+        kind: input.kind || (input.npub ? "nostr" : "custom"),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      if (!normalized) return null;
+      const normalizedNpub = formatContactNpub(normalized.npub);
+      const normalizedWithNpub: Contact = { ...normalized, npub: normalizedNpub };
+      let result: Contact = normalizedWithNpub;
+      setContacts((prev) => {
+        const normalizedHex = normalizeNostrPubkey(normalizedWithNpub.npub || "");
+        const existingIndex = prev.findIndex((entry) => {
+          if (entry.id === normalized.id) return true;
+          if (normalizedHex) {
+            const entryHex = normalizeNostrPubkey(entry.npub || "");
+            if (entryHex && entryHex === normalizedHex) return true;
+          }
+          return false;
+        });
+        if (existingIndex >= 0) {
+          const prevContact = prev[existingIndex];
+          const merged: Contact = {
+            ...prevContact,
+            ...normalizedWithNpub,
+            id: prevContact.id,
+            updatedAt: Date.now(),
+            paymentRequest: shouldUpdatePaymentRequest
+              ? normalizedWithNpub.paymentRequest
+              : prevContact.paymentRequest,
+          };
+          result = merged;
+          const next = prev.slice();
+          next[existingIndex] = merged;
+          return next;
+        }
+        result = normalizedWithNpub;
+        return [...prev, normalizedWithNpub];
+      });
+      return result;
+    },
+    [normalizeContact, normalizeNostrPubkey, setContacts, makeContactId, formatContactNpub],
+  );
+
+  const compressedToRawHex = useCallback((value: string) => {
+    if (typeof value !== "string") return value;
+    if (/^(02|03)[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
+    if (/^0x[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
+    if (/^[0-9a-fA-F]{64}$/.test(value)) return value;
+    return value;
   }, []);
 
-  const handleStartNewContact = useCallback(() => {
-    setContactForm({ id: null, name: "", address: "", paymentRequest: "", npub: "" });
-    setContactFormError("");
-    setContactFormVisible(true);
-  }, []);
+  const formatNpub = useCallback(
+    (value: string) => {
+      const raw = compressedToRawHex(value);
+      try {
+        return nip19.npubEncode(raw);
+      } catch {
+        return value;
+      }
+    },
+    [compressedToRawHex],
+  );
 
-  const handleStartEditContact = useCallback((contact: Contact) => {
-    setContactForm({
-      id: contact.id,
-      name: contact.name,
-      address: contact.address,
-      paymentRequest: contact.paymentRequest,
-      npub: contact.npub,
-    });
-    setContactFormError("");
-    setContactFormVisible(true);
-  }, []);
+  const formatNpubDisplay = useCallback(
+    (value: string | null | undefined): string | null => {
+      if (!value) return null;
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      if (trimmed.startsWith("npub")) return trimmed;
+      const normalized = normalizeNostrPubkey(trimmed);
+      const candidate = normalized || trimmed;
+      let rawHex: string | null = null;
+      if (/^[0-9a-f]{64}$/i.test(candidate)) {
+        rawHex = candidate;
+      } else if (/^(02|03)[0-9a-f]{64}$/i.test(candidate)) {
+        rawHex = candidate.slice(-64);
+      }
+      if (rawHex) {
+        try {
+          return nip19.npubEncode(hexToBytes(rawHex));
+        } catch {
+          return rawHex;
+        }
+      }
+      return candidate;
+    },
+    [normalizeNostrPubkey],
+  );
 
   const [lnurlWithdrawInfo, setLnurlWithdrawInfo] = useState<LnurlWithdrawData | null>(null);
   const [lnurlWithdrawAmt, setLnurlWithdrawAmt] = useState("");
@@ -1577,7 +3186,7 @@ export default function CashuWalletModal({
   const [mintSwapMessage, setMintSwapMessage] = useState("");
   const [history, setHistory] = useState<HistoryItem[]>(() => {
     try {
-      const saved = localStorage.getItem("cashuHistory");
+      const saved = idbKeyValue.getItem(TASKIFY_STORE_WALLET, "cashuHistory");
       if (!saved) return [];
       const parsed: unknown = JSON.parse(saved);
       if (!Array.isArray(parsed)) return [];
@@ -1599,6 +3208,15 @@ export default function CashuWalletModal({
           }
           if (typeof raw.revertToken === "string" && raw.revertToken) {
             normalized.revertToken = raw.revertToken;
+          }
+          const isBountyAttachmentId = typeof id === "string" && id.startsWith("attach-bounty-");
+          if (raw.entryKind === "bounty-attachment") {
+            normalized.entryKind = "bounty-attachment";
+          } else if (isBountyAttachmentId) {
+            normalized.entryKind = "bounty-attachment";
+          }
+          if (typeof raw.relatedTaskTitle === "string" && raw.relatedTaskTitle.trim()) {
+            normalized.relatedTaskTitle = raw.relatedTaskTitle.trim();
           }
           const typeLabel = typeof raw.type === "string" ? raw.type.toLowerCase() : "";
           if (typeLabel === "lightning" || typeLabel === "ecash") {
@@ -1751,7 +3369,30 @@ export default function CashuWalletModal({
                 if (Number.isFinite(tokenStateErrorCount) && tokenStateErrorCount > 0) {
                   tokenState.errorCount = tokenStateErrorCount;
                 }
+                const summaryMarkedSpent =
+                  typeof normalized.summary === "string" && normalized.summary.includes("(spent)");
+                if (summaryMarkedSpent && tokenState.lastState !== "SPENT") {
+                  tokenState.lastState = "SPENT";
+                  tokenState.lastSummary = tokenState.lastSummary ?? "SPENT";
+                  tokenState.suppressChecks = true;
+                  tokenState.notifiedSpent = true;
+                  tokenState.proofs = tokenState.proofs.map((proof) =>
+                    proof.lastState ? proof : { ...proof, lastState: "SPENT" },
+                  );
+                }
                 normalized.tokenState = tokenState;
+              }
+            }
+          }
+          if (!normalized.tokenState && typeof normalized.detail === "string" && normalized.detail.trim()) {
+            const shouldInferTokenState =
+              normalized.entryKind === "bounty-attachment" ||
+              normalized.detailKind === "token" ||
+              isCashuTokenDetail(normalized.detail, normalized.detailKind);
+            if (shouldInferTokenState) {
+              const inferred = deriveHistoryTokenStateFromToken(normalized.detail);
+              if (inferred) {
+                normalized.tokenState = inferred;
               }
             }
           }
@@ -1798,7 +3439,7 @@ export default function CashuWalletModal({
     [captureFiatValueUsd],
   );
   const [showHistory, setShowHistory] = useState(false);
-  const [historyFilter, setHistoryFilter] = useState<"all" | "pending">("all");
+  const [historyFilter, setHistoryFilter] = useState<"all" | "pending" | "bounty">("all");
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [historyRevertState, setHistoryRevertState] = useState<
     Record<string, { status: "idle" | "pending" | "success" | "error"; message?: string }>
@@ -2015,6 +3656,7 @@ export default function CashuWalletModal({
         const successMessage = amt
           ? `Redeemed ${amt} sat${amt === 1 ? "" : "s"}${crossNote}`
           : `Redeemed token${crossNote}`;
+        const tokenState = deriveSpentHistoryTokenStateFromTokenRef.current(item.revertToken, Date.now());
         setHistory((prev) => {
           const updated = prev.map((entry) =>
             entry.id === item.id
@@ -2026,7 +3668,7 @@ export default function CashuWalletModal({
                   revertToken: undefined,
                   tokenState: undefined,
                 }
-              : entry
+              : entry,
           );
           return [
             buildHistoryEntry({
@@ -2040,6 +3682,7 @@ export default function CashuWalletModal({
               direction: "in",
               amountSat: amt || undefined,
               mintUrl: res.usedMintUrl ?? mintUrl ?? undefined,
+              ...(tokenState ? { tokenState } : {}),
             }),
             ...updated,
           ];
@@ -2374,20 +4017,157 @@ export default function CashuWalletModal({
           ...prev,
           [item.id]: { status: "success", message },
         }));
-      } catch (err: any) {
-        const message = err?.message || String(err);
-        setHistoryMintQuoteStates((prev) => ({
-          ...prev,
-          [item.id]: { status: "error", message },
-        }));
-      }
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      setHistoryMintQuoteStates((prev) => ({
+        ...prev,
+        [item.id]: { status: "error", message },
+      }));
+    }
+  },
+  [buildHistoryEntry, checkMintQuote, claimMint, mintUrl, setHistory, setHistoryMintQuoteStates, showToast],
+);
+  const removeHistoryEntryStates = useCallback(
+    (entryId: string) => {
+      setHistoryCheckStates((prev) => {
+        if (!(entryId in prev)) return prev;
+        const next = { ...prev };
+        delete next[entryId];
+        return next;
+      });
+      setHistoryMintQuoteStates((prev) => {
+        if (!(entryId in prev)) return prev;
+        const next = { ...prev };
+        delete next[entryId];
+        return next;
+      });
+      setHistoryRedeemStates((prev) => {
+        if (!(entryId in prev)) return prev;
+        const next = { ...prev };
+        delete next[entryId];
+        return next;
+      });
+      setHistoryRevertState((prev) => {
+        if (!(entryId in prev)) return prev;
+        const next = { ...prev };
+        delete next[entryId];
+        return next;
+      });
     },
-    [buildHistoryEntry, checkMintQuote, claimMint, mintUrl, setHistory, setHistoryMintQuoteStates, showToast],
+    [
+      setHistoryCheckStates,
+      setHistoryMintQuoteStates,
+      setHistoryRedeemStates,
+      setHistoryRevertState,
+    ],
+  );
+  const markHistoryEntryAsSpent = useCallback(
+    (entry: HistoryItem, timestamp: number): HistoryItem => {
+      const updated = markHistoryEntrySpentRaw(entry, timestamp);
+      return (updated as HistoryItem) ?? entry;
+    },
+    [markHistoryEntrySpentRaw],
+  );
+  const markHistoryEntriesOlderThan = useCallback(
+    (cutoffMs: number, options?: { suppressToast?: boolean }) => {
+      const normalizedCutoff = Math.max(0, cutoffMs);
+      const now = Date.now();
+      const threshold = now - normalizedCutoff;
+      const updatedIds: string[] = [];
+      setHistory((prev) => {
+        let changed = false;
+        const next = prev.map((entry) => {
+          if (!entry.tokenState) return entry;
+          const createdAt =
+            typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt)
+              ? entry.createdAt
+              : deriveTimestampFromId(entry.id);
+          if (createdAt > threshold) return entry;
+          const alreadySpent =
+            entry.tokenState.lastState === "SPENT" || entry.summary.includes("(spent)");
+          if (alreadySpent) return entry;
+          const updatedEntry = markHistoryEntryAsSpent(entry, now);
+          if (updatedEntry === entry) return entry;
+          changed = true;
+          updatedIds.push(entry.id);
+          return updatedEntry;
+        });
+        return changed ? next : prev;
+      });
+      if (!updatedIds.length) {
+        return 0;
+      }
+      setHistoryCheckStates((prev) => {
+        const next = { ...prev };
+        for (const id of updatedIds) {
+          next[id] = { status: "success", message: "Token marked spent" };
+        }
+        return next;
+      });
+      if (!options?.suppressToast) {
+        showToast(
+          `Marked ${updatedIds.length} history entr${updatedIds.length === 1 ? "y" : "ies"} as spent`,
+          3500,
+        );
+      }
+      return updatedIds.length;
+    },
+    [markHistoryEntryAsSpent, setHistory, setHistoryCheckStates, showToast],
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = (event: Event) => {
+      const customEvent = event as CustomEvent<MarkHistoryEntriesOldSpentEventDetail>;
+      const cutoffMs =
+        customEvent?.detail && typeof customEvent.detail.cutoffMs === "number"
+          ? customEvent.detail.cutoffMs
+          : 0;
+      markHistoryEntriesOlderThan(cutoffMs, { suppressToast: true });
+    };
+    window.addEventListener(MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT, handler);
+    return () => {
+      window.removeEventListener(MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT, handler);
+    };
+  }, [markHistoryEntriesOlderThan]);
+  const handleMarkHistoryTokenSpent = useCallback(
+    (item: HistoryItem) => {
+      if (!item.tokenState) return;
+      const timestamp = Date.now();
+      setHistory((prev) =>
+        prev.map((entry) => (entry.id === item.id ? markHistoryEntryAsSpent(entry, timestamp) : entry)),
+      );
+      setHistoryCheckStates((prev) => ({
+        ...prev,
+        [item.id]: { status: "success", message: "Token marked spent" },
+      }));
+      showToast("Token marked spent", 3000);
+    },
+    [markHistoryEntryAsSpent, setHistory, setHistoryCheckStates, showToast],
+  );
+  const handleDeleteHistoryEntry = useCallback(
+    (item: HistoryItem) => {
+      setHistory((prev) => prev.filter((entry) => entry.id !== item.id));
+      removeHistoryEntryStates(item.id);
+      setExpandedHistoryId((prev) => (prev === item.id ? null : prev));
+      showToast("History entry deleted", 2000);
+    },
+    [removeHistoryEntryStates, setHistory, setExpandedHistoryId, showToast],
   );
   const [npubCashIdentity, setNpubCashIdentity] = useState<{ npub: string; address: string } | null>(null);
   const [npubCashIdentityError, setNpubCashIdentityError] = useState<string | null>(null);
   const [npubCashClaimStatus, setNpubCashClaimStatus] = useState<"idle" | "checking" | "success" | "error">("idle");
   const [npubCashClaimMessage, setNpubCashClaimMessage] = useState("");
+  const deriveDefaultLightningAddress = useCallback(() => {
+    if (npubCashIdentity?.address) return npubCashIdentity.address;
+    const storedSk = kvStorage.getItem(LS_NOSTR_SK) || "";
+    if (!storedSk) return "";
+    try {
+      const identity = deriveNpubCashIdentity(storedSk);
+      return identity.address;
+    } catch {
+      return "";
+    }
+  }, [npubCashIdentity?.address]);
   const lightningAddressDisplay = useMemo(() => {
     const address = npubCashIdentity?.address?.trim();
     if (!address) return "";
@@ -2409,10 +4189,13 @@ export default function CashuWalletModal({
   const tokenStateCheckRunningRef = useRef(false);
   const nostrProcessedEventsRef = useRef<Set<string>>(new Set());
   const nostrLastCheckRef = useRef<number>(0);
-  const nostrCheckInFlightRef = useRef(false);
   const autoClaimQueueRef = useRef<IncomingPaymentRequest[]>([]);
   const autoClaimRunningRef = useRef(false);
   const nostrSubscriptionCloserRef = useRef<null | (() => void)>(null);
+  const handlePaymentRequestEventRef = useRef<
+    ((event: NostrEvent, options?: { updateClock?: boolean }) => Promise<void>) | null
+  >(null);
+  const deepSyncDMsRef = useRef<(() => Promise<void>) | null>(null);
   const initialTokenCheckIdsRef = useRef<Set<string>>(new Set());
   const proofStateSubscriptionsRef = useRef<Map<string, () => void>>(new Map());
   const proofStateSubscriptionMetadataRef = useRef<
@@ -2553,6 +4336,7 @@ export default function CashuWalletModal({
       if (!tokenState) return false;
       if (tokenState.lastState === "SPENT") return false;
       if (tokenState.suppressChecks === true) return false;
+      if (typeof entry.summary === "string" && entry.summary.includes("(spent)")) return false;
       const createdAt = typeof entry.createdAt === "number" ? entry.createdAt : null;
       const lastCheckedAt = typeof tokenState.lastCheckedAt === "number" ? tokenState.lastCheckedAt : null;
       const lastActivity = Math.max(createdAt ?? 0, lastCheckedAt ?? 0);
@@ -2593,12 +4377,19 @@ export default function CashuWalletModal({
     () => history.filter((entry) => isHistoryEntryPending(entry)),
     [history, isHistoryEntryPending],
   );
+  const bountyHistoryItems = useMemo(
+    () => history.filter((entry) => entry.entryKind === "bounty-attachment"),
+    [history],
+  );
   const filteredHistory = useMemo(() => {
     if (historyFilter === "pending") {
       return pendingHistoryItems;
     }
+    if (historyFilter === "bounty") {
+      return bountyHistoryItems;
+    }
     return history;
-  }, [history, historyFilter, pendingHistoryItems]);
+  }, [history, historyFilter, pendingHistoryItems, bountyHistoryItems]);
   const hasExpiringMintQuotes = useMemo(
     () => history.some((entry) => entry.mintQuote?.expiresAt),
     [history],
@@ -2703,6 +4494,24 @@ export default function CashuWalletModal({
           type="button"
           className="history-filter__option"
           onClick={() => {
+            setHistoryFilter("bounty");
+            setExpandedHistoryId(null);
+          }}
+          disabled={!bountyHistoryItems.length}
+          aria-pressed={historyFilter === "bounty"}
+        >
+          Bounties
+          {bountyHistoryItems.length ? (
+            <span className="history-filter__badge">{bountyHistoryItems.length}</span>
+          ) : null}
+        </button>
+        <span className="history-filter__divider" aria-hidden="true">
+          •
+        </span>
+        <button
+          type="button"
+          className="history-filter__option"
+          onClick={() => {
             setHistoryFilter("pending");
             setExpandedHistoryId(null);
           }}
@@ -2714,12 +4523,16 @@ export default function CashuWalletModal({
         </button>
       </div>
     );
-  }, [history.length, historyFilter, pendingHistoryItems.length]);
+  }, [history.length, historyFilter, pendingHistoryItems.length, bountyHistoryItems.length]);
   useEffect(() => {
     if (historyFilter === "pending" && pendingHistoryItems.length === 0) {
       setHistoryFilter("all");
+      return;
     }
-  }, [historyFilter, pendingHistoryItems.length]);
+    if (historyFilter === "bounty" && bountyHistoryItems.length === 0) {
+      setHistoryFilter("all");
+    }
+  }, [historyFilter, pendingHistoryItems.length, bountyHistoryItems.length]);
   useEffect(() => {
     if (!expandedHistoryId) return;
     const matchesFilter = filteredHistory.some((entry) => entry.id === expandedHistoryId);
@@ -2746,14 +4559,587 @@ export default function CashuWalletModal({
     return lnurlPayData.minSendable !== lnurlPayData.maxSendable;
   }, [isLnurlInput, lnurlPayData, normalizedLnInput]);
   const hasNwcConnection = !!nwcConnection;
+  const messageItemsByEventId = useMemo(() => {
+    const map = new Map<string, WalletMessageItem>();
+    messageItems.forEach((item) => {
+      const key = item.dmEventId?.trim();
+      if (key) map.set(key, item);
+    });
+    return map;
+  }, [messageItems]);
+  const paymentHistoryByEventId = useMemo(() => {
+    const map = new Map<string, HistoryItem>();
+    history.forEach((entry) => {
+      const match = PAYMENT_HISTORY_EVENT_ID_REGEX.exec(entry.id);
+      if (match?.[1]) {
+        map.set(match[1].toLowerCase(), entry);
+      }
+    });
+    return map;
+  }, [history]);
+  const dmPreviewForMessage = useCallback(
+    (msg: WalletDmMessage) => {
+      if (msg.attachment?.type === "payment") {
+        const historyEntry = paymentHistoryByEventId.get(msg.eventId.toLowerCase());
+        if (historyEntry?.summary) {
+          return historyEntry.summary;
+        }
+      }
+      return msg.preview;
+    },
+    [paymentHistoryByEventId],
+  );
+
+  const messageItemStatusRef = useRef<Map<string, WalletMessageItem["status"]>>(new Map());
+  useEffect(() => {
+    const seenIds = new Set<string>();
+    messageItems.forEach((item) => {
+      seenIds.add(item.id);
+      const prevStatus = messageItemStatusRef.current.get(item.id);
+      if (prevStatus === undefined) {
+        messageItemStatusRef.current.set(item.id, item.status);
+        return;
+      }
+      if (prevStatus !== item.status) {
+        messageItemStatusRef.current.set(item.id, item.status);
+        if (item.status === "accepted") {
+          const label = getWalletMessageStatusLabel(item.type, item.status);
+          if (label) {
+            showToast(label);
+          }
+        }
+      }
+    });
+    messageItemStatusRef.current.forEach((_, key) => {
+      if (!seenIds.has(key)) {
+        messageItemStatusRef.current.delete(key);
+      }
+    });
+  }, [messageItems, showToast]);
+  const ensurePeerProfile = useCallback(
+    async (pubkey: string) => {
+      const normalized = normalizeNostrPubkey(pubkey);
+      if (!normalized) return null;
+      const peerHex = compressedToRawHex(normalized).toLowerCase();
+      if (dmPeerProfilesRef.current.has(peerHex)) return dmPeerProfilesRef.current.get(peerHex)!;
+      const contactEntry = contacts.find((c) => {
+        const cn = normalizeNostrPubkey(c.npub || "");
+        if (!cn) return false;
+        return compressedToRawHex(cn).toLowerCase() === peerHex;
+      });
+      if (contactEntry) {
+        dmPeerProfilesRef.current.set(peerHex, {
+          username: contactEntry.username || contactEntry.name,
+          displayName: contactDisplayLabel(contactEntry),
+          lud16: contactEntry.address || undefined,
+          paymentRequest: contactEntry.paymentRequest || undefined,
+          nip05: contactEntry.nip05 || undefined,
+          picture: contactEntry.picture || undefined,
+          about: contactEntry.about || undefined,
+        });
+        setDmPeerProfilesVersion((v) => v + 1);
+        if (contactEntry.nip05) {
+          ensureNip05VerificationRef.current?.(
+            `dm-${peerHex}`,
+            contactEntry.nip05,
+            pubkey,
+            contactEntry.updatedAt ?? null,
+          );
+        }
+        return dmPeerProfilesRef.current.get(peerHex)!;
+      }
+      const cachedProfiles = loadContactProfileCache();
+      const cached = cachedProfiles[peerHex];
+      if (cached?.profile) {
+        dmPeerProfilesRef.current.set(peerHex, cached.profile);
+        setDmPeerProfilesVersion((v) => v + 1);
+        if (cached.profile.nip05) {
+          ensureNip05VerificationRef.current?.(
+            `dm-${peerHex}`,
+            cached.profile.nip05,
+            pubkey,
+            cached.updatedAt ?? null,
+          );
+        }
+        return cached.profile;
+      }
+      if (dmPeerProfileLoadingRef.current.has(peerHex)) return null;
+      dmPeerProfileLoadingRef.current.add(peerHex);
+      try {
+        const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
+        if (!relays.length) return null;
+        const session = await NostrSession.init(relays);
+        const events = await session.fetchEvents([{ kinds: [0], authors: [peerHex] }], relays);
+        const profileEvent = Array.isArray(events)
+          ? events.sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0]
+          : null;
+        if (profileEvent?.content) {
+          const profile = parseProfileContent(profileEvent.content);
+          dmPeerProfilesRef.current.set(peerHex, profile);
+          setDmPeerProfilesVersion((v) => v + 1);
+          if (profile.nip05) {
+            ensureNip05VerificationRef.current?.(
+              `dm-${peerHex}`,
+              profile.nip05,
+              pubkey,
+              (profileEvent.created_at || 0) * 1000,
+            );
+          }
+          return profile;
+        }
+      } catch (err) {
+        console.warn("Failed to load DM peer profile", err);
+      } finally {
+        dmPeerProfileLoadingRef.current.delete(peerHex);
+      }
+      return null;
+    },
+    [
+      compressedToRawHex,
+      contacts,
+      defaultNostrRelays,
+      normalizeNostrPubkey,
+      parseProfileContent,
+    ],
+  );
+  const getPeerProfile = useCallback(
+    (pubkey: string): ContactProfile | undefined => {
+      const normalized = normalizeNostrPubkey(pubkey);
+      if (!normalized) return undefined;
+      const peerHex = compressedToRawHex(normalized).toLowerCase();
+      return dmPeerProfilesRef.current.get(peerHex);
+    },
+    [compressedToRawHex, normalizeNostrPubkey],
+  );
+  const handleDmEvent = useCallback(
+    async (event: NostrEvent) => {
+      if (!event?.id) return;
+      if (dmProcessedEventsRef.current.has(event.id)) return;
+      if (dmDeletedEventsRef.current.has(event.id)) {
+        dmProcessedEventsRef.current.add(event.id);
+        return;
+      }
+      const identity = ensureNostrIdentity();
+      if (!identity) return;
+      const decrypted = await decryptNostrPaymentMessage(event, identity.pubkey, identity.secret);
+      if (!decrypted?.content) {
+        dmProcessedEventsRef.current.add(event.id);
+        return;
+      }
+      const peerPubkey = resolvePeerPubkey(
+        event,
+        identity.pubkey,
+        decrypted.senderPubkey,
+        decrypted.recipientPubkey,
+      );
+      const normalizedPeer = (peerPubkey || event.pubkey || "").toLowerCase();
+      if (normalizedPeer && dmBlockedPeersRef.current.has(normalizedPeer)) {
+        dmProcessedEventsRef.current.add(event.id);
+        return;
+      }
+      if (peerPubkey) {
+        void ensurePeerProfile(peerPubkey);
+      }
+
+      let attachment: WalletDmAttachment | undefined;
+      let preview = truncatePreview(decrypted.content, 140);
+      const share = parseShareEnvelope(decrypted.content);
+      const matchedItem = messageItems.find((item) => item.dmEventId && item.dmEventId === event.id);
+
+      if (share && share.item.type === "board") {
+        attachment = {
+          type: "board",
+          boardName: share.item.boardName || "Shared board",
+          boardId: share.item.boardId,
+          taskId: matchedItem?.id ?? null,
+          status: matchedItem?.status ?? null,
+        };
+        preview = `Shared board: ${share.item.boardName || "Board"}`;
+      } else if (share && share.item.type === "contact") {
+        const contactNpub = normalizeNostrPubkey(share.item.npub);
+        if (contactNpub) {
+          void ensurePeerProfile(contactNpub);
+        }
+          attachment = {
+            type: "contact",
+            contactName: share.item.name || share.item.displayName || share.item.username || "Shared contact",
+            displayName: share.item.displayName,
+            username: share.item.username,
+            npub: share.item.npub,
+            nip05: share.item.nip05,
+            address: share.item.lud16 || (share.item as any).address || null,
+            picture: share.item.picture,
+            taskId: matchedItem?.id ?? null,
+            status: matchedItem?.status ?? null,
+          };
+        preview = `Shared contact${share.item.name ? `: ${share.item.name}` : ""}`;
+      } else if (share && share.item.type === "task") {
+        attachment = {
+          type: "task",
+          task: share.item,
+          taskId: matchedItem?.id ?? null,
+          status: matchedItem?.status ?? null,
+        };
+        preview = `Shared task${share.item.title ? `: ${share.item.title}` : ""}`;
+      } else {
+        const paymentPayload = parseIncomingPaymentMessage(decrypted.content);
+        if (paymentPayload) {
+          let amountSat: number | null = null;
+          let detail: string | null = null;
+          if (typeof paymentPayload === "object") {
+            const amountRaw =
+              (paymentPayload as any).amount ??
+              (paymentPayload as any).amountSat ??
+              (paymentPayload as any).amountMsat ??
+              (paymentPayload as any).amount_msat;
+            amountSat =
+              typeof amountRaw === "number"
+                ? Math.max(0, Math.floor((amountRaw >= 1_000_000 ? amountRaw / 1000 : amountRaw)))
+                : null;
+            detail = typeof (paymentPayload as any).memo === "string" ? (paymentPayload as any).memo : null;
+          } else if (typeof paymentPayload === "string") {
+            try {
+              const decoded = getDecodedToken(paymentPayload);
+              const entries: any[] = decoded
+                ? Array.isArray((decoded as any)?.token)
+                  ? (decoded as any).token
+                  : (decoded as any)?.proofs
+                    ? [decoded]
+                    : []
+                : [];
+              const decodedAmount = entries.reduce(
+                (outer, entry) => outer + sumProofAmounts(Array.isArray(entry?.proofs) ? entry.proofs : []),
+                0,
+              );
+              amountSat = decodedAmount > 0 ? decodedAmount : null;
+            } catch {
+              amountSat = null;
+            }
+          }
+          attachment = {
+            type: "payment",
+            amountSat,
+            detail,
+            raw: decrypted.content,
+          };
+          preview =
+            amountSat && amountSat > 0
+              ? `Received ${amountSat} sats via Nostr`
+              : "Payment token received";
+        }
+      }
+
+      const createdAt = Number(event.created_at) || Math.floor(Date.now() / 1000);
+      const normalizedSender = decrypted.senderPubkey
+        ? normalizeNostrPubkey(decrypted.senderPubkey) ?? decrypted.senderPubkey
+        : null;
+      const normalizedIdentity = normalizeNostrPubkey(identity.pubkey) ?? identity.pubkey;
+      const isIncoming =
+        normalizedSender != null ? normalizedSender !== normalizedIdentity : event.pubkey !== identity.pubkey;
+      if (isIncoming && attachment?.type === "payment") {
+        const handler = handlePaymentRequestEventRef.current;
+        if (handler) {
+          void handler(event, { updateClock: true });
+        }
+      }
+      const message: WalletDmMessage = {
+        id: crypto.randomUUID(),
+        eventId: event.id,
+        peerPubkey: (peerPubkey || event.pubkey).toLowerCase(),
+        isIncoming,
+        createdAt,
+        content: decrypted.content,
+        preview,
+        attachment: attachment ?? { type: "text" },
+      };
+
+      dmProcessedEventsRef.current.add(event.id);
+      setDmMessages((prev) => {
+        if (prev.some((m) => m.eventId === event.id)) return prev;
+        const next = [...prev, message].sort((a, b) => a.createdAt - b.createdAt);
+        if (next.length > 400) next.shift();
+        return next;
+      });
+    },
+    [
+      decryptNostrPaymentMessage,
+      ensureNostrIdentity,
+      ensurePeerProfile,
+      messageItems,
+      normalizeNostrPubkey,
+      parseIncomingPaymentMessage,
+      resolvePeerPubkey,
+    ],
+  );
+  const startDmSubscription = useCallback(async () => {
+    stopDmSubscription();
+    const identity = ensureNostrIdentity();
+    if (!identity) return;
+    const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
+    if (!relays.length) return;
+    const now = Math.floor(Date.now() / 1000);
+    const since = Math.max(0, now - DM_SYNC_LOOKBACK_SECONDS);
+    try {
+      const session = await NostrSession.init(relays);
+      const filters = [
+        { kinds: [4, 1059], "#p": [identity.pubkey], since },
+        { kinds: [4, 1059], authors: [identity.pubkey], since },
+      ];
+      const managed = await session.subscribe(filters, {
+        relayUrls: relays,
+        onEvent: (ev) => {
+          void handleDmEvent(ev as NostrEvent);
+        },
+      });
+      dmSubscriptionCloseRef.current = () => {
+        try {
+          managed.release();
+        } catch {
+          // ignore
+        }
+      };
+
+      const history = await session.fetchEvents(filters, relays);
+      const ordered = history
+        .filter((ev) => ev && (ev.kind === 4 || ev.kind === 1059))
+        .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+      for (const ev of ordered) {
+        await handleDmEvent(ev as NostrEvent);
+      }
+      dmLastSyncRef.current = Date.now();
+    } catch (err) {
+      console.warn("Failed to sync DMs", err);
+    }
+  }, [DM_SYNC_LOOKBACK_SECONDS, defaultNostrRelays, ensureNostrIdentity, handleDmEvent, stopDmSubscription]);
+  const contactIndex = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        name: string;
+        picture?: string;
+      }
+    >();
+    contacts.forEach((contact) => {
+      const normalized = normalizeNostrPubkey(contact.npub || "");
+      if (!normalized) return;
+      const compressed = normalized.toLowerCase();
+      const raw = compressedToRawHex(normalized).toLowerCase();
+      const entry = {
+        name: contactDisplayLabel(contact),
+        picture: contact.picture?.trim() || undefined,
+      };
+      map.set(compressed, entry);
+      map.set(raw, entry);
+    });
+    return map;
+  }, [compressedToRawHex, contacts, normalizeNostrPubkey]);
+  const peerLabelFor = useCallback(
+    (peerHex: string) => {
+      const contact = contactIndex.get(peerHex);
+      const profile = dmPeerProfilesRef.current.get(peerHex);
+      const npub = formatNpubDisplay(peerHex);
+      const verifiedNip05 =
+        profile?.nip05 && isNip05VerifiedForRef.current?.(`dm-${peerHex}`, profile.nip05, npub)
+          ? profile.nip05
+          : null;
+      const label =
+        (profile?.displayName && profile.displayName.trim()) ||
+        (contact?.name && contact.name.trim()) ||
+        (verifiedNip05 ? verifiedNip05 : "") ||
+        (profile?.username && profile.username.trim()) ||
+        shortenNpubDisplay(npub) ||
+        peerHex.slice(0, 10);
+      const subtitle = verifiedNip05 || profile?.username || undefined;
+      const picture = contact?.picture || (profile?.picture || "").trim() || undefined;
+      return { label, subtitle, picture, verifiedNip05 };
+    },
+    [contactIndex, formatNpubDisplay],
+  );
+  const sharedContactMetaFor = useCallback(
+    (npub?: string | null, fallbackName?: string | null, fallbackPicture?: string | null) => {
+      const normalized = npub ? normalizeNostrPubkey(npub) : null;
+      const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : null;
+      const profile = hex ? dmPeerProfilesRef.current.get(hex) : undefined;
+      const npubDisplay = hex ? formatNpubDisplay(hex) : formatNpubDisplay(npub);
+      const verifiedNip05 =
+        profile?.nip05 &&
+        hex &&
+        isNip05VerifiedForRef.current?.(`dm-${hex}`, profile.nip05, npubDisplay || npub || hex)
+          ? profile.nip05
+          : null;
+      const label =
+        (profile?.displayName && profile.displayName.trim()) ||
+        (fallbackName && fallbackName.trim()) ||
+        (verifiedNip05 ? verifiedNip05 : "") ||
+        (profile?.username && profile.username.trim()) ||
+        (npubDisplay ? shortenNpubDisplay(npubDisplay, 10, 6) : hex?.slice(0, 12) || "Contact");
+      const subtitle = verifiedNip05 || profile?.username || (npubDisplay || undefined);
+      const picture = (profile?.picture || fallbackPicture || "").trim() || undefined;
+      return {
+        label,
+        subtitle,
+        picture,
+        verifiedNip05,
+        npub: npubDisplay || formatNpubDisplay(npub) || "",
+      };
+    },
+    [compressedToRawHex, formatNpubDisplay, normalizeNostrPubkey],
+  );
+  useEffect(() => {
+    if (!dmMessages.length) return;
+    const targets = new Set<string>();
+    dmMessages.forEach((msg) => {
+      if (msg.peerPubkey) {
+        const normalized = normalizeNostrPubkey(msg.peerPubkey);
+        if (normalized) targets.add(normalized);
+      }
+      if (msg.attachment?.type === "contact" && msg.attachment.npub) {
+        const normalized = normalizeNostrPubkey(msg.attachment.npub);
+        if (normalized) targets.add(normalized);
+      }
+    });
+    targets.forEach((pubkey) => {
+      void ensurePeerProfile(pubkey);
+    });
+  }, [dmMessages, ensurePeerProfile]);
+  const dmThreads = useMemo(() => {
+    if (!dmMessages.length) return [] as WalletDmThread[];
+    const threads = new Map<string, WalletDmThread>();
+    const contactKeys = new Set(Array.from(contactIndex.keys()));
+    dmMessages.forEach((msg) => {
+      const preview = dmPreviewForMessage(msg);
+      const peer = msg.peerPubkey.toLowerCase();
+      const existing = threads.get(peer);
+      const base: WalletDmThread =
+        existing ??
+        {
+          peerPubkey: peer,
+          messages: [],
+          lastCreatedAt: 0,
+          lastPreview: "",
+          isStranger: !contactKeys.has(peer),
+        };
+      base.messages.push(msg);
+      if (msg.createdAt > base.lastCreatedAt) {
+        base.lastCreatedAt = msg.createdAt;
+        base.lastPreview = preview;
+      }
+      threads.set(peer, base);
+    });
+    const ordered = Array.from(threads.values()).map((thread) => ({
+      ...thread,
+      messages: [...thread.messages].sort((a, b) => a.createdAt - b.createdAt),
+    }));
+    ordered.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
+    return ordered;
+  }, [contactIndex, dmMessages, dmPreviewForMessage]);
+  const activeThread = useMemo(
+    () => (activeThreadPeer ? dmThreads.find((t) => t.peerPubkey === activeThreadPeer) ?? null : null),
+    [activeThreadPeer, dmThreads],
+  );
+  useEffect(() => {
+    if (dmView === "thread" && !activeThread) {
+      setDmView("list");
+      setActiveThreadPeer(null);
+    }
+  }, [activeThread, dmView]);
+  const threadUnreadMap = useMemo(() => {
+    const map = new Map<string, number>();
+    dmThreads.forEach((thread) => {
+      const count = thread.messages.reduce((acc, msg) => {
+        const item = messageItemsByEventId.get(msg.eventId);
+        if (!item) return acc;
+        const status = item.status;
+        if (status === "accepted" || status === "deleted" || status === "read") return acc;
+        return acc + 1;
+      }, 0);
+      map.set(thread.peerPubkey, count);
+    });
+    return map;
+  }, [dmThreads, messageItemsByEventId]);
+  const strangerUnreadCount = useMemo(
+    () =>
+      dmThreads.reduce((acc, thread) => {
+        if (!thread.isStranger) return acc;
+        return acc + (threadUnreadMap.get(thread.peerPubkey) || 0);
+      }, 0),
+    [dmThreads, threadUnreadMap],
+  );
+  const mainUnreadCount = useMemo(
+    () =>
+      dmThreads.reduce((acc, thread) => {
+        if (thread.isStranger) return acc;
+        return acc + (threadUnreadMap.get(thread.peerPubkey) || 0);
+      }, 0),
+    [dmThreads, threadUnreadMap],
+  );
+  const activeThreadBlocked = activeThread
+    ? dmBlockedPeersRef.current.has(activeThread.peerPubkey.toLowerCase())
+    : false;
+  useEffect(() => {
+    if (!activeThread) return;
+    const unreadIds = activeThread.messages
+      .map((m) => m.eventId)
+      .filter((id) => {
+        const item = messageItemsByEventId.get(id);
+        if (!item) return false;
+        const status = item.status;
+        return status !== "accepted" && status !== "deleted" && status !== "read";
+      });
+    if (unreadIds.length) {
+      onMarkMessagesRead(unreadIds);
+    }
+  }, [activeThread, messageItemsByEventId, onMarkMessagesRead]);
+  const toggleBlockPeer = useCallback(
+    (peerPubkey: string) => {
+      const key = (peerPubkey || "").toLowerCase().trim();
+      if (!key) return;
+      const next = new Set(dmBlockedPeersRef.current);
+      const isBlocking = !next.has(key);
+      if (isBlocking) {
+        next.add(key);
+      } else {
+        next.delete(key);
+      }
+      dmBlockedPeersRef.current = next;
+      persistBlockedPeers(next);
+      setDmBlockedPeersVersion((v) => v + 1);
+      setDmMessageActions(null);
+      cancelDmLongPress();
+      showToast(isBlocking ? "User blocked" : "User unblocked", isBlocking ? 2000 : 1600);
+    },
+    [cancelDmLongPress, persistBlockedPeers, showToast],
+  );
+  const handleAddPeerToContacts = useCallback(
+    (peerPubkey: string) => {
+      if (!peerPubkey) return;
+      const npub = formatNpub(peerPubkey);
+      const profile = getPeerProfile(peerPubkey);
+      const label = peerLabelFor(peerPubkey);
+      const contact = upsertContact({
+        npub,
+        name: profile?.displayName || profile?.username || label.label,
+        displayName: profile?.displayName || label.label,
+        username: profile?.username,
+        address: profile?.lud16 || "",
+        picture: profile?.picture,
+      });
+      if (contact) {
+        showToast("Added to contacts", 2000);
+      } else {
+        showToast("Unable to add contact", 2400);
+      }
+    },
+    [formatNpub, getPeerProfile, peerLabelFor, showToast, upsertContact],
+  );
   const sortedContacts = useMemo(() => {
     return [...contacts].sort((a, b) => {
-      const baseA = (a.name || a.address || a.paymentRequest || "").toLowerCase();
-      const baseB = (b.name || b.address || b.paymentRequest || "").toLowerCase();
+      const baseA = (a.name || a.address || a.nip05 || a.npub || "").toLowerCase();
+      const baseB = (b.name || b.address || b.nip05 || b.npub || "").toLowerCase();
       if (baseA < baseB) return -1;
       if (baseA > baseB) return 1;
-      const fallbackA = a.address || a.paymentRequest || "";
-      const fallbackB = b.address || b.paymentRequest || "";
+      const fallbackA = a.address || a.npub || "";
+      const fallbackB = b.address || b.npub || "";
       return fallbackA.localeCompare(fallbackB);
     });
   }, [contacts]);
@@ -2762,77 +5148,228 @@ export default function CashuWalletModal({
     return sortedContacts.filter((contact) =>
       contactsContext === "lightning"
         ? contact.address.trim().length > 0
-        : contact.paymentRequest.trim().length > 0,
+        : contactHasNpub(contact) || contact.paymentRequest.trim().length > 0,
     );
   }, [contactsContext, sortedContacts]);
+  const shareRecipientOptions = useMemo(() => {
+    const sourceHex = shareContactSource?.npub
+      ? compressedToRawHex(
+          normalizeNostrPubkey(shareContactSource.npub) ?? shareContactSource.npub,
+        ).toLowerCase()
+      : null;
+    return contacts.filter((contact) => {
+      if (!contactHasNpub(contact)) return false;
+      const normalized = normalizeNostrPubkey(contact.npub);
+      const contactHex = normalized
+        ? compressedToRawHex(normalized).toLowerCase()
+        : contact.npub.trim().toLowerCase();
+      if (sourceHex && contactHex && contactHex === sourceHex) return false;
+      return true;
+    });
+  }, [compressedToRawHex, contacts, normalizeNostrPubkey, shareContactSource]);
+  const handleShareContactToContact = useCallback(
+    async (recipient: Contact) => {
+      if (!shareContactSource) {
+        setShareContactStatus("Select a contact to share first.");
+        return;
+      }
+      const sourceNpub = formatContactNpub(shareContactSource.npub);
+      if (!sourceNpub) {
+        setShareContactStatus("This contact is missing a valid npub.");
+        return;
+      }
+      const normalizedRecipient = normalizeNostrPubkey(recipient.npub);
+      if (!normalizedRecipient) {
+        setShareContactStatus("Recipient contact is missing a valid npub.");
+        return;
+      }
+      const { identity, reason } = readNostrIdentity();
+      if (!identity) {
+        setShareContactStatus(reason || "Add your Taskify Nostr key in Settings → Nostr.");
+        return;
+      }
+      const storedRelays = (() => {
+        try {
+          const raw = kvStorage.getItem(LS_NOSTR_RELAYS);
+          const parsed = raw ? JSON.parse(raw) : null;
+          if (Array.isArray(parsed)) {
+            return parsed.map((r) => (typeof r === "string" ? r.trim() : "")).filter(Boolean);
+          }
+        } catch {
+          // ignore
+        }
+        return [];
+      })();
+      const relaySource = Array.isArray(shareContactSource.relays)
+        ? shareContactSource.relays
+        : storedRelays.length
+          ? storedRelays
+          : defaultNostrRelays;
+      const relayList = Array.from(
+        new Set(
+          [
+            ...relaySource,
+            ...defaultNostrRelays,
+          ]
+            .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
+            .filter(Boolean),
+        ),
+      );
+      if (!relayList.length) {
+        setShareContactStatus("Add at least one relay first.");
+        return;
+      }
+      setShareContactBusy(true);
+      setShareContactStatus(null);
+      try {
+        const envelope = buildContactShareEnvelope({
+          type: "contact",
+          npub: sourceNpub,
+          // Keep payload lean to avoid oversized NIP-44 plaintexts; other fields can be fetched later.
+          relays: shareContactSource.relays,
+          sender: {
+            npub: formatNpub(identity.pubkey),
+            name: profileForm.displayName || profileForm.username || undefined,
+          },
+        });
+        await sendShareMessage(envelope, normalizedRecipient, identity.secret, relayList);
+        setShareContactPickerOpen(false);
+        setShareContactSource(null);
+        showToast(`Contact sent to ${contactPrimaryName(recipient)}`, 3000);
+      } catch (err: any) {
+        setShareContactStatus(err?.message || "Unable to send contact.");
+      } finally {
+        setShareContactBusy(false);
+      }
+    },
+    [
+      defaultNostrRelays,
+      formatContactNpub,
+      formatNpub,
+      normalizeNostrPubkey,
+      profileForm.displayName,
+      profileForm.username,
+      readNostrIdentity,
+      shareContactSource,
+      showToast,
+    ],
+  );
+  const publicFollowOptions = useMemo(
+    () => {
+      const seen = new Set<string>();
+      return (contactSyncMeta.publicFollows || [])
+        .map((follow) => {
+          const pubkey = (follow.pubkey || "").trim();
+          if (!pubkey) return null;
+          const key = pubkey.toLowerCase();
+          if (seen.has(key)) return null;
+          seen.add(key);
+          const username = sanitizeUsername(follow.username || "");
+          const nip05 = (follow.nip05 || "").trim();
+          return {
+            pubkey,
+            npub: formatNpub(pubkey),
+            relay: (follow.relay || "").trim(),
+            petname: (follow.petname || "").trim(),
+            username: username || undefined,
+            nip05: nip05 || undefined,
+          };
+        })
+        .filter(Boolean) as Array<{
+          pubkey: string;
+          npub: string;
+          relay?: string;
+          petname?: string;
+          username?: string;
+          nip05?: string;
+        }>;
+    },
+    [contactSyncMeta.publicFollows, formatNpub],
+  );
   const lightningContactCount = useMemo(
     () => contacts.reduce((count, contact) => (contact.address.trim().length > 0 ? count + 1 : count), 0),
     [contacts],
   );
-  const openContactsManager = useCallback(() => {
-    resetContactForm();
-    setContactsManagerOpen(true);
-  }, [resetContactForm]);
-  const closeContactsManager = useCallback(() => {
-    setContactsManagerOpen(false);
-    resetContactForm();
-  }, [resetContactForm]);
+  const truncateContactName = (value: string, maxLength = 32) => {
+    const normalized = (value || "").trim();
+    if (normalized.length <= maxLength) return normalized || "Contact";
+    const ellipsis = "…";
+    const lead = Math.max(6, Math.min(18, Math.floor((maxLength - 1) / 2)));
+    const tail = Math.max(4, maxLength - lead - 1);
+    return `${normalized.slice(0, lead)}${ellipsis}${normalized.slice(-tail)}`;
+  };
+  const truncateContactValue = (value: string, maxLength = 48) => {
+    const normalized = (value || "").trim();
+    if (normalized.length <= maxLength) return normalized;
+    const ellipsis = "…";
+    const lead = Math.max(8, Math.min(18, Math.floor((maxLength - 1) / 2)));
+    const tail = Math.max(6, maxLength - lead - 1);
+    return `${normalized.slice(0, lead)}${ellipsis}${normalized.slice(-tail)}`;
+  };
   const contactsPanelContent = (context: "lightning" | "ecash") => {
     if (contactsContext !== context) return null;
     const hasContacts = visibleContacts.length > 0;
-    const selectionLabel = context === "ecash"
-      ? hasContacts
-        ? "Select a contact to use their eCash payment request."
-        : "No saved eCash contacts yet. Use Edit contacts to add one."
-      : hasContacts
-        ? "Select a contact to use their lightning address."
-        : "No saved lightning contacts yet. Use Edit contacts to add one.";
     const contactPanelHeight = CONTACT_PANEL_HEIGHT;
     return (
       <div
-        className="flex flex-col gap-3 bg-surface-muted border border-surface rounded-2xl p-3 text-xs overflow-hidden"
+        className="flex flex-col gap-3 text-xs"
         style={{ minHeight: contactPanelHeight, maxHeight: contactPanelHeight }}
       >
-        <div className="flex items-start justify-between gap-2">
-          <div className="text-secondary text-[11px]">{selectionLabel}</div>
-          <button
-            className="ghost-button button-sm pressable"
-            type="button"
-            onClick={openContactsManager}
-          >
-            Edit contacts
-          </button>
-        </div>
-        {hasContacts ? (
-          <div className="flex-1 min-h-0 space-y-2 overflow-y-auto pr-1">
-            {visibleContacts.map((contact) => (
-              <div key={contact.id} className="flex flex-col gap-1 rounded-xl border border-transparent bg-surface px-3 py-2">
-                <button
-                  type="button"
-                  className="ghost-button button-sm pressable w-full text-left truncate"
-                  onClick={() => handleSelectContact(contact)}
-                >
-                  {contact.name?.trim() || contact.address || contact.paymentRequest || contact.npub}
-                </button>
-                {contact.address.trim() && (
-                  <div className="contact-entry__value text-[11px] text-secondary">⚡ {contact.address}</div>
-                )}
-                {contact.paymentRequest.trim() && (
-                  <div className="contact-entry__value text-[11px] text-secondary">🥜 {contact.paymentRequest}</div>
-                )}
-                {contact.npub.trim() && (
-                  <div className="contact-entry__value text-[11px] text-secondary">🔐 {contact.npub}</div>
-                )}
+        <div className="contacts-list-view flex-1 min-h-0">
+          {hasContacts ? (
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+              <div className="contact-list">
+                {visibleContacts.map((contact) => {
+                  const displayName = contactDisplayLabel(contact);
+                  const displayNameTrimmed = truncateContactName(displayName);
+                  const subtitle = contactSubtitle(contact) || "No details added";
+                  const subtitleIsNip05 =
+                    !!contact.nip05 &&
+                    !!subtitle &&
+                    normalizeNip05(contact.nip05) === normalizeNip05(subtitle);
+                  const nip05Verified =
+                    subtitleIsNip05 &&
+                    isNip05VerifiedForRef.current?.(contact.id, contact.nip05, contact.npub);
+                  const photo = contact.picture?.trim();
+                  return (
+                    <button
+                      key={contact.id}
+                      type="button"
+                      className="contact-row pressable"
+                      onClick={() => handleSelectContact(contact)}
+                    >
+                      <div className={photo ? "contact-avatar contact-avatar--image" : "contact-avatar"}>
+                        {photo ? (
+                          <img src={photo} alt={displayName} className="contact-avatar__img" />
+                        ) : (
+                          contactInitials(displayName)
+                        )}
+                      </div>
+                      <div className="contact-row__text">
+                        <div className="contact-row__name">{displayNameTrimmed}</div>
+                        <div
+                          className={`contact-row__meta${subtitleIsNip05 ? " contact-row__meta--nip05" : ""}`}
+                        >
+                          <span className="contact-row__meta-text">{subtitle}</span>
+                          {subtitleIsNip05 && nip05Verified && (
+                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                          )}
+                        </div>
+                      </div>
+                      <span className="contact-chevron">›</span>
+                    </button>
+                  );
+                })}
               </div>
-            ))}
-          </div>
-        ) : (
-          <div className="text-secondary">
-            {context === "ecash"
-              ? "Save an eCash payment request from the contacts manager."
-              : "Save a lightning address from the contacts manager."}
-          </div>
-        )}
+            </div>
+          ) : (
+            <div className="contact-empty text-secondary">
+              {context === "ecash"
+                ? "Add a contact with an npub from the Contacts tab."
+                : "Save a lightning address from the Contacts tab."}
+            </div>
+          )}
+        </div>
       </div>
     );
   };
@@ -2893,7 +5430,15 @@ export default function CashuWalletModal({
   }, [lnurlWithdrawState]);
 
   useEffect(() => {
+    skipContactsEventRef.current = true;
     saveContactsToStorage(contacts);
+    if (skipContactsTimerRef.current) {
+      clearTimeout(skipContactsTimerRef.current);
+    }
+    skipContactsTimerRef.current = setTimeout(() => {
+      skipContactsEventRef.current = false;
+      skipContactsTimerRef.current = null;
+    }, 0);
   }, [contacts]);
 
   useEffect(() => {
@@ -2905,8 +5450,13 @@ export default function CashuWalletModal({
   }, [contactsOpen, resetContactForm]);
 
   const handlePaymentRequestScan = useCallback(async (encodedRequest: string): Promise<boolean> => {
+    const trimmed = encodedRequest?.trim() || "";
+    if (!trimmed) return false;
+    if (!/^creq/i.test(trimmed)) {
+      return false;
+    }
     try {
-      const request = decodePaymentRequest(encodedRequest);
+      const request = decodePaymentRequest(trimmed);
       if (request.mints && request.mints.length) {
         if (!mintUrl) {
           throw new Error("Set an active mint before fulfilling payment requests");
@@ -2921,7 +5471,7 @@ export default function CashuWalletModal({
         throw new Error(`Payment request unit ${request.unit} does not match active mint unit ${info.unit}`);
       }
 
-      setPaymentRequestState({ encoded: encodedRequest, request });
+      setPaymentRequestState({ encoded: trimmed, request });
       const numericAmount = Number(request.amount);
       setPaymentRequestManualAmount(
         Number.isFinite(numericAmount) && numericAmount > 0 ? String(Math.floor(numericAmount)) : "",
@@ -2934,7 +5484,7 @@ export default function CashuWalletModal({
       setScannerMessage("");
       return true;
     } catch (err: any) {
-      console.error("Payment request scan failed", err);
+      console.warn("Payment request scan failed", err);
       setPaymentRequestState(null);
       setPaymentRequestStatus("error");
       setPaymentRequestMessage("");
@@ -2946,114 +5496,784 @@ export default function CashuWalletModal({
 
   const openContactsFor = useCallback(
     (context: "lightning" | "ecash") => {
-      setContactFormVisible(false);
-      setContactFormError("");
-      setContactForm({ id: null, name: "", address: "", paymentRequest: "" });
       contactsContextRef.current = context;
       setContactsContext(context);
       setContactsOpen(true);
     },
-    [setContactForm, setContactFormError, setContactFormVisible, setContactsContext, setContactsOpen],
+    [setContactsContext, setContactsOpen],
   );
 
   const closeContactsSheet = useCallback(() => {
     setContactsOpen(false);
   }, []);
 
-  const handleSelectContact = useCallback(
+  const applyLightningContact = useCallback(
     (contact: Contact) => {
-      const context = contactsContextRef.current;
-      if (context === "lightning") {
-        if (!contact.address.trim()) {
-          alert("This contact does not have a lightning address stored.");
-          return;
-        }
-        setLnInput(contact.address);
-        setLightningSendView("address");
-        setLnAddrAmt("");
-        setLnState("idle");
-        setLnError("");
-        setTimeout(() => {
-          lnRef.current?.focus();
-        }, 0);
-      } else if (context === "ecash") {
-        if (!contact.paymentRequest.trim()) {
-          alert("This contact does not have an eCash payment request stored.");
-          return;
-        }
-        void handlePaymentRequestScan(contact.paymentRequest);
+      if (!contact.address.trim()) {
+        alert("This contact does not have a lightning address stored.");
+        return false;
       }
-      setContactsOpen(false);
-      resetContactForm();
-    },
-    [handlePaymentRequestScan, lnRef, resetContactForm, setLnAddrAmt, setLnError, setLnInput, setLnState],
-  );
-
-  const handleDeleteContact = useCallback((id: string) => {
-    setContacts((prev) => prev.filter((c) => c.id !== id));
-  }, []);
-
-  const handleSubmitContact = useCallback(
-    async (ev?: React.FormEvent) => {
-      if (ev) ev.preventDefault();
-      const name = contactForm.name.trim();
-      const address = contactForm.address.trim();
-      const paymentRequest = contactForm.paymentRequest.trim();
-      const npub = contactForm.npub.trim();
-      if (!address && !paymentRequest && !npub) {
-        setContactFormError("Add a lightning address, eCash payment request, or npub");
-        return;
-      }
-      const isEditing = !!contactForm.id;
-      const contact: Contact = {
-        id: contactForm.id || makeContactId(),
-        name,
-        address,
-        paymentRequest,
-        npub,
-      };
-      setContacts((prev) => {
-        const exists = prev.some((c) => c.id === contact.id);
-        if (exists) {
-          return prev.map((c) => (c.id === contact.id ? contact : c));
-        }
-        return [...prev, contact];
-      });
-      setContactFormError("");
-      const context = contactsContextRef.current;
-      const shouldAutoApply = !contactsManagerOpen && context !== null;
-      if (!isEditing && shouldAutoApply) {
-        setContactsOpen(false);
-      }
-      resetContactForm();
-      if (shouldAutoApply && context === "lightning" && address) {
-        setLnInput(address);
-        setLnAddrAmt("");
-        setLnState("idle");
-        setLnError("");
-        setTimeout(() => {
-          lnRef.current?.focus();
-        }, 0);
-      }
-      if (shouldAutoApply && context === "ecash" && paymentRequest) {
-        const success = await handlePaymentRequestScan(paymentRequest);
-        if (!success) {
-          alert("Unable to process eCash payment request. Check the value and try again.");
-        }
-      }
+      setSendMode("lightning");
+      setShowSendOptions(true);
+      setLnInput(contact.address);
+      setLightningSendView("address");
+      setLnAddrAmt("");
+      setLnState("idle");
+      setLnError("");
+      setTimeout(() => {
+        lnRef.current?.focus();
+      }, 0);
+      return true;
     },
     [
-      contactForm,
-      contactsManagerOpen,
-      handlePaymentRequestScan,
       lnRef,
-      resetContactForm,
       setLnAddrAmt,
       setLnError,
       setLnInput,
       setLnState,
+      setLightningSendView,
+      setSendMode,
+      setShowSendOptions,
     ],
   );
+
+  const resolveNip17Timestamp = useCallback(() => {
+    if (nip17TimestampMode === "now") {
+      return Math.floor(Date.now() / 1000);
+    }
+    return randomPastTimestampSeconds();
+  }, [nip17TimestampMode]);
+
+  const resolveNip17Relays = useCallback(
+    async (recipientHex: string, fallbackRelays: string[]): Promise<string[]> => {
+      const normalizedFallback = Array.from(
+        new Set(
+          (fallbackRelays || [])
+            .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
+            .filter(Boolean),
+        ),
+      );
+      if (!normalizedFallback.length) return normalizedFallback;
+      const normalizedRecipient = (recipientHex || "").toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(normalizedRecipient)) return normalizedFallback;
+      try {
+        const session = await NostrSession.init(normalizedFallback);
+        const events = await session.fetchEvents(
+          [{ kinds: [10050], authors: [normalizedRecipient] }],
+          normalizedFallback,
+        );
+        const latest = Array.isArray(events)
+          ? events.sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0]
+          : null;
+        const inboxRelays = Array.isArray(latest?.tags)
+          ? latest.tags
+              .filter(
+                (tag) =>
+                  Array.isArray(tag) &&
+                  tag[0] === "relay" &&
+                  typeof tag[1] === "string" &&
+                  tag[1].trim(),
+              )
+              .map((tag) => tag[1]!.trim())
+          : [];
+        return Array.from(new Set([...inboxRelays, ...normalizedFallback]));
+      } catch (err) {
+        if (walletDebugEnabled) {
+          console.warn("[wallet] Failed to load NIP-17 inbox relays", err);
+        }
+        return normalizedFallback;
+      }
+    },
+    [walletDebugEnabled],
+  );
+
+  const publishNip17Giftwraps = useCallback(
+    async (options: {
+      content: string;
+      senderHex: string;
+      recipientHex: string;
+      senderSecret: string;
+      publish: (event: NostrEvent) => Promise<void>;
+    }) => {
+      const { content, senderHex, recipientHex, senderSecret, publish } = options;
+      if (!nip44?.v2) {
+        throw new Error("NIP-44 support is required to send this message");
+      }
+      const normalizedSender = senderHex.toLowerCase();
+      const normalizedRecipient = recipientHex.toLowerCase();
+      const rumorBase = {
+        kind: 14,
+        content,
+        tags: [["p", normalizedRecipient]] as string[][],
+        created_at: resolveNip17Timestamp(),
+        pubkey: normalizedSender,
+      };
+      const rumor = {
+        ...rumorBase,
+        id: getEventHash(rumorBase),
+      } satisfies Partial<NostrEvent>;
+      const wrapRecipients = Array.from(new Set([normalizedRecipient, normalizedSender]));
+      for (const wrapRecipient of wrapRecipients) {
+        const dmKey = nip44.v2.utils.getConversationKey(senderSecret, wrapRecipient);
+        const sealedContent = await nip44.v2.encrypt(JSON.stringify(rumor), dmKey);
+        const sealTemplate: EventTemplate = {
+          kind: 13,
+          content: sealedContent,
+          tags: [],
+          created_at: resolveNip17Timestamp(),
+        };
+        const sealEvent = finalizeEvent(sealTemplate, hexToBytes(senderSecret));
+        const wrapKey = generatePrivateKey();
+        const wrapConversationKey = nip44.v2.utils.getConversationKey(wrapKey.hex, wrapRecipient);
+        const wrapContent = await nip44.v2.encrypt(JSON.stringify(sealEvent), wrapConversationKey);
+        const wrapTemplate: EventTemplate = {
+          kind: 1059,
+          content: wrapContent,
+          tags: [["p", wrapRecipient]],
+          created_at: resolveNip17Timestamp(),
+        };
+        const wrapEvent = finalizeEvent(wrapTemplate, wrapKey.bytes);
+        await publish(wrapEvent);
+      }
+    },
+    [resolveNip17Timestamp],
+  );
+
+  const applyEcashContact = useCallback(
+    async (contact: Contact) => {
+      const { identity, reason } = readNostrIdentity();
+      if (!identity) {
+        showToast(reason || "Add your Taskify Nostr key in Settings → Nostr.", 4000);
+        return false;
+      }
+      const primaryCurrencyForAmount = walletConversionEnabled ? walletPrimaryCurrency : "sat";
+      const unitLabelLocal = primaryCurrencyForAmount === "usd" ? "USD" : "sats";
+      const trimmedSendAmt = sendAmt.trim();
+      let sats = 0;
+      if (trimmedSendAmt) {
+        const numeric = Number(trimmedSendAmt);
+        if (!Number.isFinite(numeric) || numeric <= 0) {
+          showToast(`Enter amount in ${unitLabelLocal}`, 4500);
+          return false;
+        }
+        if (primaryCurrencyForAmount === "usd") {
+          if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
+            showToast("USD price unavailable. Try again in a moment.", 4500);
+            return false;
+          }
+          sats = Math.floor((numeric / btcUsdPrice) * SATS_PER_BTC);
+          if (sats <= 0) {
+            showToast("Amount too small. Increase the USD value.", 4500);
+            return false;
+          }
+        } else {
+          sats = Math.floor(numeric);
+        }
+      }
+      if (!sats) {
+        showToast(`Enter amount in ${unitLabelLocal}`, 3500);
+        return false;
+      }
+
+      let recipientPubkey: string | null = null;
+      let relayHints: string[] | undefined;
+
+      const contactNpub = normalizeNostrPubkey(contact.npub);
+      if (contactNpub) {
+        recipientPubkey = compressedToRawHex(contactNpub).toLowerCase();
+        relayHints = contact.relays;
+      } else {
+        const storedRequest = contact.paymentRequest?.trim?.() ?? "";
+        if (storedRequest) {
+          try {
+            const request = decodePaymentRequest(storedRequest);
+            const transport = request.getTransport(PaymentRequestTransportType.NOSTR) as PaymentRequestTransport | undefined;
+            if (transport?.target) {
+              const decoded = nip19.decode(transport.target);
+              if (decoded.type === "nprofile") {
+                const data = decoded.data as { pubkey?: string; relays?: string[] };
+                if (typeof data.pubkey === "string") {
+                  recipientPubkey = data.pubkey;
+                }
+                if (Array.isArray(data.relays)) {
+                  relayHints = data.relays.filter((r) => typeof r === "string" && r.trim()).map((r) => r.trim());
+                }
+              } else if (decoded.type === "npub") {
+                recipientPubkey = typeof decoded.data === "string" ? decoded.data : null;
+              }
+            }
+          } catch (err) {
+            console.warn("Failed to decode contact payment request for recipient", err);
+          }
+        }
+      }
+
+      if (!recipientPubkey) {
+        showToast("Contact is missing a valid npub.", 3500);
+        return false;
+      }
+
+      const relays = Array.from(
+        new Set(
+          [
+            ...(relayHints || []),
+            ...defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")),
+          ].filter(Boolean),
+        ),
+      );
+      if (!relays.length) {
+        showToast("Add at least one relay to send.", 3500);
+        return false;
+      }
+
+      if (!nip44?.v2) {
+        showToast("NIP-44 support is required to send eCash via NIP-17.", 4500);
+        return false;
+      }
+
+      setCreatingSendToken(true);
+      try {
+        let lockOptions: CreateSendTokenOptions | undefined;
+        if (lockSendToPubkey) {
+          const lockPubkey = normalizeNostrPubkey(sendLockPubkeyInput) || normalizeNostrPubkey(recipientPubkey);
+          if (!lockPubkey) {
+            showToast("Enter a valid npub or 64-character hex key to lock the token.", 4000);
+            return false;
+          }
+          lockOptions = { p2pk: { pubkey: lockPubkey } };
+        }
+
+        const { token, proofs: sentProofs, mintUrl: sentMintUrl, lockInfo } = await createSendToken(sats, lockOptions);
+        setSendTokenStr(token);
+        setLastSendTokenAmount(sats);
+        setLastSendTokenMint(sentMintUrl);
+        setLastSendTokenFingerprint(`${sats}|contact:${recipientPubkey}:${Date.now()}`);
+        if (lockInfo?.type === "p2pk") {
+          const labelSource = Array.isArray(lockInfo.options.pubkey)
+            ? lockInfo.options.pubkey.join(", ")
+            : lockInfo.options.pubkey;
+          setLastSendTokenLockLabel(`Locked to ${labelSource}`);
+        } else {
+          setLastSendTokenLockLabel(null);
+        }
+        setEcashSendView("token");
+        setHistory((h) => [
+          buildHistoryEntry({
+            id: `token-dm-${Date.now()}`,
+            summary: `Sent ${sats} sats to ${contactDisplayLabel(contact)}`,
+            detail: token,
+            detailKind: "token",
+            revertToken: token,
+            type: "ecash",
+            direction: "out",
+            amountSat: sats,
+            mintUrl: sentMintUrl,
+            tokenState:
+              sentProofs?.length
+                ? {
+                    mintUrl: sentMintUrl,
+                    proofs: sentProofs.map((proof) => {
+                      const stored: StoredProofForState = {
+                        secret: proof.secret,
+                        amount: proof.amount,
+                        id: proof.id,
+                        C: proof.C,
+                      };
+                      if (proof.witness) stored.witness = proof.witness;
+                      const y = computeProofY(proof.secret);
+                      if (y) stored.Y = y;
+                      return stored;
+                    }),
+                    lastState: "UNSPENT",
+                  }
+                : undefined,
+          }),
+          ...h,
+        ]);
+
+        const senderNpub = formatNpub(identity.pubkey);
+        const dmPlain = `nostr:${senderNpub} sent you ${sats} SAT from Taskify wallet!\n${token}`;
+        const recipientHex = recipientPubkey.toLowerCase();
+        const senderHex = identity.pubkey.toLowerCase();
+        const publishRelays = await resolveNip17Relays(recipientHex, relays);
+        if (!publishRelays.length) {
+          throw new Error("No relays available for NIP-17 inbox");
+        }
+        const pool = ensureNostrPool();
+        const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+        await publishNip17Giftwraps({
+          content: dmPlain,
+          senderHex,
+          recipientHex,
+          senderSecret: identity.secret,
+          publish,
+        });
+        showToast(`Sent ${sats} sat${sats === 1 ? "" : "s"} to ${contactDisplayLabel(contact)}`, 3500);
+        return true;
+      } catch (err: any) {
+        const message = err?.message || String(err);
+        console.warn("Failed to send eCash DM", err);
+        showToast(message, 5000);
+        return false;
+      } finally {
+        setCreatingSendToken(false);
+      }
+    },
+    [
+      btcUsdPrice,
+      buildHistoryEntry,
+      compressedToRawHex,
+      contactDisplayLabel,
+      createSendToken,
+      defaultNostrRelays,
+      ensureNostrPool,
+      formatNpub,
+      lockSendToPubkey,
+      normalizeNostrPubkey,
+      readNostrIdentity,
+      publishNip17Giftwraps,
+      resolveNip17Relays,
+      safePublish,
+      sendAmt,
+      sendLockPubkeyInput,
+      setHistory,
+      showToast,
+      walletConversionEnabled,
+      walletPrimaryCurrency,
+    ],
+  );
+
+  const handleSelectContact = useCallback(
+    (contact: Contact) => {
+      const context = contactsContextRef.current;
+      if (context === "lightning") {
+        applyLightningContact(contact);
+      } else if (context === "ecash") {
+        setEcashSendRecipient(contact);
+        setEcashSendView("contact");
+      }
+      setContactsOpen(false);
+      resetContactForm();
+    },
+    [applyLightningContact, resetContactForm],
+  );
+
+  const parseNip05Address = useCallback((input: string | null | undefined) => {
+    const value = input?.trim();
+    if (!value) return null;
+    const atIndex = value.indexOf("@");
+    if (atIndex <= 0 || atIndex === value.length - 1) return null;
+    const name = value.slice(0, atIndex).trim().toLowerCase();
+    const domain = value.slice(atIndex + 1).trim().toLowerCase();
+    if (!name || !domain) return null;
+    return { name, domain, normalized: `${name}@${domain}` };
+  }, []);
+
+  const normalizeNip05 = useCallback(
+    (value: string | null | undefined) => parseNip05Address(value)?.normalized ?? null,
+    [parseNip05Address],
+  );
+
+  const resolveNip05Record = useCallback(
+    async (value: string) => {
+      const parsed = parseNip05Address(value);
+      if (!parsed) {
+        throw new Error("Invalid NIP-05 address.");
+      }
+      const { name, domain, normalized } = parsed;
+      const searchParam = encodeURIComponent(name);
+      const isLocalhost =
+        /^localhost(?::\d+)?$/.test(domain) || /^127\.0\.0\.1(?::\d+)?$/.test(domain) || domain === "[::1]";
+
+      const buildUrls = (scheme: "https" | "http") => [
+        `${scheme}://${domain}/.well-known/nostr.json?name=${searchParam}`,
+        `${scheme}://${domain}/.well-known/nostr.json`,
+      ];
+
+      const urls = [...buildUrls("https"), ...(isLocalhost ? [] : buildUrls("http"))];
+
+      const resolveFromRecord = (
+        record: any,
+      ): { pubkey: string; relays?: string[]; nip05: string } | null => {
+        const names = (record?.names as Record<string, unknown>) || {};
+        const matched = normalizePubkeyCandidate(findPubkey(names));
+        if (!matched) {
+          return null;
+        }
+        let relayHints: string[] | undefined;
+        const relaysRecord =
+          record?.relays && typeof record.relays === "object" ? (record.relays as Record<string, unknown>) : null;
+        if (relaysRecord && matched in relaysRecord) {
+          const relays = relaysRecord[matched];
+          if (Array.isArray(relays)) {
+            relayHints = relays
+              .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+              .filter(Boolean);
+          }
+        }
+        return { pubkey: matched, relays: relayHints, nip05: normalized };
+      };
+
+      const workerBaseUrl =
+        typeof window !== "undefined" && typeof (window as any).__TASKIFY_WORKER_BASE_URL__ === "string"
+          ? (window as any).__TASKIFY_WORKER_BASE_URL__
+          : "";
+
+      const normalizePubkeyCandidate = (candidate: string | null | undefined): string | null => {
+        if (!candidate) return null;
+        const trimmed = candidate.trim();
+        if (!trimmed) return null;
+
+        // Try to decode any bech32 values first (npub/nprofile) to hex
+        if (/^n(profile|pub)1[ac-hj-np-z02-9]+$/i.test(trimmed)) {
+          try {
+            const decoded = nip19.decode(trimmed.toLowerCase());
+            if (decoded.type === "npub" && decoded.data) {
+              if (typeof decoded.data === "string" && /^[0-9a-f]{64}$/i.test(decoded.data)) return decoded.data.toLowerCase();
+              if (decoded.data instanceof Uint8Array) return bytesToHex(decoded.data).toLowerCase();
+            }
+            if (decoded.type === "nprofile" && decoded.data) {
+              const pubkey = (decoded.data as any)?.pubkey;
+              if (typeof pubkey === "string" && /^[0-9a-f]{64}$/i.test(pubkey)) {
+                return pubkey.toLowerCase();
+              }
+            }
+          } catch {
+            // fall through to hex handling
+          }
+        }
+
+        const hexMatch = trimmed.replace(/^0x/i, "");
+        if (/^[0-9a-f]{64}$/i.test(hexMatch)) return hexMatch.toLowerCase();
+        if (/^(02|03)[0-9a-f]{64}$/i.test(hexMatch)) return hexMatch.slice(-64).toLowerCase();
+        return null;
+      };
+
+      const findPubkey = (names: Record<string, unknown>): string | null => {
+        if (!names) return null;
+        const directMatch = names[name];
+        const lowerMatch = names[name.toLowerCase()];
+        const wildcard = names._;
+        const candidate =
+          (typeof directMatch === "string" && directMatch) ||
+          (typeof lowerMatch === "string" && lowerMatch) ||
+          (typeof wildcard === "string" && wildcard);
+        return candidate ? String(candidate) : null;
+      };
+
+      let lastError = "NIP-05 lookup failed";
+
+      const fetchViaWorker = async (): Promise<{ pubkey: string; relays?: string[]; nip05: string } | null> => {
+        const base = workerBaseUrl?.trim().replace(/\/$/, "");
+        if (!base) return null;
+        const workerUrl = `${base}/api/nip05?address=${encodeURIComponent(normalized)}`;
+        try {
+          const res = await fetch(workerUrl, {
+            headers: { Accept: "application/json" },
+            redirect: "follow",
+            mode: "cors",
+          });
+          if (!res.ok) {
+            lastError = `NIP-05 lookup failed (${res.status})`;
+            return null;
+          }
+          const payload = await res.json();
+          const candidate = resolveFromRecord(payload?.record ?? payload);
+          if (candidate) return candidate;
+          lastError = "Name not found in NIP-05 record.";
+          return null;
+        } catch (error: any) {
+          lastError = error?.message || String(error);
+          return null;
+        }
+      };
+
+      const workerResolution = await fetchViaWorker();
+      if (workerResolution) {
+        return workerResolution;
+      }
+
+      for (const url of urls) {
+        try {
+          const res = await fetch(url, {
+            headers: { Accept: "application/json" },
+            redirect: "follow",
+            mode: "cors",
+          });
+          if (!res.ok) {
+            lastError = `NIP-05 lookup failed (${res.status})`;
+            continue;
+          }
+          const data = await res.json();
+          const resolved = resolveFromRecord(data);
+          if (resolved) {
+            return resolved;
+          }
+          lastError = "Name not found in NIP-05 record.";
+        } catch (error: any) {
+          lastError = error?.message || String(error);
+        }
+      }
+      throw new Error(lastError);
+    },
+    [parseNip05Address],
+  );
+
+  const handleLookupContact = useCallback(async (overrideInput?: string) => {
+    if (contactLookupBusy) return;
+    const input = (overrideInput ?? contactLookupInput).trim();
+    if (!input) {
+      setContactLookupError("Enter a npub, hex key, or NIP-05 address.");
+      return;
+    }
+    setContactLookupBusy(true);
+    setContactLookupError("");
+    try {
+      let targetPubkeyHex: string | null = null;
+      let relayHints: string[] | undefined;
+      let resolvedNip05: string | null = null;
+      const normalizedInputNip05 = normalizeNip05(input);
+      if (input.includes("@") && !input.toLowerCase().startsWith("npub")) {
+        const resolution = await resolveNip05Record(input);
+        const normalizedPubkey = normalizeNostrPubkey(resolution.pubkey) ?? resolution.pubkey;
+        targetPubkeyHex = normalizedPubkey;
+        relayHints = resolution.relays;
+        resolvedNip05 = resolution.nip05;
+      } else {
+        const normalized = normalizeNostrPubkey(input);
+        if (!normalized) {
+          throw new Error("Invalid npub or hex key.");
+        }
+        targetPubkeyHex = compressedToRawHex(normalized);
+      }
+      if (!targetPubkeyHex) {
+        throw new Error("Unable to resolve contact key.");
+      }
+      const authorHex = compressedToRawHex(targetPubkeyHex);
+      const pool = ensureNostrPool();
+      const relayList = Array.from(
+        new Set([
+          ...(Array.isArray(relayHints) ? relayHints : []),
+          ...defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")),
+        ].filter(Boolean)),
+      );
+      let profile: ContactProfile = {};
+      if (relayList.length) {
+        try {
+          const profileEvent = await pool.get(relayList, { kinds: [0], authors: [authorHex] });
+          if (profileEvent?.content) {
+            profile = parseProfileContent(profileEvent.content);
+          }
+        } catch {
+          // ignore profile fetch failure
+        }
+      }
+      const newContact = upsertContact({
+        kind: "nostr",
+        npub: formatNpub(authorHex),
+        name: profile.displayName || profile.username || input,
+        displayName: profile.displayName,
+        username: profile.username,
+        address: profile.lud16 || "",
+        nip05: profile.nip05 || resolvedNip05 || normalizedInputNip05 || "",
+        picture: profile.picture,
+        relays: relayHints,
+        source: "profile",
+        updatedAt: Date.now(),
+      });
+      if (!newContact) {
+        throw new Error("Unable to save contact.");
+      }
+      setContactLookupInput("");
+      contactsPublishQueuedRef.current = true;
+      setActiveContactId(newContact.id);
+      setContactView("detail");
+    } catch (err: any) {
+      setContactLookupError(err?.message || "Unable to add contact from profile.");
+    } finally {
+      setContactLookupBusy(false);
+    }
+  }, [
+    compressedToRawHex,
+    contactLookupBusy,
+    contactLookupInput,
+    defaultNostrRelays,
+    ensureNostrPool,
+    formatNpub,
+    setActiveContactId,
+    setContactView,
+    normalizeNip05,
+    normalizeNostrPubkey,
+    resolveNip05Record,
+    parseProfileContent,
+    upsertContact,
+  ]);
+
+  const handleContactImportAction = useCallback(async () => {
+    if (contactLookupBusy) return;
+    const trimmedInput = contactLookupInput.trim();
+    if (trimmedInput) {
+      await handleLookupContact();
+      return;
+    }
+    try {
+      if (typeof navigator === "undefined" || !navigator.clipboard?.readText) {
+        throw new Error("Clipboard access is not available.");
+      }
+      const pasted = await navigator.clipboard.readText();
+      const nextValue = pasted.trim();
+      if (!nextValue) {
+        setContactLookupError("Clipboard is empty.");
+        return;
+      }
+      setContactLookupError("");
+      setContactLookupInput(nextValue);
+    } catch (err: any) {
+      const message = err?.message || "Unable to read from clipboard.";
+      setContactLookupError(message);
+    }
+  }, [contactLookupBusy, contactLookupInput, handleLookupContact]);
+
+  const handleImportPublicFollow = useCallback(
+    async (npub: string) => {
+      const trimmed = (npub || "").trim();
+      if (!trimmed) return;
+      setPublicFollowPickerOpen(false);
+      setContactLookupInput(trimmed);
+      await handleLookupContact(trimmed);
+    },
+    [handleLookupContact],
+  );
+
+    const handleScannedContactPayload = useCallback(
+      async (payload: ContactSharePayload | { npub?: string; relays?: string[]; name?: string; displayName?: string; lud16?: string; nip05?: string; kind?: string }) => {
+        const relayHints = Array.isArray((payload as any).relays)
+          ? ((payload as any).relays as string[]).filter((r) => typeof r === "string" && r.trim())
+          : undefined;
+      const rawNpub = typeof (payload as any).npub === "string" ? (payload as any).npub.trim() : "";
+      const normalizedHex = rawNpub ? normalizeNostrPubkey(rawNpub) : null;
+      const scannedNpub = normalizedHex
+        ? formatNpub(normalizedHex)
+        : rawNpub.startsWith("npub")
+          ? rawNpub
+          : "";
+      const authorHex = normalizedHex ? compressedToRawHex(normalizedHex) : null;
+      let mergedProfile: ContactProfile = {
+        username: (payload as any).name,
+        displayName: (payload as any).displayName,
+        lud16: (payload as any).lud16,
+        nip05: (payload as any).nip05,
+        picture: (payload as any).picture,
+      };
+      if (authorHex) {
+        const relays = Array.from(
+          new Set(
+            [
+              ...(relayHints || []),
+              ...defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")),
+            ].filter(Boolean),
+          ),
+        );
+        if (relays.length) {
+          try {
+            const pool = ensureNostrPool();
+            const profileEvent = await pool.get(relays, { kinds: [0], authors: [authorHex] });
+            if (profileEvent?.content) {
+              mergedProfile = { ...mergedProfile, ...parseProfileContent(profileEvent.content) };
+            }
+          } catch {
+            // ignore profile fetch failures
+          }
+        }
+      }
+      const candidateContact = normalizeContact({
+        id: makeContactId(),
+        kind: (payload as any).kind === "custom" && !authorHex ? "custom" : "nostr",
+        npub: scannedNpub || (authorHex ? formatNpub(authorHex) : ""),
+        name:
+          mergedProfile.displayName ||
+          mergedProfile.username ||
+          (payload as any).name ||
+          (payload as any).displayName ||
+          rawNpub,
+        displayName: mergedProfile.displayName || (payload as any).displayName,
+        username: mergedProfile.username || (payload as any).name,
+        address: mergedProfile.lud16 || (payload as any).lud16 || "",
+        nip05: mergedProfile.nip05 || (payload as any).nip05,
+        picture: mergedProfile.picture,
+        relays: relayHints,
+        source: "scan",
+        updatedAt: Date.now(),
+      });
+      if (!candidateContact) {
+        setScannerMessage("Contact code is missing usable details.");
+        return;
+      }
+      setScannedContact(candidateContact);
+      setShowScanner(false);
+      setScannerMessage("");
+    },
+    [
+      compressedToRawHex,
+      defaultNostrRelays,
+      ensureNostrPool,
+      formatNpub,
+      parseProfileContent,
+      setScannerMessage,
+      setShowScanner,
+    ],
+  );
+
+  const handleDeleteContact = useCallback((id: string) => {
+    setContacts((prev) => prev.filter((c) => c.id !== id));
+    contactsPublishQueuedRef.current = true;
+  }, []);
+
+  const buildContactShareValue = useCallback(
+    (contact: Contact): string | null => {
+      const rawNpub = contact.npub?.trim() || "";
+      const relays = contact.relays;
+      const normalized = normalizeNostrPubkey(rawNpub);
+      const npub = normalized ? formatNpub(normalized) : rawNpub.startsWith("npub") ? rawNpub : "";
+
+      if (contact.kind === "custom") {
+        const payload: ContactSharePayload = {
+          v: 1,
+          kind: "custom",
+          npub: npub || undefined,
+          relays,
+          name: contact.name?.trim() || undefined,
+          displayName: contact.displayName?.trim() || undefined,
+          lud16: contact.address?.trim() || undefined,
+          nip05: contact.nip05?.trim() || undefined,
+        };
+        return encodeContactPayload(payload);
+      }
+
+      if (npub) {
+        return npub;
+      }
+
+      // Fallback: share whatever fields we have if npub is missing.
+      return encodeContactPayload({
+        v: 1,
+        kind: contact.kind,
+        npub: npub || undefined,
+        relays,
+        name: contact.name?.trim() || undefined,
+        displayName: contact.displayName?.trim() || undefined,
+        lud16: contact.address?.trim() || undefined,
+        nip05: contact.nip05?.trim() || undefined,
+      });
+    },
+    [encodeContactPayload, formatNpub],
+  );
+
+  const profileShareValue = useMemo(() => {
+    if (profileSharePayload) return profileSharePayload;
+    const identity = nostrIdentityRef.current;
+    return identity ? formatNpub(identity.pubkey) : null;
+  }, [formatNpub, profileSharePayload]);
   const nwcFundInProgress = nwcFundState === "creating" || nwcFundState === "paying" || nwcFundState === "waiting" || nwcFundState === "claiming";
   const nwcWithdrawInProgress = nwcWithdrawState === "requesting" || nwcWithdrawState === "paying";
 
@@ -3064,10 +6284,10 @@ export default function CashuWalletModal({
   const [mintInputSheet, setMintInputSheet] = useState("");
   const [mintEntries, setMintEntries] = useState<{ url: string; balance: number; count: number }[]>([]);
   const [mintBackupEnabled, setMintBackupEnabled] = useState<boolean>(() => mintBackupEnabledProp);
-  const [mintBackupState, setMintBackupState] = useState<
-    "idle" | "syncing" | "success" | "error" | "restoring"
-  >("idle");
-  const [mintBackupMessage, setMintBackupMessage] = useState("");
+  const [, setMintBackupState] = useState<"idle" | "syncing" | "success" | "error" | "restoring">(
+    "idle",
+  );
+  const [, setMintBackupMessage] = useState("");
   const [mintBackupCache, setMintBackupCache] = useState<MintBackupPayload | null>(() => loadMintBackupCache());
   const [mintBackupCandidate, setMintBackupCandidate] = useState<string[]>(() => getMintList());
 
@@ -3077,7 +6297,7 @@ export default function CashuWalletModal({
 
   useEffect(() => {
     try {
-      localStorage.setItem(LS_MINT_BACKUP_ENABLED, mintBackupEnabled ? "1" : "0");
+      kvStorage.setItem(LS_MINT_BACKUP_ENABLED, mintBackupEnabled ? "1" : "0");
     } catch {
       // ignore persistence errors
     }
@@ -3180,12 +6400,16 @@ export default function CashuWalletModal({
         const template = await createMintBackupTemplate(mintList, keys, {
           clientTag: MINT_BACKUP_CLIENT_TAG,
         });
-        const signedEvent = finalizeEvent(template, hexToBytes(keys.privateKeyHex));
+        const created_at = Math.max(template.created_at || 0, Math.floor(Date.now() / 1000));
+        const signedEvent = finalizeEvent(
+          { ...template, created_at },
+          hexToBytes(keys.privateKeyHex),
+        );
         const pool = ensureNostrPool();
-        await pool.publish(relays, signedEvent as any);
+        await safePublish(pool, relays, signedEvent as any);
         const payload: MintBackupPayload = {
           mints: mintList,
-          timestamp: template.created_at || Math.floor(Date.now() / 1000),
+          timestamp: signedEvent.created_at || created_at,
         };
         persistMintBackupCache(payload);
         setMintBackupState("success");
@@ -3203,57 +6427,9 @@ export default function CashuWalletModal({
       mintBackupCache,
       mintBackupEnabled,
       persistMintBackupCache,
+      safePublish,
     ],
   );
-
-  const handleRestoreMintBackup = useCallback(async () => {
-    setMintBackupState("restoring");
-    setMintBackupMessage("");
-    try {
-      const relays = defaultNostrRelays
-        .map((url) => (typeof url === "string" ? url.trim() : ""))
-        .filter((url): url is string => !!url);
-      if (!relays.length) {
-        throw new Error("No Nostr relays configured.");
-      }
-      const mnemonic = getWalletSeedMnemonic();
-      const keys = deriveMintBackupKeys(mnemonic);
-      const pool = ensureNostrPool();
-      const events = await pool.list(relays, [
-        { kinds: [MINT_BACKUP_KIND], authors: [keys.publicKeyHex], "#d": [MINT_BACKUP_D_TAG] },
-      ]);
-      const latest = events.reduce<null | { created_at?: number; content: string }>((current, ev) => {
-        if (!ev) return current;
-        if (!current || (ev.created_at || 0) > (current.created_at || 0)) return ev;
-        return current;
-      }, null);
-      if (!latest) {
-        throw new Error("No mint backups found.");
-      }
-      const payload = await decryptMintBackupPayload(latest.content, keys);
-      const restoredMints = payload.mints;
-      replaceMintList(restoredMints);
-      persistMintBackupCache({
-        mints: restoredMints,
-        timestamp: payload.timestamp || latest.created_at || Math.floor(Date.now() / 1000),
-      });
-      setMintBackupCandidate(restoredMints);
-      refreshMintEntries();
-      setMintBackupState("success");
-      setMintBackupMessage(
-        `Restored ${restoredMints.length} mint${restoredMints.length === 1 ? "" : "s"} from backup.`,
-      );
-    } catch (error: any) {
-      setMintBackupState("error");
-      setMintBackupMessage(error?.message || "Unable to restore mint backup.");
-    }
-  }, [
-    defaultNostrRelays,
-    ensureNostrPool,
-    persistMintBackupCache,
-    refreshMintEntries,
-    replaceMintList,
-  ]);
 
   useEffect(() => {
     if (!mintBackupEnabled) return;
@@ -3383,12 +6559,20 @@ export default function CashuWalletModal({
     if (
       sendMode === "ecash" ||
       sendMode === "lightning" ||
+      sendMode === "paymentRequest" ||
       receiveMode === "ecash" ||
       receiveMode === "lightning"
     ) {
       refreshMintEntries();
     }
   }, [open, receiveMode, refreshMintEntries, sendMode]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (sendMode === "paymentRequest") {
+      refreshMintEntries();
+    }
+  }, [open, refreshMintEntries, sendMode]);
 
   useEffect(() => {
     if (receiveMode !== "lightning") return;
@@ -3605,6 +6789,7 @@ export default function CashuWalletModal({
   const resetEcashSendForm = useCallback(() => {
     setSendAmt("");
     setSendTokenStr("");
+    setEcashSendRecipient(null);
     setEcashSendView("amount");
     setLastSendTokenAmount(null);
     setLastSendTokenMint(null);
@@ -3634,6 +6819,18 @@ export default function CashuWalletModal({
     setShowSendOptions(false);
   }, [resetEcashSendForm, resetLightningSendForm]);
 
+  const openEcashSendToContact = useCallback(
+    (contact: Contact) => {
+      resetEcashSendForm();
+      resetLightningSendForm();
+      setEcashSendRecipient(contact);
+      setEcashSendView("contact");
+      setSendMode("ecash");
+      setShowSendOptions(false);
+    },
+    [resetEcashSendForm, resetLightningSendForm],
+  );
+
   const closeEcashSendSheet = useCallback(() => {
     setSendMode(null);
     setShowSendOptions(false);
@@ -3654,7 +6851,7 @@ export default function CashuWalletModal({
       if (!npubCashLightningAddressEnabled) return;
       if (npubCashClaimingRef.current) return;
       const auto = options?.auto === true;
-      const storedSk = localStorage.getItem(LS_NOSTR_SK) || "";
+      const storedSk = kvStorage.getItem(LS_NOSTR_SK) || "";
       if (!storedSk) {
         setNpubCashIdentity(null);
         const message = "Add your Taskify Nostr key in Settings → Nostr to use npub.cash.";
@@ -3776,6 +6973,9 @@ export default function CashuWalletModal({
             const tokenSummary = res.savedForLater
               ? `Saved ${capitalizedAmountSummary} via npub.cash${crossMintNote}`
               : `Received ${capitalizedAmountSummary} via npub.cash${crossMintNote}`;
+            const tokenState = !res.savedForLater
+              ? deriveSpentHistoryTokenStateFromTokenRef.current(normalizedToken, Date.now())
+              : undefined;
             const historyEntry: HistoryEntryInput = {
               id: `npubcash-token-${Date.now()}-${tokenEntryCounter++}`,
               summary: tokenSummary,
@@ -3786,6 +6986,9 @@ export default function CashuWalletModal({
               amountSat: decodedAmount || undefined,
               mintUrl: resolvedMintUrl,
             };
+            if (tokenState) {
+              historyEntry.tokenState = tokenState;
+            }
             if (res.savedForLater) {
               if (res.pendingTokenId) {
                 historyEntry.pendingTokenId = res.pendingTokenId;
@@ -3805,13 +7008,6 @@ export default function CashuWalletModal({
           const prefix = successCount ? `Claimed ${successCount} token${successCount === 1 ? "" : "s"}, but ` : "";
           setNpubCashClaimMessage(`${prefix}${lastError}`);
         } else {
-          if (successTokens.length) {
-            try {
-              await acknowledgeNpubCashClaims(storedSk);
-            } catch (ackErr) {
-              console.warn("Failed to acknowledge npub.cash claims", ackErr);
-            }
-          }
           setNpubCashClaimStatus("success");
           const mintedNote = crossMintMints.size
             ? `Stored at ${Array.from(crossMintMints).join(", ")}`
@@ -3924,7 +7120,7 @@ export default function CashuWalletModal({
   );
 
   useEffect(() => {
-    localStorage.setItem("cashuHistory", JSON.stringify(history));
+    idbKeyValue.setItem(TASKIFY_STORE_WALLET, "cashuHistory", JSON.stringify(history));
   }, [history]);
 
   useEffect(() => {
@@ -3932,6 +7128,7 @@ export default function CashuWalletModal({
     let cancelled = false;
     const syncPending = () => {
       if (cancelled) return;
+      const now = Date.now();
       let entries: PendingTokenEntry[] = [];
       try {
         entries = listPendingTokens();
@@ -3946,10 +7143,16 @@ export default function CashuWalletModal({
             changed = true;
             const amount = item.pendingTokenAmount;
             const amountNote = amount ? `${amount} sat${amount === 1 ? "" : "s"}` : "Token";
+            const tokenState = item.tokenState
+              ? markHistoryTokenStateSpentRef.current(item.tokenState, now)
+              : typeof item.detail === "string"
+                ? deriveSpentHistoryTokenStateFromTokenRef.current(item.detail, now)
+                : undefined;
             return {
               ...item,
               pendingTokenId: undefined,
               pendingStatus: "redeemed",
+              ...(tokenState ? { tokenState } : {}),
               summary: item.summary.includes("saved for later redemption")
                 ? `${amountNote} redeemed automatically`
                 : item.summary,
@@ -4254,7 +7457,7 @@ export default function CashuWalletModal({
       setNpubCashIdentityError(null);
       return;
     }
-    const storedSk = localStorage.getItem(LS_NOSTR_SK) || "";
+    const storedSk = kvStorage.getItem(LS_NOSTR_SK) || "";
     if (!storedSk) {
       setNpubCashIdentity(null);
       setNpubCashIdentityError("Add your Taskify Nostr key in Settings → Nostr to use npub.cash.");
@@ -4424,7 +7627,7 @@ export default function CashuWalletModal({
         setBtcUsdPrice(amount);
         setPriceUpdatedAt(fetchedAt);
         try {
-          localStorage.setItem(
+          kvStorage.setItem(
             LS_BTC_USD_PRICE_CACHE,
             JSON.stringify({ price: amount, updatedAt: fetchedAt })
           );
@@ -4541,11 +7744,16 @@ export default function CashuWalletModal({
     [mintInfoByUrl],
   );
   const deriveHistoryStatus = useCallback((entry: HistoryItem) => {
+    const isLightningEntry = entry.type === "lightning" || entry.detailKind === "invoice";
+    const prefersReceivedLabel = isLightningEntry && entry.direction === "in";
     if (entry.pendingTokenId && entry.pendingStatus !== "redeemed") {
       return { label: "Pending redemption", tone: "pending" as const };
     }
     if (entry.tokenState) {
       if (entry.tokenState.lastState === "SPENT") {
+        if (entry.direction === "in") {
+          return { label: "Received", tone: "success" as const };
+        }
         return { label: "Sent", tone: "success" as const };
       }
       if (entry.tokenState.lastSummary) {
@@ -4559,7 +7767,7 @@ export default function CashuWalletModal({
         return { label: "Expired", tone: "danger" as const };
       }
       if (state === "paid" || state === "issued") {
-        return { label: "Paid", tone: "success" as const };
+        return { label: prefersReceivedLabel ? "Received" : "Paid", tone: "success" as const };
       }
       return { label: state ? state.charAt(0).toUpperCase() + state.slice(1) : "Pending", tone: "pending" as const };
     }
@@ -4569,7 +7777,7 @@ export default function CashuWalletModal({
         return { label: entry.stateLabel, tone: "danger" as const };
       }
       if (normalized === "paid" || normalized === "completed") {
-        return { label: entry.stateLabel, tone: "success" as const };
+        return { label: prefersReceivedLabel ? "Received" : entry.stateLabel, tone: "success" as const };
       }
       return { label: entry.stateLabel, tone: undefined };
     }
@@ -4598,6 +7806,15 @@ export default function CashuWalletModal({
 
   const paymentRequestHasFixedAmount = paymentRequestFixedAmount !== null;
 
+  const canToggleCurrency = walletConversionEnabled;
+
+  const paymentRequestInputCurrency =
+    walletConversionEnabled && walletPrimaryCurrency === "usd" ? "usd" : "sat";
+
+  const paymentRequestInputUnitLabel = paymentRequestInputCurrency === "usd" ? "USD" : "sats";
+
+  const canTogglePaymentRequestCurrency = canToggleCurrency && !paymentRequestHasFixedAmount;
+
   const paymentRequestAmountTextValue = useMemo(() => {
     if (paymentRequestHasFixedAmount) {
       if (paymentRequestFixedAmount != null) {
@@ -4613,10 +7830,22 @@ export default function CashuWalletModal({
     satFormatter,
   ]);
 
-  const paymentRequestPrimaryAmountText = useMemo(
-    () => `${paymentRequestAmountTextValue} ${paymentRequestUnitLabel}`,
-    [paymentRequestAmountTextValue, paymentRequestUnitLabel],
-  );
+  const paymentRequestPrimaryAmountText = useMemo(() => {
+    if (paymentRequestHasFixedAmount) {
+      return `${paymentRequestAmountTextValue} ${paymentRequestUnitLabel}`;
+    }
+    const trimmed = paymentRequestManualAmount.trim();
+    if (paymentRequestInputCurrency === "usd") {
+      return `$${trimmed || "0.00"}`;
+    }
+    return `${trimmed || "0"} sat`;
+  }, [
+    paymentRequestAmountTextValue,
+    paymentRequestHasFixedAmount,
+    paymentRequestInputCurrency,
+    paymentRequestManualAmount,
+    paymentRequestUnitLabel,
+  ]);
 
   const paymentRequestSecondaryAmountText = useMemo(() => {
     const unitDisplay = paymentRequestUnitLabel === "sat" ? "sats" : paymentRequestUnitLabel;
@@ -4626,15 +7855,35 @@ export default function CashuWalletModal({
       }
       return `Request requires amount in ${unitDisplay}`;
     }
-    if (!paymentRequestManualAmount.trim()) {
-      return `Enter amount in ${unitDisplay}`;
+    const inputUnitDisplay = paymentRequestInputUnitLabel;
+    const trimmed = paymentRequestManualAmount.trim();
+    if (!trimmed) {
+      return `Enter amount in ${inputUnitDisplay}`;
     }
-    return `Ready to send ${paymentRequestManualAmount.trim()} ${unitDisplay}`;
+    const numericAmount = Number(trimmed);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return `Enter amount in ${inputUnitDisplay}`;
+    }
+    if (paymentRequestInputCurrency === "usd") {
+      if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
+        return `Enter amount in ${inputUnitDisplay}`;
+      }
+      const sats = Math.floor((numericAmount / btcUsdPrice) * SATS_PER_BTC);
+      if (sats <= 0) {
+        return `Enter amount in ${inputUnitDisplay}`;
+      }
+      return `≈ ${satFormatter.format(sats)} sat`;
+    }
+    return `Ready to send ${trimmed} ${inputUnitDisplay}`;
   }, [
     paymentRequestHasFixedAmount,
     paymentRequestManualAmount,
+    paymentRequestInputCurrency,
+    paymentRequestInputUnitLabel,
     paymentRequestUnitLabel,
     paymentRequestFixedAmount,
+    walletConversionEnabled,
+    btcUsdPrice,
     satFormatter,
   ]);
 
@@ -4679,6 +7928,8 @@ export default function CashuWalletModal({
 
   const canEditPaymentRequestAmount = !paymentRequestHasFixedAmount;
 
+  const paymentRequestAmountButtonEnabled = canEditPaymentRequestAmount || canTogglePaymentRequestCurrency;
+
   const formatUsdAmount = useCallback((amount: number | null) => {
     if (amount == null || !Number.isFinite(amount)) return "—";
     if (amount <= 0) return "$0.00";
@@ -4697,7 +7948,6 @@ export default function CashuWalletModal({
   const unitLabel = primaryCurrency === "usd" ? "USD" : "SAT";
   const amountInputUnitLabel = primaryCurrency === "usd" ? "USD" : "sats";
   const amountInputPlaceholder = `Amount (${amountInputUnitLabel})`;
-  const canToggleCurrency = walletConversionEnabled;
 
   const unitButtonClass = useMemo(
     () => `wallet-modal__unit chip chip-accent${canToggleCurrency ? " pressable" : ""}`,
@@ -4708,6 +7958,11 @@ export default function CashuWalletModal({
     () =>
       `wallet-balance-card${canToggleCurrency ? " wallet-balance-card--toggleable pressable" : ""}`,
     [canToggleCurrency],
+  );
+
+  const contentClass = useMemo(
+    () => `wallet-modal__content${walletTab === "wallet" ? " wallet-modal__content--home" : ""}`,
+    [walletTab],
   );
 
   const handleTogglePrimary = useCallback(() => {
@@ -5165,14 +8420,80 @@ export default function CashuWalletModal({
       if (key === "clear") {
         return "";
       }
+      if (key === "decimal") {
+        if (primaryCurrency !== "usd") return current;
+        if (current.includes(".")) return current;
+        return current ? `${current}.` : "0.";
+      }
       if (/^\d$/.test(key)) {
+        if (primaryCurrency === "usd") {
+          let next = current === "0" && !current.includes(".") ? key : `${current}${key}`;
+          if (current === "" && key === "0") {
+            return "0";
+          }
+          if (!current.includes(".") && /^0\d/.test(next)) {
+            next = String(Number(next));
+          }
+          const decimalPart = next.split(".")[1];
+          if (decimalPart && decimalPart.length > 2) {
+            return current;
+          }
+          return next;
+        }
         const combined = `${current}${key}`;
         const normalized = combined.replace(/^0+(?=\d)/, "");
-        return normalized;
+        return normalized || "0";
       }
       return current;
     });
-  }, []);
+  }, [primaryCurrency]);
+
+  const handlePaymentRequestAmountUnitToggle = useCallback(() => {
+    if (!canTogglePaymentRequestCurrency) return;
+    const nextCurrency = walletPrimaryCurrency === "usd" ? "sat" : "usd";
+    const trimmed = paymentRequestManualAmount.trim();
+    let satsAmount = 0;
+    if (trimmed) {
+      const numeric = Number(trimmed);
+      if (paymentRequestInputCurrency === "usd") {
+        if (
+          walletConversionEnabled &&
+          btcUsdPrice != null &&
+          btcUsdPrice > 0 &&
+          Number.isFinite(numeric) &&
+          numeric > 0
+        ) {
+          satsAmount = Math.floor((numeric / btcUsdPrice) * SATS_PER_BTC);
+        }
+      } else if (Number.isFinite(numeric) && numeric > 0) {
+        satsAmount = Math.floor(numeric);
+      }
+    }
+    handleTogglePrimary();
+    if (!satsAmount || satsAmount <= 0) {
+      setPaymentRequestManualAmount("");
+      return;
+    }
+    if (nextCurrency === "usd") {
+      if (!walletConversionEnabled || btcUsdPrice == null || btcUsdPrice <= 0) {
+        setPaymentRequestManualAmount("");
+        return;
+      }
+      const usdValue = (satsAmount / SATS_PER_BTC) * btcUsdPrice;
+      const rounded = Math.round(usdValue * 100) / 100;
+      setPaymentRequestManualAmount(rounded.toFixed(2));
+      return;
+    }
+    setPaymentRequestManualAmount(String(satsAmount));
+  }, [
+    btcUsdPrice,
+    canTogglePaymentRequestCurrency,
+    handleTogglePrimary,
+    paymentRequestInputCurrency,
+    paymentRequestManualAmount,
+    walletConversionEnabled,
+    walletPrimaryCurrency,
+  ]);
 
   const handleSetEcashRequestMode = useCallback((mode: "multi" | "single") => {
     setEcashRequestMode(mode);
@@ -5468,7 +8789,7 @@ export default function CashuWalletModal({
         }
       }
       const trimmed = entries.slice(-400);
-      localStorage.setItem(LS_SPENT_NOSTR_PAYMENTS, JSON.stringify(trimmed));
+      idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_SPENT_NOSTR_PAYMENTS, JSON.stringify(trimmed));
     } catch (err) {
       console.warn("Failed to persist spent nostr payments", err);
     }
@@ -5497,18 +8818,18 @@ export default function CashuWalletModal({
         };
         const deletionEvent = finalizeEvent(deletionTemplate, hexToBytes(identity.secret));
         const pool = ensureNostrPool();
-        await pool.publish(relayList, deletionEvent);
+        await safePublish(pool, relayList, deletionEvent);
       } catch (err) {
         console.warn("Failed to publish nostr deletion", err);
       }
     },
-    [defaultNostrRelays, ensureNostrIdentity, ensureNostrPool, paymentRequestsEnabled],
+    [defaultNostrRelays, ensureNostrIdentity, ensureNostrPool, paymentRequestsEnabled, safePublish],
   );
 
   const loadStoredOpenPaymentRequest = useCallback((): ActivePaymentRequest | null => {
     if (!mintUrl) return null;
     try {
-      const raw = localStorage.getItem(LS_ECASH_OPEN_REQUESTS);
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_ECASH_OPEN_REQUESTS);
       if (!raw) return null;
       const parsed = JSON.parse(raw) as Record<string, any>;
       if (!parsed || typeof parsed !== "object") return null;
@@ -5593,7 +8914,7 @@ export default function CashuWalletModal({
       if (!mintUrl) return;
       const normalizedMint = normalizeMintUrl(mintUrl);
       try {
-        const raw = localStorage.getItem(LS_ECASH_OPEN_REQUESTS);
+        const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_ECASH_OPEN_REQUESTS);
         let parsed: Record<string, any> = {};
         if (raw) {
           try {
@@ -5617,7 +8938,7 @@ export default function CashuWalletModal({
         } else {
           delete parsed[normalizedMint];
         }
-        localStorage.setItem(LS_ECASH_OPEN_REQUESTS, JSON.stringify(parsed));
+        idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_ECASH_OPEN_REQUESTS, JSON.stringify(parsed));
       } catch (err) {
         console.warn("Failed to persist eCash payment request", err);
       }
@@ -5822,6 +9143,858 @@ export default function CashuWalletModal({
     createPaymentRequest,
   ]);
 
+  const readNip51ContactsMigrated = useCallback((): boolean => {
+    try {
+      return idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_NIP51_CONTACTS_MIGRATED) === "true";
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const persistNip51ContactsMigrated = useCallback((value: boolean) => {
+    try {
+      idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_NIP51_CONTACTS_MIGRATED, value ? "true" : "false");
+    } catch {
+      // ignore persistence issues
+    }
+  }, []);
+
+  const contactPubkeyKey = useCallback(
+    (npub: string | null | undefined): string | null => {
+      const normalized = normalizeNostrPubkey(npub || "");
+      if (!normalized) return null;
+      return compressedToRawHex(normalized).toLowerCase();
+    },
+    [compressedToRawHex, normalizeNostrPubkey],
+  );
+
+  const mergeContactsByPubkey = useCallback(
+    (base: Contact[], incoming: Contact[]): Contact[] => {
+      const next = [...base];
+      const seen = new Set<string>();
+      base.forEach((contact) => {
+        const key = contactPubkeyKey(contact.npub);
+        if (key) seen.add(key);
+      });
+      incoming.forEach((contact) => {
+        const key = contactPubkeyKey(contact.npub);
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        next.push(contact);
+      });
+      return next;
+    },
+    [contactPubkeyKey],
+  );
+
+  const buildContactSyncEnvelopeFromNip51 = useCallback(
+    (privateContacts: Nip51PrivateContact[], updatedAt: number): ContactSyncEnvelope => {
+      return {
+        version: 1,
+        updatedAt,
+        contacts: (privateContacts || []).map((contact) => ({
+          id: makeContactId(),
+          kind: "nostr",
+          npub: formatContactNpub(contact.pubkey),
+          relays: contact.relayHint ? [contact.relayHint] : undefined,
+          name: contact.petname || undefined,
+        })),
+      };
+    },
+    [formatContactNpub, makeContactId],
+  );
+
+  const loadLegacyContacts = useCallback(
+    async (identity: NostrIdentity, relays: string[]): Promise<Contact[]> => {
+      const localContacts = loadContactsFromStorage().filter((contact) => contactHasNpub(contact));
+      let legacyFromEvent: Contact[] = [];
+      if (nip44?.v2) {
+        try {
+          const pool = ensureNostrPool();
+          const legacyEvent = await pool.get(relays, { kinds: [3], authors: [identity.pubkey] });
+          if (legacyEvent?.content?.trim()) {
+            const conversationKey = nip44.v2.utils.getConversationKey(identity.secret, identity.pubkey);
+            const plaintext = await nip44.v2.decrypt(legacyEvent.content, conversationKey);
+            const parsed = parseContactSyncEnvelope(JSON.parse(plaintext));
+            if (parsed) {
+              legacyFromEvent = mergeContactsFromSync([], parsed).filter((contact) => contactHasNpub(contact));
+            }
+          }
+        } catch (err) {
+          if (walletDebugEnabled) {
+            console.warn("[wallet] Failed to read legacy contacts payload", err);
+          }
+        }
+      }
+      return mergeContactsByPubkey(localContacts, legacyFromEvent);
+    },
+    [
+      contactHasNpub,
+      ensureNostrPool,
+      loadContactsFromStorage,
+      mergeContactsByPubkey,
+      mergeContactsFromSync,
+      parseContactSyncEnvelope,
+      walletDebugEnabled,
+    ],
+  );
+
+  const migrateNip51ContactsIfNeeded = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (nip51MigrationInFlightRef.current) return;
+      if (readNip51ContactsMigrated()) return;
+      if (!contactsSyncEnabled) return;
+      const identity = ensureNostrIdentity();
+      if (!identity) return;
+      if (!nip44?.v2) return;
+      const relays = defaultNostrRelays
+        .map((url) => (typeof url === "string" ? url.trim() : ""))
+        .filter(Boolean);
+      if (!relays.length) return;
+
+      nip51MigrationInFlightRef.current = true;
+      try {
+        const legacyContacts = await loadLegacyContacts(identity, relays);
+        if (!legacyContacts.length) {
+          persistNip51ContactsMigrated(true);
+          if (walletDebugEnabled) {
+            console.debug("[wallet] NIP-51 migration: no legacy contacts to migrate");
+          }
+          return;
+        }
+        const merged = mergeContactsByPubkey(contactsRef.current, legacyContacts);
+        if (merged.length !== contactsRef.current.length) {
+          setContacts(merged);
+          saveContactsToStorage(merged);
+          contactsRef.current = merged;
+        }
+
+        const pool = ensureNostrPool();
+        const nip51Event = await publishNip51PrivateContactsList(pool, relays, merged, {
+          privateKeyHex: identity.secret,
+          publicKeyHex: identity.pubkey,
+        });
+        const updatedAt = nip51Event.created_at ? nip51Event.created_at * 1000 : Date.now();
+        const fingerprint = computeContactsFingerprint(merged);
+        contactsFingerprintRef.current = fingerprint;
+        persistContactSyncMeta({
+          lastEventId: nip51Event.id,
+          lastUpdatedAt: updatedAt,
+          fingerprint,
+          publicFollows: contactSyncMetaRef.current.publicFollows,
+        });
+        persistNip51ContactsMigrated(true);
+        if (!options?.silent) {
+          setContactSyncState({
+            status: "success",
+            message: "Contacts migrated to NIP-51",
+            updatedAt,
+          });
+        }
+        if (walletDebugEnabled) {
+          console.debug("[wallet] NIP-51 migration published", nip51Event.id.slice(0, 8));
+        }
+      } catch (err: any) {
+        if (!options?.silent) {
+          setContactSyncState((prev) => ({
+            status: "error",
+            message: err?.message || "Unable to migrate legacy contacts.",
+            updatedAt: prev.updatedAt ?? null,
+          }));
+        }
+        if (walletDebugEnabled) {
+          console.warn("[wallet] NIP-51 migration failed", err);
+        }
+      } finally {
+        nip51MigrationInFlightRef.current = false;
+      }
+    },
+    [
+      computeContactsFingerprint,
+      contactSyncMetaRef,
+      contactsRef,
+      contactsSyncEnabled,
+      defaultNostrRelays,
+      ensureNostrIdentity,
+      ensureNostrPool,
+      loadLegacyContacts,
+      mergeContactsByPubkey,
+      publishNip51PrivateContactsList,
+      persistContactSyncMeta,
+      persistNip51ContactsMigrated,
+      readNip51ContactsMigrated,
+      saveContactsToStorage,
+      setContacts,
+      walletDebugEnabled,
+    ],
+  );
+
+  const syncContactsFromNostr = useCallback(
+    async (options?: { silent?: boolean }) => {
+      const silent = options?.silent === true;
+      if (!contactsSyncEnabled) {
+        contactsPublishQueuedRef.current = false;
+        if (!silent) {
+          setContactSyncState({
+            status: "error",
+            message: "Contact sync is disabled in Settings.",
+            updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
+          });
+        }
+        return;
+      }
+      const identity = ensureNostrIdentity();
+      if (!identity) {
+        if (!silent) {
+          setContactSyncState({
+            status: "error",
+            message: nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr to sync contacts.",
+            updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
+          });
+        }
+        return;
+      }
+      if (!nip44?.v2) {
+        if (!silent) {
+          setContactSyncState({
+            status: "error",
+            message: "NIP-44 v2 support is required to read contacts.",
+            updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
+          });
+        }
+        return;
+      }
+      const relays = defaultNostrRelays
+        .map((url) => (typeof url === "string" ? url.trim() : ""))
+        .filter(Boolean);
+      if (!relays.length) {
+        if (!silent) {
+          setContactSyncState({
+            status: "error",
+            message: "Add at least one relay to sync contacts.",
+            updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
+          });
+        }
+        return;
+      }
+      if (!silent) {
+        setContactSyncState({
+          status: "loading",
+          message: "Syncing contacts…",
+          updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
+        });
+      }
+      try {
+        await migrateNip51ContactsIfNeeded({ silent: true });
+        const pool = ensureNostrPool();
+        const [publicEvent, privateResult] = await Promise.all([
+          pool.get(relays, { kinds: [3], authors: [identity.pubkey] }),
+          fetchLatestPrivateContactsList(pool, relays, identity.pubkey, {
+            privateKeyHex: identity.secret,
+            publicKeyHex: identity.pubkey,
+          }),
+        ]);
+
+        let publicFollows = contactSyncMeta.publicFollows ?? [];
+        if (publicEvent) {
+          const existingFollowsByKey = new Map(
+            (contactSyncMeta.publicFollows || []).map((follow) => [follow.pubkey.toLowerCase(), follow]),
+          );
+          const publicFollowsFromTags = extractPublicFollowsFromTags(publicEvent.tags).map((follow) => {
+            const existing = existingFollowsByKey.get(follow.pubkey.toLowerCase());
+            if (!existing) return follow;
+            return { ...existing, ...follow };
+          });
+          publicFollows = await enrichPublicFollowsWithProfiles(publicFollowsFromTags, relays, pool);
+          persistContactSyncMeta({ publicFollows });
+        }
+
+        if (!privateResult.event) {
+          if (!silent) {
+            setContactSyncState({
+              status: "idle",
+              message: "No private contacts found on relays yet.",
+              updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
+            });
+          }
+          return;
+        }
+
+        const updatedAt = privateResult.event.created_at ? privateResult.event.created_at * 1000 : Date.now();
+        const envelope = buildContactSyncEnvelopeFromNip51(privateResult.contacts, updatedAt);
+        const merged = mergeContactsFromSync(contactsRef.current, envelope);
+        setContacts(merged);
+        saveContactsToStorage(merged);
+        const fingerprint = computeContactsFingerprint(merged);
+        contactsFingerprintRef.current = fingerprint;
+        persistContactSyncMeta({
+          lastEventId: privateResult.event.id,
+          lastUpdatedAt: updatedAt,
+          fingerprint,
+          publicFollows,
+        });
+        contactsPublishQueuedRef.current = false;
+        setContactSyncState({
+          status: "success",
+          message: `Synced ${envelope.contacts.length} contact${envelope.contacts.length === 1 ? "" : "s"}`,
+          updatedAt,
+        });
+      } catch (err: any) {
+        if (!silent) {
+          setContactSyncState({
+            status: "error",
+            message: err?.message || "Failed to sync contacts.",
+            updatedAt: contactSyncMeta.lastUpdatedAt ?? null,
+          });
+        }
+      }
+    },
+    [
+      contactsSyncEnabled,
+      contactSyncMeta.lastUpdatedAt,
+      contactSyncMeta.publicFollows,
+      contactsRef,
+      buildContactSyncEnvelopeFromNip51,
+      fetchLatestPrivateContactsList,
+      migrateNip51ContactsIfNeeded,
+      defaultNostrRelays,
+      ensureNostrIdentity,
+      ensureNostrPool,
+      nostrMissingReason,
+      persistContactSyncMeta,
+      setContacts,
+      saveContactsToStorage,
+      mergeContactsFromSync,
+      computeContactsFingerprint,
+    ],
+  );
+
+  const publishContactsToNostr = useCallback(
+    async (options?: { silent?: boolean; publicFollowsOverride?: PublicFollow[] }) => {
+      const silent = options?.silent === true;
+      const meta = contactSyncMetaRef.current;
+      if (!contactsSyncEnabled) {
+        contactsPublishQueuedRef.current = false;
+        setContactsPublishState("idle");
+        if (!silent) {
+          setContactSyncState({
+            status: "error",
+            message: "Contact sync is disabled in Settings.",
+            updatedAt: meta.lastUpdatedAt ?? null,
+          });
+        }
+        return;
+      }
+      const identity = ensureNostrIdentity();
+      if (!identity) {
+        if (!silent) {
+          setContactsPublishState("error");
+          setContactsPublishMessage(nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr to sync contacts.");
+        }
+        return;
+      }
+      if (!nip44?.v2) {
+        setContactsPublishState("error");
+        setContactsPublishMessage("NIP-44 v2 support is required to encrypt contacts.");
+        return;
+      }
+      const relays = defaultNostrRelays
+        .map((url) => (typeof url === "string" ? url.trim() : ""))
+        .filter(Boolean);
+      if (!relays.length) {
+        setContactsPublishState("error");
+        setContactsPublishMessage("Add at least one relay to sync contacts.");
+        return;
+      }
+      const fingerprint = computeContactsFingerprint(contactsRef.current);
+      contactsFingerprintRef.current = fingerprint;
+      const publicFollows = options?.publicFollowsOverride ?? meta.publicFollows ?? [];
+      const shouldPublishPrivateList = !(meta.fingerprint && meta.lastUpdatedAt && meta.fingerprint === fingerprint);
+      const shouldPublishPublicFollows = options?.publicFollowsOverride !== undefined || shouldPublishPrivateList;
+      if (!shouldPublishPrivateList && !shouldPublishPublicFollows) {
+        setContactsPublishState("success");
+        setContactsPublishMessage("Contacts already synced");
+        if (!silent) {
+          setContactSyncState({
+            status: "success",
+            message: "Contacts already synced",
+            updatedAt: meta.lastUpdatedAt,
+          });
+        }
+        contactsPublishQueuedRef.current = false;
+        return;
+      }
+      const updatedAt = Date.now();
+      const publicFollowTags = publicFollows
+        .map((follow) => {
+          const pubkey = (follow.pubkey || "").trim();
+          if (!pubkey) return null;
+          const relay = (follow.relay || "").trim();
+          const petname = (follow.petname || "").trim();
+          const tag: string[] = ["p", pubkey];
+          if (relay || petname) {
+            tag.push(relay);
+          }
+          if (petname) {
+            if (!relay) {
+              tag.push("");
+            }
+            tag.push(petname);
+          }
+          return tag;
+        })
+        .filter(Boolean) as string[][];
+      try {
+        setContactsPublishState("publishing");
+        setContactsPublishMessage("");
+        const pool = ensureNostrPool();
+        const createdAt = Math.floor(updatedAt / 1000);
+        let nip51Event: { id: string; created_at?: number } | null = null;
+        if (shouldPublishPrivateList) {
+          nip51Event = await publishNip51PrivateContactsList(pool, relays, contactsRef.current, {
+            privateKeyHex: identity.secret,
+            publicKeyHex: identity.pubkey,
+          }, {
+            createdAt,
+          });
+          if (walletDebugEnabled) {
+            console.debug("[wallet] Published NIP-51 contacts list", nip51Event.id.slice(0, 8));
+          }
+        }
+        if (shouldPublishPublicFollows) {
+          const template: EventTemplate = {
+            kind: 3,
+            content: "",
+            tags: publicFollowTags,
+            created_at: createdAt,
+          };
+          if (template.content !== "") {
+            throw new Error("Kind:3 content must be empty.");
+          }
+          const signed = finalizeEvent(template, hexToBytes(identity.secret));
+          await safePublish(pool, relays, signed);
+          if (walletDebugEnabled) {
+            console.debug("[wallet] Published kind:3 follows", signed.id.slice(0, 8));
+          }
+        }
+        if (shouldPublishPrivateList && nip51Event) {
+          const publishedAt = nip51Event.created_at ? nip51Event.created_at * 1000 : updatedAt;
+          persistContactSyncMeta({
+            lastEventId: nip51Event.id,
+            lastUpdatedAt: publishedAt,
+            fingerprint,
+            publicFollows,
+          });
+          setContactSyncState({
+            status: "success",
+            message: "Contacts synced",
+            updatedAt: publishedAt,
+          });
+        } else {
+          persistContactSyncMeta({ publicFollows });
+          if (!silent) {
+            setContactSyncState({
+              status: "success",
+              message: "Public follows synced",
+              updatedAt: meta.lastUpdatedAt ?? null,
+            });
+          }
+        }
+        setContactsPublishState("success");
+        setContactsPublishMessage("Contacts synced to relays");
+        contactsPublishQueuedRef.current = false;
+      } catch (err: any) {
+        const message = err?.message || "Unable to sync contacts.";
+        setContactsPublishState("error");
+        setContactsPublishMessage(message);
+        if (!silent) {
+          setContactSyncState((prev) => ({
+            status: "error",
+            message,
+            updatedAt: prev.updatedAt ?? null,
+          }));
+        }
+        contactsPublishQueuedRef.current = false;
+      }
+    },
+    [
+      contactsSyncEnabled,
+      contactsRef,
+      defaultNostrRelays,
+      ensureNostrIdentity,
+      ensureNostrPool,
+      contactSyncMetaRef,
+      computeContactsFingerprint,
+      nostrMissingReason,
+      persistContactSyncMeta,
+      safePublish,
+      walletDebugEnabled,
+      publishNip51PrivateContactsList,
+    ],
+  );
+
+  const applyContactProfileUpdates = useCallback(
+    (
+      profilesByHex: Map<string, CachedContactProfile>,
+      options?: { persistCache?: boolean; existingCache?: Record<string, CachedContactProfile> },
+    ) => {
+      if (!profilesByHex.size) return;
+      setContacts((prev) => {
+        let changed = false;
+        const next = prev.map((contact) => {
+          const normalizedNpub = normalizeNostrPubkey(contact.npub || "");
+          const hex = normalizedNpub ? compressedToRawHex(normalizedNpub).toLowerCase() : null;
+          if (!hex) return contact;
+          const incoming = profilesByHex.get(hex);
+          if (!incoming) return contact;
+          const baseline = contact.updatedAt ?? contact.createdAt ?? 0;
+          const isNewer = incoming.updatedAt > baseline;
+          const fillMissing =
+            !contact.picture ||
+            !contact.displayName ||
+            !contact.username ||
+            !contact.address ||
+            !contact.nip05 ||
+            !contact.about ||
+            !contact.name;
+          if (!isNewer && !fillMissing) return contact;
+          const { profile, updatedAt, pictureDataUrl } = incoming;
+          let updatedContact = contact;
+          let localChanged = false;
+          const preferProfileName = contact.source !== "manual" || !contact.name?.trim();
+          const nextName = profile.displayName || profile.username || contact.name;
+          if (preferProfileName && nextName && nextName !== contact.name) {
+            updatedContact = { ...updatedContact, name: nextName };
+            localChanged = true;
+          }
+          const maybeUpdate = <K extends keyof Contact>(key: K, value: Contact[K] | undefined) => {
+            if (!value) return;
+            const current = updatedContact[key];
+            const shouldUpdate = isNewer || !current || (typeof current === "string" && current.trim() === "");
+            if (shouldUpdate && value !== current) {
+              updatedContact = { ...updatedContact, [key]: value };
+              localChanged = true;
+            }
+          };
+          maybeUpdate("displayName", profile.displayName);
+          maybeUpdate(
+            "username",
+            profile.username ? (sanitizeUsername(profile.username) as Contact["username"]) : updatedContact.username,
+          );
+          maybeUpdate("address", profile.lud16 as Contact["address"] | undefined);
+          maybeUpdate("nip05", profile.nip05 as Contact["nip05"] | undefined);
+          maybeUpdate("about", profile.about as Contact["about"] | undefined);
+          const nextPictureRaw = typeof profile.picture === "string" ? profile.picture.trim() : "";
+          const nextPicture = (pictureDataUrl || nextPictureRaw).trim();
+          if (nextPicture && nextPicture !== (updatedContact.picture || "").trim()) {
+            updatedContact = { ...updatedContact, picture: nextPicture };
+            localChanged = true;
+          }
+          if (!localChanged) return contact;
+          changed = true;
+          return { ...updatedContact, updatedAt: isNewer ? updatedAt : baseline };
+        });
+        return changed ? next : prev;
+      });
+      if (options?.persistCache) {
+        const nextCache = { ...(options.existingCache || {}) };
+        profilesByHex.forEach(({ profile, updatedAt, pictureDataUrl }, hex) => {
+          const existing = nextCache[hex];
+          if (!existing || updatedAt > (existing.updatedAt ?? 0)) {
+            nextCache[hex] = { profile, updatedAt, pictureDataUrl };
+          } else if (pictureDataUrl && !existing.pictureDataUrl) {
+            nextCache[hex] = { ...existing, pictureDataUrl };
+          }
+        });
+        persistContactProfileCache(nextCache);
+      }
+    },
+    [compressedToRawHex, normalizeNostrPubkey, sanitizeUsername],
+  );
+
+  const refreshContactProfiles = useCallback(async () => {
+    const contactsList = contactsRef.current;
+    if (!contactsList.length) return;
+
+    const cachedProfiles = loadContactProfileCache();
+    const cachedProfilesByHex = new Map<string, CachedContactProfile>();
+    Object.entries(cachedProfiles).forEach(([hex, entry]) => {
+      if (!hex || !entry?.profile) return;
+      cachedProfilesByHex.set(hex.toLowerCase(), {
+        profile: entry.profile,
+        updatedAt: entry.updatedAt || 0,
+        pictureDataUrl: entry.pictureDataUrl,
+      });
+    });
+    if (cachedProfilesByHex.size) {
+      applyContactProfileUpdates(cachedProfilesByHex);
+    }
+
+    const authorHexes: string[] = [];
+    const seenAuthors = new Set<string>();
+    const relays = new Set(
+      defaultNostrRelays
+        .map((url) => (typeof url === "string" ? url.trim() : ""))
+        .filter((url): url is string => !!url),
+    );
+    contactsList.forEach((contact) => {
+      const normalizedNpub = normalizeNostrPubkey(contact.npub);
+      if (!normalizedNpub) return;
+      const authorHex = compressedToRawHex(normalizedNpub).toLowerCase();
+      if (!authorHex) return;
+      if (!seenAuthors.has(authorHex)) {
+        seenAuthors.add(authorHex);
+        authorHexes.push(authorHex);
+      }
+      if (Array.isArray(contact.relays)) {
+        contact.relays.forEach((relay) => {
+          const trimmed = typeof relay === "string" ? relay.trim() : "";
+          if (trimmed) {
+            relays.add(trimmed);
+          }
+        });
+      }
+    });
+    if (!authorHexes.length) return;
+    const relayList = Array.from(relays);
+    if (!relayList.length) return;
+    try {
+      const pool = ensureNostrPool();
+      const events = await pool
+        .querySync(relayList, { kinds: [0], authors: authorHexes })
+        .then((res) => (Array.isArray(res) ? res : []))
+        .catch(() => []);
+      if (!events.length) return;
+      const profilesByHex = new Map<string, CachedContactProfile>();
+      const photoCacheTasks: Promise<void>[] = [];
+      events.forEach((event) => {
+        if (!event?.pubkey || typeof event.content !== "string") return;
+        const hex = compressedToRawHex(event.pubkey).toLowerCase();
+        if (!hex) return;
+        const updatedAt = event.created_at ? event.created_at * 1000 : Date.now();
+        const existing = profilesByHex.get(hex);
+        if (existing && existing.updatedAt >= updatedAt) return;
+        const profile = parseProfileContent(event.content);
+        const cachedProfile = cachedProfiles[hex];
+        const entry: CachedContactProfile = { profile, updatedAt };
+        const pictureUrl = typeof profile.picture === "string" ? profile.picture.trim() : "";
+        const cachedPictureUrl = typeof cachedProfile?.profile?.picture === "string"
+          ? cachedProfile.profile.picture.trim()
+          : "";
+        if (pictureUrl) {
+          if (isDataUrl(pictureUrl)) {
+            entry.pictureDataUrl = pictureUrl;
+          } else if (cachedProfile?.pictureDataUrl && pictureUrl === cachedPictureUrl) {
+            entry.pictureDataUrl = cachedProfile.pictureDataUrl;
+          } else if (shouldCacheProfilePhoto(pictureUrl)) {
+            photoCacheTasks.push(
+              fetchProfilePhotoDataUrl(pictureUrl).then((dataUrl) => {
+                if (!dataUrl) return;
+                const current = profilesByHex.get(hex);
+                if (current && current.updatedAt === updatedAt) {
+                  profilesByHex.set(hex, { ...current, pictureDataUrl: dataUrl });
+                }
+              }),
+            );
+          }
+        }
+        profilesByHex.set(hex, entry);
+      });
+      if (photoCacheTasks.length) {
+        await Promise.allSettled(photoCacheTasks);
+      }
+      if (!profilesByHex.size) return;
+      applyContactProfileUpdates(profilesByHex, { persistCache: true, existingCache: cachedProfiles });
+    } catch (err) {
+      console.warn("Failed to refresh contact profiles", err);
+    }
+  }, [
+    applyContactProfileUpdates,
+    compressedToRawHex,
+    contactsRef,
+    defaultNostrRelays,
+    ensureNostrPool,
+    normalizeNostrPubkey,
+    parseProfileContent,
+  ]);
+
+  const publishProfileMetadata = useCallback(
+    async (draft?: Partial<ContactProfile>) => {
+      if (!contactsSyncEnabled) {
+        setProfileStatus("error");
+        setProfileMessage("Contact sync is disabled in Settings.");
+        return null;
+      }
+      const identity = ensureNostrIdentity();
+      if (!identity) {
+        setProfileStatus("error");
+        setProfileMessage(nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr.");
+        return null;
+      }
+      const relays = defaultNostrRelays
+        .map((url) => (typeof url === "string" ? url.trim() : ""))
+        .filter(Boolean);
+      if (!relays.length) {
+        setProfileStatus("error");
+        setProfileMessage("Add at least one relay to publish your profile.");
+        return null;
+      }
+      if (!profileEventIdRef.current) {
+        profileEventIdRef.current = readProfileEventId(identity.pubkey);
+      }
+      const currentProfile = profileFormRef.current;
+      const username = (draft?.username ?? currentProfile.username ?? "").trim();
+      const displayName = (draft?.displayName ?? currentProfile.displayName ?? "").trim();
+      const lud16 = (draft?.lud16 ?? currentProfile.lud16 ?? "").trim();
+      const nip05 = (draft?.nip05 ?? currentProfile.nip05 ?? "").trim();
+      const about = (draft?.about ?? currentProfile.about ?? "").trim();
+      const hasDraftPicture = draft && "picture" in draft;
+      const picture = (hasDraftPicture ? draft?.picture ?? "" : currentProfile.picture ?? "").trim();
+      if (picture && isDataUrl(picture)) {
+        setProfilePhotoError("Upload your profile photo before publishing.");
+        setProfileStatus("error");
+        setProfileMessage("Upload your profile photo before publishing.");
+        return null;
+      }
+      try {
+        setProfileStatus("publishing");
+        setProfileMessage("");
+        const result = await publishMyProfile(
+          { username, displayName, lud16, nip05, about, picture },
+          {
+            signer: identity.secret,
+            pubkey: identity.pubkey,
+            relays,
+            previousIdHint: profileEventIdRef.current,
+            reason: "superseded profile metadata",
+          },
+        );
+        const event = result.event;
+        const updatedAt = event?.created_at ? event.created_at * 1000 : Date.now();
+        profileEventIdRef.current = event.id || null;
+        persistProfileEventId(identity.pubkey, event.id || null);
+        const nextProfile = { username, displayName, lud16, nip05, about, picture };
+        persistProfileMetadataCache(identity.pubkey, {
+          profile: nextProfile,
+          updatedAt,
+          eventId: event.id || null,
+        });
+        setProfileForm(nextProfile);
+        setProfileUpdatedAt(updatedAt);
+        setProfileStatus("ready");
+        setProfileMessage("Profile saved");
+        setProfileSharePayload(formatNpub(identity.pubkey));
+        return event;
+      } catch (err: any) {
+        setProfileStatus("error");
+        setProfileMessage(err?.message || "Unable to publish profile.");
+        console.warn("[profile] Unable to publish profile metadata", err);
+        return null;
+      }
+    },
+    [
+      contactsSyncEnabled,
+      defaultNostrRelays,
+      ensureNostrIdentity,
+      formatNpub,
+      nostrMissingReason,
+      persistProfileEventId,
+      persistProfileMetadataCache,
+      readProfileEventId,
+      setProfilePhotoError,
+    ],
+  );
+
+  const loadProfileMetadata = useCallback(
+    async () => {
+      if (!contactsSyncEnabled) {
+        setProfileStatus("error");
+        setProfileMessage("Contact sync is disabled in Settings.");
+        return null;
+      }
+      const identity = ensureNostrIdentity();
+      if (!identity) {
+        setProfileStatus("error");
+        setProfileMessage(nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr.");
+        return null;
+      }
+      const relays = defaultNostrRelays
+        .map((url) => (typeof url === "string" ? url.trim() : ""))
+        .filter(Boolean);
+      if (!relays.length) {
+        setProfileStatus("error");
+        setProfileMessage("Add at least one relay to load your profile.");
+        return null;
+      }
+      if (!profileEventIdRef.current) {
+        profileEventIdRef.current = readProfileEventId(identity.pubkey);
+      }
+      const cached = readProfileMetadataCache(identity.pubkey);
+      if (cached?.eventId && !profileEventIdRef.current) {
+        profileEventIdRef.current = cached.eventId;
+        persistProfileEventId(identity.pubkey, cached.eventId);
+      }
+      if (cached?.profile) {
+        setProfileForm(cached.profile);
+        setProfileSharePayload(identity ? formatNpub(identity.pubkey) : null);
+        setProfileUpdatedAt(cached.updatedAt ?? null);
+        setProfileStatus((prev) => (prev === "publishing" ? prev : "ready"));
+        setProfileMessage("Refreshing profile…");
+      } else {
+        setProfileStatus("loading");
+        setProfileMessage("Loading profile…");
+      }
+      try {
+        const event = await loadMyLatestProfileEvent(identity.pubkey, relays, { timeoutMs: 8000 });
+        if (event && typeof event.content === "string") {
+          const meta = parseProfileContent(event.content);
+          const updatedAt = event.created_at ? event.created_at * 1000 : Date.now();
+          profileEventIdRef.current = event.id || null;
+          persistProfileEventId(identity.pubkey, event.id || null);
+          const nextProfile = {
+            username: meta.username || profileFormRef.current.username || "",
+            displayName: meta.displayName || meta.username || profileFormRef.current.displayName || "",
+            lud16: meta.lud16 || profileFormRef.current.lud16 || deriveDefaultLightningAddress(),
+            nip05: meta.nip05 || profileFormRef.current.nip05 || "",
+            about: meta.about || profileFormRef.current.about || "",
+            picture: meta.picture || profileFormRef.current.picture || "",
+          };
+          setProfileForm(nextProfile);
+          setProfileSharePayload(identity ? formatNpub(identity.pubkey) : null);
+          setProfileUpdatedAt(updatedAt);
+          persistProfileMetadataCache(identity.pubkey, {
+            profile: nextProfile,
+            updatedAt,
+            eventId: event.id || null,
+          });
+          setProfileStatus("ready");
+          setProfileMessage("Profile loaded");
+          return meta;
+        }
+        setProfileStatus("ready");
+        setProfileMessage("No profile metadata found yet.");
+        return null;
+      } catch (err: any) {
+        setProfileStatus("error");
+        setProfileMessage(err?.message || "Unable to load profile.");
+        return null;
+      }
+    },
+    [
+      contactsSyncEnabled,
+      defaultNostrRelays,
+      deriveDefaultLightningAddress,
+      ensureNostrIdentity,
+      formatNpub,
+      nostrMissingReason,
+      parseProfileContent,
+      persistProfileMetadataCache,
+      persistProfileEventId,
+      readProfileMetadataCache,
+      readProfileEventId,
+    ],
+  );
+
   useEffect(() => {
     if (!paymentRequestsEnabled) return;
     if (receiveMode !== "ecash") return;
@@ -5846,6 +10019,89 @@ export default function CashuWalletModal({
       return prev === "Loading mint info…" ? "" : prev;
     });
   }, [paymentRequestsEnabled, mintUrl, info?.unit]);
+
+  useEffect(() => {
+    if (!contactsSyncEnabled) {
+      contactsPublishQueuedRef.current = false;
+      return;
+    }
+    const fingerprint = computeContactsFingerprint(contacts);
+    contactsFingerprintRef.current = fingerprint;
+    if (!contacts.length && !contactSyncMeta.fingerprint) {
+      contactsPublishQueuedRef.current = false;
+      return;
+    }
+    if (contactSyncMeta.fingerprint && contactSyncMeta.fingerprint === fingerprint) {
+      if (contactsPublishState !== "publishing") {
+        contactsPublishQueuedRef.current = false;
+      }
+      return;
+    }
+    contactsPublishQueuedRef.current = true;
+  }, [computeContactsFingerprint, contactSyncMeta.fingerprint, contacts, contactsPublishState, contactsSyncEnabled]);
+
+  useEffect(() => {
+    if (!contactsSyncEnabled) return;
+    if (nostrMissingReason) return;
+    void migrateNip51ContactsIfNeeded({ silent: true });
+  }, [contactsSyncEnabled, nostrMissingReason, migrateNip51ContactsIfNeeded]);
+
+  useEffect(() => {
+    if (!contactsTabOpen) return;
+    if (!contactsSyncEnabled) return;
+    if (!contactsPublishQueuedRef.current) return;
+    const timer = window.setTimeout(() => {
+      if (contactsPublishQueuedRef.current) {
+        void publishContactsToNostr({ silent: true });
+      }
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [contactsSyncEnabled, contactsTabOpen, publishContactsToNostr]);
+
+  useEffect(() => {
+    if (!contactsTabOpen && !contactsOpen) {
+      contactProfilesRefreshedRef.current = false;
+      return;
+    }
+    if (!contactProfilesRefreshedRef.current) {
+      contactProfilesRefreshedRef.current = true;
+      void refreshContactProfiles();
+      if (contactsSyncEnabled) {
+        void loadProfileMetadata();
+        void syncContactsFromNostr({ silent: true });
+      }
+    }
+  }, [contactsOpen, contactsSyncEnabled, contactsTabOpen, loadProfileMetadata, refreshContactProfiles, syncContactsFromNostr]);
+
+  useEffect(() => {
+    if (contactsTabOpen) return;
+    setContactView("list");
+    setActiveContactId(null);
+    resetContactEditDraft();
+    setContactEditError("");
+    setContactLookupError("");
+    setContactLookupInput("");
+    setPublicFollowPickerOpen(false);
+  }, [contactsTabOpen, resetContactEditDraft]);
+
+  useEffect(() => {
+    if (!contactsTabOpen) return;
+    if (contactView !== "detail") return;
+    if (activeContactId && activeContactId !== "profile") {
+      const exists = contacts.some((entry) => entry.id === activeContactId);
+      if (!exists) {
+        setContactView("list");
+        setActiveContactId(null);
+      }
+    }
+  }, [activeContactId, contactView, contacts, contactsTabOpen]);
+
+  useEffect(() => {
+    if (!contactsTabOpen) return;
+    if (contactView !== "detail") return;
+    const panelEl = contactsPanelRef.current?.closest(".sheet-panel") as HTMLElement | null;
+    panelEl?.scrollTo({ top: 0 });
+  }, [activeContactId, contactView, contactsTabOpen]);
 
   const handleClaimIncomingPayment = useCallback(
     async (entry: IncomingPaymentRequest) => {
@@ -5897,6 +10153,8 @@ export default function CashuWalletModal({
         incomingPaymentRequestsRef.current = incomingPaymentRequestsRef.current.filter(
           (item) => item.eventId !== entry.eventId,
         );
+        const now = Date.now();
+        const tokenState = deriveSpentHistoryTokenStateFromTokenRef.current(entry.token, now);
         setHistory((prev) => [
           buildHistoryEntry({
             id: `payment-request-recv-${entry.eventId}`,
@@ -5907,13 +10165,58 @@ export default function CashuWalletModal({
             direction: "in",
             amountSat: entry.amount,
             mintUrl: res.usedMintUrl ?? entry.mint ?? undefined,
+            ...(tokenState ? { tokenState } : {}),
           }),
           ...prev,
         ]);
         if (entry.id && currentPaymentRequest?.id === entry.id) {
           setPaymentRequestStatusMessage("Payment received and claimed automatically.");
         }
-        showToast(`received ${entry.amount} sats`, 3500);
+        const amountLabel = `${entry.amount} sat${entry.amount === 1 ? "" : "s"}`;
+        let senderNip05: string | null = null;
+        const normalizedSender = normalizeNostrPubkey(entry.sender);
+        const senderHex = normalizedSender ? compressedToRawHex(normalizedSender).toLowerCase() : entry.sender.toLowerCase();
+        if (senderHex && /^[0-9a-f]{64}$/.test(senderHex)) {
+          const contact = contacts.find((c) => {
+            const npub = normalizeNostrPubkey(c.npub || "");
+            return npub ? compressedToRawHex(npub).toLowerCase() === senderHex : false;
+          });
+          if (contact?.nip05) {
+            const nip05 = contact.nip05.trim();
+            const normalizedNip05 = normalizeNip05(nip05);
+            const check = nip05Checks[contact.id];
+            const contactPubkeyHex = contact.npub
+              ? compressedToRawHex(normalizeNostrPubkey(contact.npub) ?? contact.npub).toLowerCase()
+              : "";
+            if (
+              normalizedNip05 &&
+              check &&
+              check.status === "valid" &&
+              check.nip05 === normalizedNip05 &&
+              check.npub === contactPubkeyHex
+            ) {
+              senderNip05 = nip05;
+            }
+          }
+          if (!senderNip05) {
+            const profile = dmPeerProfilesRef.current.get(senderHex);
+            if (profile?.nip05) {
+              const nip05 = profile.nip05.trim();
+              const normalizedNip05 = normalizeNip05(nip05);
+              const check = nip05Checks[`dm-${senderHex}`];
+              if (
+                normalizedNip05 &&
+                check &&
+                check.status === "valid" &&
+                check.nip05 === normalizedNip05 &&
+                check.npub === senderHex
+              ) {
+                senderNip05 = nip05;
+              }
+            }
+          }
+        }
+        showToast(senderNip05 ? `Received ${amountLabel} from ${senderNip05}` : `Received ${amountLabel}`, 3500);
         if (res.crossMint) {
           showToast(`Redeemed to ${res.usedMintUrl}. Switch to view the balance.`, 5000);
         }
@@ -5951,9 +10254,13 @@ export default function CashuWalletModal({
       addSpentIncomingPayment,
       buildHistoryEntry,
       claimingEventSet,
+      compressedToRawHex,
+      contacts,
       currentPaymentRequest,
       fingerprintIncomingToken,
       isIncomingPaymentSpent,
+      nip05Checks,
+      normalizeNip05,
       requestNostrPaymentDeletion,
       persistSpentIncomingEvents,
       receiveToken,
@@ -6000,10 +10307,33 @@ export default function CashuWalletModal({
         | null
         | undefined,
     ): NormalizedIncomingPayment | null => {
-      const payload =
-        typeof rawPayload === "string"
-          ? ({ token: rawPayload } as Record<string, unknown>)
-          : rawPayload;
+      const myPubkey = nostrIdentityRef.current?.pubkey?.toLowerCase() ?? null;
+      let senderPubkey: string | null = null;
+      if (rawPayload && typeof rawPayload === "object") {
+        const senderCandidate =
+          (rawPayload as any).sender ?? (rawPayload as any).from ?? (rawPayload as any).payer;
+        if (typeof senderCandidate === "string" && senderCandidate.trim()) {
+          senderPubkey = normalizeNostrPubkey(senderCandidate) ?? senderCandidate.trim().toLowerCase();
+        }
+      }
+      if (myPubkey && senderPubkey && senderPubkey === myPubkey) {
+        // Ignore payment messages we authored ourselves to avoid self-claiming.
+        return null;
+      }
+      const payload = (() => {
+        if (typeof rawPayload !== "string") return rawPayload;
+        const trimmed = rawPayload.trim();
+        if (!trimmed) return null;
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+        } catch {
+          // fall through to token extraction
+        }
+        const extracted = extractFirstCashuTokenFromText(trimmed);
+        if (!extracted) return null;
+        return { token: extracted } as Record<string, unknown>;
+      })();
       if (!payload || typeof payload !== "object") return null;
       const defaultUnit = (info?.unit || "sat").toLowerCase();
       const normalizedActiveMint = mintUrl ? normalizeMintUrl(mintUrl) : null;
@@ -6080,6 +10410,7 @@ export default function CashuWalletModal({
         if (typeof value !== "string") return;
         const trimmed = value.trim();
         if (!trimmed) return;
+        if (!/cashu/i.test(trimmed)) return;
         if (seenTokenStrings.has(trimmed)) return;
         seenTokenStrings.add(trimmed);
         tokenStrings.push(trimmed);
@@ -6148,7 +10479,9 @@ export default function CashuWalletModal({
             );
           }
         } catch (err) {
-          console.warn("Failed to decode token from payment payload", err);
+          if (walletDebugEnabled) {
+            console.warn("Failed to decode token from payment payload", err);
+          }
         }
       }
 
@@ -6172,7 +10505,7 @@ export default function CashuWalletModal({
 
       return entries[0] ?? null;
     },
-    [info?.unit, mintUrl],
+    [info?.unit, mintUrl, walletDebugEnabled],
   );
 
   const processIncomingPaymentPayload = useCallback(
@@ -6180,6 +10513,7 @@ export default function CashuWalletModal({
       payload: PaymentRequestPayload | string,
       event: NostrEvent,
       normalizedOverride?: NormalizedIncomingPayment | null,
+      senderOverride?: string | null,
     ) => {
       const normalized = normalizedOverride ?? selectIncomingPaymentFromPayload(payload);
       if (!normalized) return;
@@ -6198,6 +10532,19 @@ export default function CashuWalletModal({
         payload && typeof payload === "object" && "id" in payload
           ? ((payload as PaymentRequestPayload).id ?? null)
           : null;
+      let sender = (event.pubkey || "").toLowerCase();
+      if (senderOverride && typeof senderOverride === "string") {
+        const normalizedSender = normalizeNostrPubkey(senderOverride);
+        if (normalizedSender) {
+          const rawSender = compressedToRawHex(normalizedSender).toLowerCase();
+          if (/^[0-9a-f]{64}$/.test(rawSender)) {
+            sender = rawSender;
+          }
+        }
+      }
+      if (sender) {
+        void ensurePeerProfile(sender);
+      }
       const nextEntry: IncomingPaymentRequest = {
         eventId: event.id,
         id: payloadId,
@@ -6205,7 +10552,7 @@ export default function CashuWalletModal({
         amount,
         mint,
         unit,
-        sender: event.pubkey,
+        sender,
         receivedAt,
         fingerprint,
       };
@@ -6221,7 +10568,9 @@ export default function CashuWalletModal({
       }
     },
     [
+      compressedToRawHex,
       currentPaymentRequest,
+      ensurePeerProfile,
       paymentRequestsEnabled,
       scheduleAutoClaimRun,
       selectIncomingPaymentFromPayload,
@@ -6231,154 +10580,11 @@ export default function CashuWalletModal({
   );
 
   const PAYMENT_REQUEST_SEND_TIMEOUT_MS = 8000;
-  const PAYMENT_REQUEST_FETCH_TIMEOUT_MS = 8000;
-  const TIMEOUT_SYMBOL = Symbol("payment-request-timeout");
-
-  const checkForIncomingPaymentRequests = useCallback(
-    async (options?: { force?: boolean; failOnTimeout?: boolean }) => {
-      console.debug("[wallet] checkForIncomingPaymentRequests", options);
-      if (!paymentRequestsEnabled) return;
-      const identity = ensureNostrIdentity();
-      if (!identity) return;
-      if (nostrCheckInFlightRef.current) return;
-      const relays = defaultNostrRelays;
-      if (!relays.length) return;
-      const now = Math.floor(Date.now() / 1000);
-      if (!options?.force && nostrLastCheckRef.current && now - nostrLastCheckRef.current < 5) {
-        // Avoid hammering relays more than once every ~5 seconds outside of forced checks
-        return;
-      }
-      const since = Math.max(0, now - PAYMENT_REQUEST_LOOKBACK_SECONDS);
-      nostrCheckInFlightRef.current = true;
-      try {
-        const pool = ensureNostrPool();
-        const filter = { kinds: [4, 1059], "#p": [identity.pubkey], since } as const;
-        if (PAYMENT_REQUEST_DEBUG) {
-          console.debug("[wallet] payment request poll", { since, relays });
-        }
-        const fetchPromise = pool
-          .querySync(relays, filter, {
-            label: "taskify-payment-request-poll",
-            maxWait: PAYMENT_REQUEST_FETCH_TIMEOUT_MS,
-          })
-          .then((events) => (Array.isArray(events) ? events : []));
-        let events: unknown[] | typeof TIMEOUT_SYMBOL = [];
-        if (options?.force) {
-          events = await Promise.race<unknown[] | typeof TIMEOUT_SYMBOL>([
-            fetchPromise,
-            new Promise<typeof TIMEOUT_SYMBOL>((resolve) => {
-              setTimeout(() => resolve(TIMEOUT_SYMBOL), PAYMENT_REQUEST_FETCH_TIMEOUT_MS);
-            }),
-          ]);
-        } else {
-          events = await fetchPromise;
-        }
-        if (events === TIMEOUT_SYMBOL) {
-          if (options?.failOnTimeout) {
-            throw new Error("Timed out while waiting for relay responses");
-          }
-          console.warn("Payment request fetch timed out");
-          return;
-        }
-        const ordered = (Array.isArray(events) ? events : [])
-          .map((event) => event as Partial<NostrEvent>)
-          .filter(
-            (event): event is NostrEvent =>
-              !!event &&
-              typeof event.id === "string" &&
-              typeof event.pubkey === "string" &&
-              typeof event.kind === "number" &&
-              (event.kind === 4 || event.kind === 1059),
-          )
-          .map((event) => ({
-            id: event.id,
-            kind: event.kind,
-            pubkey: event.pubkey,
-            created_at: typeof event.created_at === "number" ? event.created_at : 0,
-            tags: Array.isArray(event.tags) ? (event.tags as string[][]) : [],
-            content: typeof event.content === "string" ? event.content : "",
-            sig: typeof event.sig === "string" ? event.sig : "",
-          }))
-          .sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0));
-        if (PAYMENT_REQUEST_DEBUG) {
-          console.debug("[wallet] payment request events", ordered.length);
-        }
-        for (const event of ordered) {
-          if (nostrProcessedEventsRef.current.has(event.id)) continue;
-          try {
-            const plain = await decryptNostrPaymentMessage(event, identity.secret);
-            if (!plain) continue;
-            const message = parseIncomingPaymentMessage(plain);
-            if (!message) continue;
-            const normalizedPayload = selectIncomingPaymentFromPayload(message);
-            if (!normalizedPayload) continue;
-            nostrProcessedEventsRef.current.add(event.id);
-            if (nostrProcessedEventsRef.current.size > 512) {
-              const iter = nostrProcessedEventsRef.current.values();
-              const first = iter.next().value;
-              if (first) nostrProcessedEventsRef.current.delete(first);
-            }
-            if (PAYMENT_REQUEST_DEBUG) {
-              const payloadId =
-                message && typeof message === "object" && "id" in message
-                  ? (message as PaymentRequestPayload).id
-                  : null;
-              console.debug("[wallet] payment request payload received", {
-                id: payloadId,
-                eventId: event.id,
-                amount: normalizedPayload.amount,
-                mint: normalizedPayload.mint,
-              });
-            }
-            processIncomingPaymentPayload(message, event, normalizedPayload);
-          } catch (err) {
-            console.warn("Failed to decrypt payment request DM", err);
-          }
-        }
-        nostrLastCheckRef.current = now;
-      } catch (err) {
-        console.warn("Payment request polling failed", err);
-        if (nostrPoolRef.current) {
-          try {
-            nostrPoolRef.current.destroy();
-          } catch {}
-          nostrPoolRef.current = null;
-        }
-        if (options?.failOnTimeout) {
-          throw err instanceof Error ? err : new Error(String(err));
-        }
-      } finally {
-        nostrCheckInFlightRef.current = false;
-      }
-  },
-  [
-    paymentRequestsEnabled,
-    ensureNostrIdentity,
-    defaultNostrRelays,
-      ensureNostrPool,
-      processIncomingPaymentPayload,
-      decryptNostrPaymentMessage,
-      parseIncomingPaymentMessage,
-      PAYMENT_REQUEST_DEBUG,
-      PAYMENT_REQUEST_LOOKBACK_SECONDS,
-      TIMEOUT_SYMBOL,
-    selectIncomingPaymentFromPayload,
-  ],
-);
-
-const checkIncomingPaymentRequestsRef = useRef<
-  ((options?: { force?: boolean; failOnTimeout?: boolean }) => Promise<void>) | null
->(null);
-useEffect(() => {
-  checkIncomingPaymentRequestsRef.current = checkForIncomingPaymentRequests;
-}, [checkForIncomingPaymentRequests]);
-  
 
   const decryptNostrPaymentMessageRef = useRef(decryptNostrPaymentMessage);
   const parseIncomingPaymentMessageRef = useRef(parseIncomingPaymentMessage);
   const selectIncomingPaymentFromPayloadRef = useRef(selectIncomingPaymentFromPayload);
   const processIncomingPaymentPayloadRef = useRef(processIncomingPaymentPayload);
-
   useEffect(() => {
     decryptNostrPaymentMessageRef.current = decryptNostrPaymentMessage;
   }, [decryptNostrPaymentMessage]);
@@ -6391,38 +10597,51 @@ useEffect(() => {
   useEffect(() => {
     processIncomingPaymentPayloadRef.current = processIncomingPaymentPayload;
   }, [processIncomingPaymentPayload]);
-
-  const startNostrSubscription = useCallback(async () => {
-    console.debug("[wallet] startNostrSubscription");
-    if (nostrSubscriptionActiveRef.current) {
-      return;
-    }
-    if (!paymentRequestsEnabled) return;
-    const identity = ensureNostrIdentity();
-    if (!identity) return;
-    const relays = defaultNostrRelays;
-    if (!relays.length) return;
-    const pool = ensureNostrPool();
-    if (nostrSubscriptionCloserRef.current) {
-      try { nostrSubscriptionCloserRef.current(); } catch {}
-      nostrSubscriptionCloserRef.current = null;
-    }
-    const since = Math.max(0, Math.floor(Date.now() / 1000) - PAYMENT_REQUEST_LOOKBACK_SECONDS);
-    const handleEvent = async (event: NostrEvent) => {
+  const handlePaymentRequestEvent = useCallback(
+    async (event: NostrEvent, options?: { updateClock?: boolean }) => {
       if (!event || typeof event.id !== "string") return;
       if (event.kind !== 4 && event.kind !== 1059) return;
       if (nostrProcessedEventsRef.current.has(event.id)) return;
       const decrypt = decryptNostrPaymentMessageRef.current;
-      if (!decrypt) return;
       const parseMessage = parseIncomingPaymentMessageRef.current;
       const selectPayload = selectIncomingPaymentFromPayloadRef.current;
       const processPayload = processIncomingPaymentPayloadRef.current;
-      const plain = await decrypt(event, identity.secret);
+      if (!decrypt || !parseMessage || !selectPayload || !processPayload) return;
+      const identity = ensureNostrIdentity();
+      if (!identity) return;
+      const decrypted = await decrypt(event, identity.pubkey, identity.secret);
+      const plain = decrypted?.content;
       if (!plain) return;
+      const identityRaw = compressedToRawHex(identity.pubkey).toLowerCase();
+      const normalizeToRawHex = (value: string | null | undefined): string | null => {
+        if (!value || typeof value !== "string") return null;
+        const normalized = normalizeNostrPubkey(value);
+        if (!normalized) {
+          const trimmed = value.trim().toLowerCase();
+          return /^[0-9a-f]{64}$/.test(trimmed) ? trimmed : null;
+        }
+        const raw = compressedToRawHex(normalized).toLowerCase();
+        return /^[0-9a-f]{64}$/.test(raw) ? raw : null;
+      };
+      const hintedSender = normalizeToRawHex(extractMinibitsPaymentSender(plain));
+      const decryptedSender = normalizeToRawHex(decrypted?.senderPubkey);
+      const decryptedRecipient = normalizeToRawHex(decrypted?.recipientPubkey);
+      if (decryptedRecipient && decryptedRecipient !== identityRaw) {
+        return;
+      }
+      if (!decryptedRecipient && decryptedSender === identityRaw) {
+        return;
+      }
+      const senderOverride =
+        hintedSender && hintedSender !== identityRaw
+          ? hintedSender
+          : decryptedSender && decryptedSender !== identityRaw
+            ? decryptedSender
+            : null;
       try {
-        const message = parseMessage ? parseMessage(plain) : null;
+        const message = parseMessage(plain);
         if (!message) return;
-        const normalizedPayload = selectPayload ? selectPayload(message) : null;
+        const normalizedPayload = selectPayload(message);
         if (!normalizedPayload) return;
         nostrProcessedEventsRef.current.add(event.id);
         if (nostrProcessedEventsRef.current.size > 512) {
@@ -6430,36 +10649,118 @@ useEffect(() => {
           const first = iter.next().value;
           if (first) nostrProcessedEventsRef.current.delete(first);
         }
-        if (processPayload) {
-          processPayload(message, event, normalizedPayload);
+        if (options?.updateClock !== false) {
+          const createdAt = event.created_at || Math.floor(Date.now() / 1000);
+          if (createdAt > nostrLastCheckRef.current) {
+            nostrLastCheckRef.current = createdAt;
+          }
         }
+        processPayload(message, event, normalizedPayload, senderOverride);
       } catch (err) {
         console.warn("Failed to parse Nostr payment request message", err);
       }
-    };
-    const subscription = pool.subscribeMany(
-      relays,
-      { kinds: [4, 1059], "#p": [identity.pubkey], since },
-      {
-        label: "taskify-payment-request-subscribe",
-        onevent: (event) => {
-          void handleEvent(event as NostrEvent);
+    },
+    [compressedToRawHex, ensureNostrIdentity],
+  );
+
+  useEffect(() => {
+    handlePaymentRequestEventRef.current = handlePaymentRequestEvent;
+  }, [handlePaymentRequestEvent]);
+
+  const stopPaymentRequestSubscription = useCallback(() => {
+    if (nostrSubscriptionCloserRef.current) {
+      try { nostrSubscriptionCloserRef.current(); } catch {}
+      nostrSubscriptionCloserRef.current = null;
+    }
+    nostrSubscriptionActiveRef.current = false;
+  }, []);
+
+  const startPaymentRequestSubscription = useCallback(async () => {
+    if (!paymentRequestsEnabled || nostrSubscriptionActiveRef.current) return;
+    if (!paymentRequestsBackgroundChecksEnabled && !open) return;
+    const identity = ensureNostrIdentity();
+    if (!identity) return;
+    const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
+    if (!relays.length) return;
+    const now = Math.floor(Date.now() / 1000);
+    const initialLastCheck = nostrLastCheckRef.current || now - PAYMENT_REQUEST_LOOKBACK_SECONDS;
+    const normalizedLastCheck = Math.max(0, Math.min(initialLastCheck, now));
+    const since = Math.max(0, normalizedLastCheck - PAYMENT_REQUEST_SAFETY_WINDOW_SECONDS);
+    nostrLastCheckRef.current = normalizedLastCheck;
+    try {
+      const session = await NostrSession.init(relays);
+      if (nostrSubscriptionCloserRef.current) {
+        stopPaymentRequestSubscription();
+      }
+      const managed = await session.subscribe(
+        [{ kinds: [4, 1059], "#p": [identity.pubkey], since }],
+        {
+          relayUrls: relays,
+          onEvent: (ev) => {
+            const handler = handlePaymentRequestEventRef.current;
+            if (handler) {
+              void handler(ev as NostrEvent, { updateClock: true });
+            }
+          },
         },
-        onclose: (reasons) => {
-          if (reasons.length) {
-            console.warn("Nostr subscription closed", reasons);
-          }
-        },
-      },
-    );
-    nostrSubscriptionActiveRef.current = true;
-    nostrSubscriptionCloserRef.current = () => {
-      try {
-        subscription.close("taskify-stop");
-      } catch {}
-      nostrSubscriptionActiveRef.current = false;
-    };
-  }, [paymentRequestsEnabled, ensureNostrIdentity, defaultNostrRelays, ensureNostrPool, PAYMENT_REQUEST_LOOKBACK_SECONDS]);
+      );
+      nostrSubscriptionCloserRef.current = () => {
+        try { managed.release(); } catch {}
+        nostrSubscriptionActiveRef.current = false;
+      };
+      nostrSubscriptionActiveRef.current = true;
+    } catch (err) {
+      console.warn("Failed to start payment request subscription", err);
+    }
+  }, [
+    PAYMENT_REQUEST_SAFETY_WINDOW_SECONDS,
+    PAYMENT_REQUEST_LOOKBACK_SECONDS,
+    defaultNostrRelays,
+    ensureNostrIdentity,
+    open,
+    paymentRequestsEnabled,
+    paymentRequestsBackgroundChecksEnabled,
+    stopPaymentRequestSubscription,
+  ]);
+
+  const deepSyncDMs = useCallback(async () => {
+    if (!paymentRequestsEnabled) return;
+    const identity = ensureNostrIdentity();
+    if (!identity) return;
+    const relays = defaultNostrRelays.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean);
+    if (!relays.length) return;
+    try {
+      const session = await NostrSession.init(relays);
+      const since = Math.max(
+        0,
+        Math.floor(Date.now() / 1000) - PAYMENT_REQUEST_DEEP_SYNC_LOOKBACK_SECONDS,
+      );
+      const events = await session.fetchEvents(
+        [{ kinds: [4, 1059], "#p": [identity.pubkey], since }],
+        relays,
+      );
+      const ordered = events
+        .filter((event) => event && (event.kind === 4 || event.kind === 1059))
+        .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+      for (const event of ordered) {
+        const handler = handlePaymentRequestEventRef.current;
+        if (handler) {
+          await handler(event, { updateClock: false });
+        }
+      }
+    } catch (err) {
+      console.warn("Deep DM sync failed", err);
+    }
+  }, [
+    PAYMENT_REQUEST_DEEP_SYNC_LOOKBACK_SECONDS,
+    defaultNostrRelays,
+    ensureNostrIdentity,
+    paymentRequestsEnabled,
+  ]);
+
+  useEffect(() => {
+    deepSyncDMsRef.current = deepSyncDMs;
+  }, [deepSyncDMs]);
 
   useEffect(() => {
     if (!paymentRequestsEnabled) {
@@ -6471,112 +10772,49 @@ useEffect(() => {
     }
   }, [paymentRequestsEnabled, scheduleAutoClaimRun]);
 
-
   useEffect(() => {
-    if (!paymentRequestsEnabled) {
-      if (nostrSubscriptionCloserRef.current) {
-        try { nostrSubscriptionCloserRef.current(); } catch {}
-        nostrSubscriptionCloserRef.current = null;
-      }
-      if (nostrPoolRef.current) {
-        try {
-          nostrPoolRef.current.close(defaultNostrRelays);
-        } catch {}
-      }
+    if (!paymentRequestsEnabled || (!open && !paymentRequestsBackgroundChecksEnabled)) {
+      stopPaymentRequestSubscription();
       return;
     }
-    void startNostrSubscription();
+    void startPaymentRequestSubscription();
     return () => {
-      if (nostrSubscriptionCloserRef.current) {
-        try { nostrSubscriptionCloserRef.current(); } catch {}
-        nostrSubscriptionCloserRef.current = null;
-      }
-    };
-  }, [paymentRequestsEnabled, startNostrSubscription, defaultNostrRelays]);
-
-  useEffect(() => {
-    return () => {
-      if (nostrSubscriptionCloserRef.current) {
-        try { nostrSubscriptionCloserRef.current(); } catch {}
-        nostrSubscriptionCloserRef.current = null;
-      }
-      nostrSubscriptionActiveRef.current = false;
-      if (nostrPoolRef.current) {
-        try {
-          nostrPoolRef.current.destroy();
-        } catch {}
-        nostrPoolRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!paymentRequestsEnabled || !open) return;
-    nostrLastCheckRef.current = Math.floor(Date.now() / 1000);
-    const fn = checkIncomingPaymentRequestsRef.current;
-    if (fn) {
-      void fn({ force: true });
-    }
-  }, [paymentRequestsEnabled, open]);
-
-  useEffect(() => {
-    if (!paymentRequestsEnabled || !open || receiveMode !== "ecash") return;
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      if (!cancelled) {
-        const fn = checkIncomingPaymentRequestsRef.current;
-        if (fn) {
-          void fn({ force: true });
-        }
-      }
-    }, 0);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [paymentRequestsEnabled, open, receiveMode]);
-
-  useEffect(() => {
-    if (
-      !paymentRequestsEnabled ||
-      !paymentRequestsBackgroundChecksEnabled ||
-      !open ||
-      backgroundSuspended
-    ) {
-      return;
-    }
-    let cancelled = false;
-    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-    let initialTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const tick = () => {
-      if (cancelled) return;
-      const fn = checkIncomingPaymentRequestsRef.current;
-      if (fn) {
-        void fn();
-      }
-      if (!cancelled) {
-        refreshTimer = setTimeout(tick, BACKGROUND_REFRESH_INTERVAL_MS);
-      }
-    };
-
-    initialTimer = setTimeout(() => {
-      if (!cancelled) {
-        tick();
-      }
-    }, NOSTR_BACKGROUND_STAGGER_MS);
-
-    return () => {
-      cancelled = true;
-      if (initialTimer) clearTimeout(initialTimer);
-      if (refreshTimer) clearTimeout(refreshTimer);
+      stopPaymentRequestSubscription();
     };
   }, [
+    defaultNostrRelays,
+    open,
     paymentRequestsEnabled,
     paymentRequestsBackgroundChecksEnabled,
-    open,
-    backgroundSuspended,
+    receiveMode,
+    sendMode,
+    startPaymentRequestSubscription,
+    stopPaymentRequestSubscription,
   ]);
+
+  useEffect(() => {
+    return () => {
+      stopPaymentRequestSubscription();
+      void closeNostrPool(true);
+    };
+  }, [closeNostrPool, stopPaymentRequestSubscription]);
+
+  useEffect(() => {
+    if (!open) {
+      stopDmSubscription();
+      return;
+    }
+    void startDmSubscription();
+    return () => {
+      stopDmSubscription();
+    };
+  }, [open, startDmSubscription, stopDmSubscription]);
+
+  useEffect(() => {
+    if (walletTab === "messages" && !dmSubscriptionCloseRef.current) {
+      void startDmSubscription();
+    }
+  }, [startDmSubscription, walletTab]);
 
   const normalizedSendLockPubkey = useMemo(() => {
     if (!lockSendToPubkey) return null;
@@ -6738,6 +10976,43 @@ useEffect(() => {
       candidate = peanutDecoded;
     }
 
+    candidate = candidate.replace(/^nostr:/i, "").trim();
+
+    const contactPayload = decodeContactPayload(candidate);
+    if (contactPayload) {
+      await handleScannedContactPayload(contactPayload);
+      return true;
+    }
+
+    try {
+      const decoded = nip19.decode(candidate);
+      if (decoded.type === "nprofile") {
+        const data = decoded.data as { pubkey?: string; relays?: string[] };
+        if (data?.pubkey) {
+          await handleScannedContactPayload({
+            npub: formatNpub(data.pubkey),
+            relays: Array.isArray(data.relays)
+              ? data.relays.filter((entry) => typeof entry === "string" && entry.trim())
+              : undefined,
+          });
+          return true;
+        }
+      } else if (decoded.type === "npub") {
+        const npub =
+          typeof decoded.data === "string"
+            ? decoded.data
+            : Array.isArray(decoded.data)
+              ? nip19.npubEncode(Uint8Array.from(decoded.data))
+              : null;
+        if (npub) {
+          await handleScannedContactPayload({ npub });
+          return true;
+        }
+      }
+    } catch {
+      // not a nostr profile
+    }
+
     const lowerCandidate = candidate.toLowerCase();
 
     const nut16Frame = parseNut16FrameString(candidate);
@@ -6755,16 +11030,21 @@ useEffect(() => {
         collector.reset();
         return false;
       }
-      const remainingLabel = result.missing
-        ? `${result.missing} frame${result.missing === 1 ? "" : "s"} remaining…`
-        : "Processing…";
-      if (result.status === "duplicate") {
-        setScannerMessage(
-          `Frame ${nut16Frame.index}/${nut16Frame.total} already captured. ${remainingLabel}`,
-        );
-      } else {
-        setScannerMessage(`Captured frame ${nut16Frame.index}/${nut16Frame.total}. ${remainingLabel}`);
-      }
+      const received = typeof result.received === "number" ? result.received : nut16Frame.index;
+      const total = typeof result.total === "number" && result.total > 0 ? result.total : nut16Frame.total || 0;
+      const remaining =
+        typeof result.missing === "number"
+          ? result.missing
+          : total > 0
+            ? Math.max(total - received, 0)
+            : null;
+      const progressLabel = total ? `${Math.min(received, total)}/${total}` : `${Math.max(received, 1)}`;
+      const remainingLabel =
+        remaining != null
+          ? `${remaining} frame${remaining === 1 ? "" : "s"} remaining…`
+          : "Processing…";
+      const statusLabel = result.status === "duplicate" ? "Frame already captured" : "Captured frame";
+      setScannerMessage(`${statusLabel} ${progressLabel}. ${remainingLabel}`);
       return false;
     }
 
@@ -6825,7 +11105,7 @@ useEffect(() => {
 
     setScannerMessage("Unrecognized code. Scan a Cashu token, Lightning invoice/address, LNURL or payment request.");
     return false;
-  }, [resetSendLockSettings]);
+  }, [decodeContactPayload, formatNpub, handleScannedContactPayload, resetSendLockSettings]);
 
   const handlePasteFromClipboard = useCallback(async () => {
     setScannerMessage("");
@@ -7672,6 +11952,7 @@ useEffect(() => {
               ? ` at ${res.mintUrl}`
               : crossMintNote
             : "";
+          const tokenState = deriveSpentHistoryTokenStateFromTokenRef.current(normalizedToken, Date.now());
           setHistory((prev) =>
             prev.map((entry) =>
               entry.id === historyId
@@ -7683,6 +11964,7 @@ useEffect(() => {
                     pendingTokenAmount: undefined,
                     pendingTokenMint: undefined,
                     pendingStatus: "redeemed",
+                    ...(tokenState ? { tokenState } : {}),
                   }
                 : entry,
             ),
@@ -7842,6 +12124,10 @@ useEffect(() => {
         const amount = sumProofAmounts(res.proofs);
         const amountNote = amount ? `${amount} sat${amount === 1 ? "" : "s"}` : "Token";
         showToast(`${amountNote} redeemed`, 3000);
+        const tokenState =
+          typeof item.detail === "string"
+            ? deriveSpentHistoryTokenStateFromTokenRef.current(item.detail, Date.now())
+            : undefined;
         setHistory((prev) =>
           prev.map((entry) =>
             entry.id === item.id
@@ -7849,7 +12135,10 @@ useEffect(() => {
                   ...entry,
                   summary: `${amountNote} redeemed${res.mintUrl ? ` at ${res.mintUrl}` : ""}`,
                   pendingTokenId: undefined,
+                  pendingTokenAmount: undefined,
+                  pendingTokenMint: undefined,
                   pendingStatus: "redeemed",
+                  ...(tokenState ? { tokenState } : {}),
                 }
               : entry,
           ),
@@ -8464,8 +12753,18 @@ useEffect(() => {
       setPaymentRequestMessage("Scan a payment request first");
       return;
     }
+    const identityInfo = readNostrIdentity();
+    const identity = identityInfo.identity ?? ensureNostrIdentity();
+    if (!identity) {
+      setPaymentRequestStatus("error");
+      setPaymentRequestMessage(identityInfo.reason || "Add your Taskify Nostr key in Settings → Nostr.");
+      return;
+    }
     setPaymentRequestMessage("");
     setPaymentRequestStatus("sending");
+    let paymentRequestToken: string | null = null;
+    let createdMintUrl: string | null = null;
+    let createdAmount: number | null = null;
     try {
       const request = paymentRequestState.request;
       let amount = Math.max(0, Math.floor(Number(request.amount) || 0));
@@ -8489,19 +12788,6 @@ useEffect(() => {
         throw new Error(`Payment request unit ${request.unit} does not match active mint unit ${info.unit}`);
       }
 
-      const {
-        proofs,
-        mintUrl: proofMintUrl,
-        token: paymentRequestToken,
-      } = await createSendToken(amount);
-      const payload = {
-        id: request.id,
-        memo: request.description,
-        unit: (request.unit || info?.unit || "sat").toLowerCase(),
-        mint: proofMintUrl,
-        proofs,
-      };
-
       let transports = Array.isArray((request as any)?.transport)
         ? ((request as any).transport as PaymentRequestTransport[])
         : [];
@@ -8523,6 +12809,23 @@ useEffect(() => {
 
       let delivered = false;
       let deliveredDetail = "";
+      createdAmount = amount;
+
+      const {
+        proofs,
+        mintUrl: proofMintUrl,
+        token: createdToken,
+      } = await createSendToken(amount);
+      paymentRequestToken = createdToken;
+      createdMintUrl = proofMintUrl;
+      const payload = {
+        id: request.id,
+        memo: request.description,
+        unit: (request.unit || info?.unit || "sat").toLowerCase(),
+        mint: proofMintUrl,
+        proofs,
+        sender: identity.pubkey,
+      };
 
       for (const transport of transports) {
         try {
@@ -8568,21 +12871,24 @@ useEffect(() => {
             if (!recipientPubkey) {
               throw new Error("Invalid Nostr target in payment request");
             }
-            const relayList = (relayHints && relayHints.length
-              ? relayHints
-              : defaultNostrRelays
-            )
+            const relayList = [
+              ...(relayHints || []),
+              ...defaultNostrRelays,
+            ]
               .filter((url): url is string => typeof url === "string" && !!url.trim())
               .map((url) => url.trim());
             const uniqueRelays = Array.from(new Set(relayList));
             if (!uniqueRelays.length) {
               throw new Error("Payment request transport missing relays");
             }
-            const publishWithTimeout = async (signedEvent: Record<string, unknown>) => {
-              const pool = new SimplePool();
+            const publishWithTimeout = async (
+              signedEvent: Record<string, unknown>,
+              relayTargets: string[] = uniqueRelays,
+            ) => {
+              const pool = ensureNostrPool();
               let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
               try {
-                const publishPromise = pool.publish(uniqueRelays, signedEvent);
+                const publishPromise = safePublish(pool, relayTargets, signedEvent);
                 const timeoutPromise = new Promise<never>((_, reject) => {
                   timeoutHandle = setTimeout(
                     () => reject(new Error("Timed out sending payment via nostr")),
@@ -8594,9 +12900,6 @@ useEffect(() => {
                 if (timeoutHandle != null) {
                   clearTimeout(timeoutHandle);
                 }
-                try {
-                  pool.close(uniqueRelays);
-                } catch {}
               }
             };
             const supportedNips = new Set<string>();
@@ -8612,60 +12915,26 @@ useEffect(() => {
               }
             }
             const allowNip17 = supportedNips.size === 0 || supportedNips.has("17");
-            const allowNip04 = supportedNips.size === 0 || supportedNips.has("4");
-            if (allowNip17 && nip44?.v2) {
-              const rumor = {
-                kind: 14,
-                content: JSON.stringify(payload),
-                tags: [["p", recipientPubkey]] as string[][],
-                created_at: randomPastTimestampSeconds(),
-                pubkey: identity.pubkey,
-              } satisfies Partial<NostrEvent>;
-              const directConversationKey = nip44.v2.utils.getConversationKey(
-                identity.secret,
-                recipientPubkey,
-              );
-              const sealedContent = await nip44.v2.encrypt(JSON.stringify(rumor), directConversationKey);
-              const sealTemplate: EventTemplate = {
-                kind: 13,
-                content: sealedContent,
-                tags: [],
-                created_at: randomPastTimestampSeconds(),
-              };
-              const sealEvent = finalizeEvent(sealTemplate, hexToBytes(identity.secret));
-              const wrapKey = generatePrivateKey();
-              const wrapConversationKey = nip44.v2.utils.getConversationKey(
-                wrapKey.hex,
-                recipientPubkey,
-              );
-              const wrapContent = await nip44.v2.encrypt(JSON.stringify(sealEvent), wrapConversationKey);
-              const wrapTemplate: EventTemplate = {
-                kind: 1059,
-                content: wrapContent,
-                tags: [["p", recipientPubkey]],
-                created_at: randomPastTimestampSeconds(),
-              };
-              const wrapEvent = finalizeEvent(wrapTemplate, wrapKey.bytes);
-              await publishWithTimeout(wrapEvent);
-            } else if (allowNip17 && !nip44?.v2 && !allowNip04) {
-              throw new Error("NIP-44 support is required to send this payment");
-            } else if (allowNip04) {
-              const ciphertext = await nip04.encrypt(
-                identity.secret,
-                recipientPubkey,
-                JSON.stringify(payload),
-              );
-              const dmTemplate: EventTemplate = {
-                kind: 4,
-                content: ciphertext,
-                tags: [["p", recipientPubkey]],
-                created_at: Math.floor(Date.now() / 1000),
-              };
-              const dmEvent = finalizeEvent(dmTemplate, hexToBytes(identity.secret));
-              await publishWithTimeout(dmEvent);
-            } else {
-              throw new Error("Payment request transport lists unsupported NIPs");
+            if (!allowNip17) {
+              throw new Error("Payment request transport does not support NIP-17 giftwrap");
             }
+            if (!nip44?.v2) {
+              throw new Error("NIP-44 support is required to send this payment");
+            }
+            const recipientHex = recipientPubkey.toLowerCase();
+            const senderHex = identity.pubkey.toLowerCase();
+            const publishRelays = await resolveNip17Relays(recipientHex, uniqueRelays);
+            if (!publishRelays.length) {
+              throw new Error("No relays available for NIP-17 inbox");
+            }
+            const publish = (event: NostrEvent) => publishWithTimeout(event, publishRelays);
+            await publishNip17Giftwraps({
+              content: JSON.stringify(payload),
+              senderHex,
+              recipientHex,
+              senderSecret: identity.secret,
+              publish,
+            });
             delivered = true;
             deliveredDetail = paymentRequestToken || transport.target;
             break;
@@ -8710,78 +12979,1720 @@ useEffect(() => {
         closePaymentRequestSheet();
       }
     } catch (err: any) {
+      if (paymentRequestToken && createdMintUrl && createdAmount != null) {
+        setHistory((h) => [
+          buildHistoryEntry({
+            id: `payment-request-failed-${Date.now()}`,
+            summary: `Payment request token for ${createdAmount} sats (not sent)`,
+            detail: paymentRequestToken,
+            detailKind: "token",
+            revertToken: paymentRequestToken,
+            type: "ecash",
+            direction: "out",
+            amountSat: createdAmount,
+            mintUrl: createdMintUrl,
+          }),
+          ...h,
+        ]);
+      }
       setPaymentRequestStatus("error");
       setPaymentRequestMessage(err?.message || String(err));
     }
   }
 
+  const contactInitials = (value: string) => {
+    const trimmed = (value || "").trim();
+    if (!trimmed) return "?";
+    const parts = trimmed.split(/\s+/).filter(Boolean);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
+
+  const contactSubtitle = useCallback(
+    (contact: Contact) => {
+      const nip05 = contact.nip05?.trim() || "";
+      const npub = contact.npub?.trim() || "";
+      const normalizedNip05 = normalizeNip05(nip05);
+      const normalizedNpub = normalizeNostrPubkey(npub);
+      const contactHex = normalizedNpub ? compressedToRawHex(normalizedNpub).toLowerCase() : null;
+      const nip05Check = contact.id && normalizedNip05 ? nip05Checks[contact.id] : undefined;
+      const nip05Verified =
+        !!nip05Check &&
+        nip05Check.status === "valid" &&
+        nip05Check.nip05 === normalizedNip05 &&
+        nip05Check.npub === contactHex;
+      const nip05Display = nip05Verified || (!contactHex && nip05) ? nip05 : "";
+      const hasPaymentRequest = !!contact.paymentRequest.trim();
+
+      return (
+        nip05Display ||
+        contact.address.trim() ||
+        npub ||
+        (hasPaymentRequest ? "Payment request saved" : "") ||
+        contact.displayName?.trim() ||
+        ""
+      );
+    },
+    [compressedToRawHex, nip05Checks, normalizeNip05, normalizeNostrPubkey],
+  );
+
+  const myCardUsername = formatContactUsername(profileForm.username);
+  const myCardName = profileForm.displayName.trim() || myCardUsername || "My Card";
+  const myCardLightning = profileForm.lud16.trim() || deriveDefaultLightningAddress();
+  const myCardNpub = nostrIdentityRef.current ? formatNpub(nostrIdentityRef.current.pubkey) : "";
+  const myCardSubtitle =
+    myCardLightning || profileForm.nip05.trim() || myCardNpub || "My Card";
+  const profileCard = {
+    id: "profile",
+    name: myCardName,
+    displayName: profileForm.displayName.trim(),
+    username: sanitizeUsername(profileForm.username),
+    address: myCardLightning,
+    npub: myCardNpub,
+    nip05: profileForm.nip05.trim(),
+    about: profileForm.about.trim(),
+    picture: profileForm.picture.trim(),
+    updatedAt: profileUpdatedAt,
+  };
+
+  const activeContact =
+    activeContactId && activeContactId !== "profile"
+      ? contacts.find((entry) => entry.id === activeContactId) || null
+      : null;
+  const detailTarget = activeContactId === "profile" ? profileCard : activeContact;
+  const detailShareValue =
+    activeContactId === "profile"
+      ? profileShareValue
+      : activeContact
+        ? buildContactShareValue(activeContact)
+        : null;
+  const detailUsername = detailTarget ? formatContactUsername(detailTarget.username) : "";
+  const buildContactFields = useCallback(
+    (contact: Contact | typeof profileCard | null | undefined) => {
+      if (!contact) return [] as { key: string; label: string; value: string; multiline?: boolean }[];
+      const formattedUsername = formatContactUsername(contact.username);
+      const formattedNpub = formatContactNpub(contact.npub);
+      return (
+        [
+          contact.address && { key: "lightning", label: "Lightning", value: contact.address },
+          formattedNpub && { key: "npub", label: "Nostr pubkey", value: formattedNpub },
+          contact.nip05 && { key: "nip05", label: "NIP-05", value: contact.nip05 },
+          formattedUsername && { key: "username", label: "Username", value: formattedUsername },
+          contact.about && { key: "about", label: "About", value: contact.about, multiline: true },
+        ].filter(Boolean) as { key: string; label: string; value: string; multiline?: boolean }[]
+      );
+    },
+    [formatContactNpub, formatContactUsername],
+  );
+  const detailFields = buildContactFields(detailTarget);
+  const detailHasLightning = activeContact ? contactHasLightning(activeContact) : false;
+  const detailCanShare = activeContact ? contactHasNpub(activeContact) : false;
+
+  const verifyContactNip05 = useCallback(
+    async (contactId: string, nip05: string, npub: string, contactUpdatedAt?: number | null) => {
+      const contactPubkeyHex = compressedToRawHex(npub).toLowerCase();
+      setNip05Checks((prev) => ({
+        ...prev,
+        [contactId]: {
+          status: "pending",
+          nip05,
+          npub: contactPubkeyHex,
+          checkedAt: Date.now(),
+          contactUpdatedAt: contactUpdatedAt ?? null,
+        },
+      }));
+      try {
+        const resolution = await resolveNip05Record(nip05);
+        const resolvedPubkey = compressedToRawHex(
+          normalizeNostrPubkey(resolution.pubkey) ?? resolution.pubkey,
+        ).toLowerCase();
+        setNip05Checks((prev) => ({
+          ...prev,
+          [contactId]: {
+            status: resolvedPubkey === contactPubkeyHex ? "valid" : "invalid",
+            nip05,
+            npub: contactPubkeyHex,
+            checkedAt: Date.now(),
+            contactUpdatedAt: contactUpdatedAt ?? null,
+          },
+        }));
+      } catch {
+        setNip05Checks((prev) => ({
+          ...prev,
+          [contactId]: {
+            status: "invalid",
+            nip05,
+            npub: contactPubkeyHex,
+            checkedAt: Date.now(),
+            contactUpdatedAt: contactUpdatedAt ?? null,
+          },
+        }));
+      }
+    },
+    [compressedToRawHex, normalizeNostrPubkey, resolveNip05Record],
+  );
+
+  const ensureNip05Verification = useCallback(
+    (contactId: string, nip05?: string | null, npub?: string | null, contactUpdatedAt?: number | null) => {
+      if (!contactId || !nip05 || !npub) return;
+      const normalizedNip05 = normalizeNip05(nip05);
+      const normalizedNpub = normalizeNostrPubkey(npub);
+      if (!normalizedNip05 || !normalizedNpub) return;
+      const contactPubkeyHex = compressedToRawHex(normalizedNpub).toLowerCase();
+      const existingCheck = nip05Checks[contactId];
+      if (
+        existingCheck &&
+        existingCheck.nip05 === normalizedNip05 &&
+        existingCheck.npub === contactPubkeyHex
+      ) {
+        if (existingCheck.status === "pending") {
+          return;
+        }
+        const cachedUpdatedAt = existingCheck.contactUpdatedAt ?? null;
+        const targetUpdatedAt = contactUpdatedAt ?? null;
+        if (cachedUpdatedAt != null) {
+          if (targetUpdatedAt == null || targetUpdatedAt <= cachedUpdatedAt) {
+            return;
+          }
+        } else if (targetUpdatedAt == null) {
+          return;
+        }
+      }
+      void verifyContactNip05(contactId, normalizedNip05, normalizedNpub, contactUpdatedAt);
+    },
+    [compressedToRawHex, nip05Checks, normalizeNip05, normalizeNostrPubkey, verifyContactNip05],
+  );
+
+  useEffect(() => {
+    if (!detailTarget?.id) return;
+    ensureNip05Verification(detailTarget.id, detailTarget.nip05, detailTarget.npub, detailTarget.updatedAt ?? null);
+  }, [detailTarget, ensureNip05Verification]);
+
+  const isNip05VerifiedFor = useCallback(
+    (contactId: string, nip05?: string | null, npub?: string | null) => {
+      if (!contactId) return false;
+      const normalizedNip05 = normalizeNip05(nip05 ?? null);
+      const normalizedNpub = normalizeNostrPubkey(npub ?? null);
+      if (!normalizedNip05 || !normalizedNpub) return false;
+      const nip05Check = nip05Checks[contactId];
+      if (!nip05Check) return false;
+      const contactPubkeyHex = compressedToRawHex(normalizedNpub).toLowerCase();
+      return (
+        nip05Check.status === "valid" &&
+        nip05Check.nip05 === normalizedNip05 &&
+        nip05Check.npub === contactPubkeyHex
+      );
+    },
+    [compressedToRawHex, nip05Checks, normalizeNip05, normalizeNostrPubkey],
+  );
+
+  useEffect(() => {
+    ensureNip05VerificationRef.current = ensureNip05Verification;
+  }, [ensureNip05Verification]);
+
+  useEffect(() => {
+    isNip05VerifiedForRef.current = isNip05VerifiedFor;
+  }, [isNip05VerifiedFor]);
+
+    const detailNip05Normalized = normalizeNip05(detailTarget?.nip05 ?? null);
+    const detailNpubHex = detailTarget?.npub
+      ? compressedToRawHex(normalizeNostrPubkey(detailTarget.npub) ?? detailTarget.npub).toLowerCase()
+      : null;
+    const detailNip05Verified =
+      !!detailNip05Normalized &&
+      !!detailNpubHex &&
+      isNip05VerifiedFor(detailTarget?.id ?? "", detailTarget?.nip05, detailTarget?.npub);
+
+    const scannedContactTitle = scannedContact ? contactPrimaryName(scannedContact) : "Contact";
+    const scannedContactUsername = scannedContact ? formatContactUsername(scannedContact.username) : "";
+    const scannedContactShareValue = scannedContact ? buildContactShareValue(scannedContact) : null;
+    const scannedContactFields = buildContactFields(scannedContact);
+    const scannedContactNip05Verified = scannedContact
+      ? isNip05VerifiedFor(scannedContact.id, scannedContact.nip05, scannedContact.npub)
+      : false;
+    const scannedContactSaved = useMemo(() => {
+      if (!scannedContact) return false;
+      const normalizedTarget = normalizeNostrPubkey(scannedContact.npub || "");
+      const targetHex = normalizedTarget ? compressedToRawHex(normalizedTarget).toLowerCase() : null;
+      return contacts.some((contact) => {
+        if (contact.id === scannedContact.id) return true;
+        if (targetHex) {
+          const normalizedContact = normalizeNostrPubkey(contact.npub || "");
+          const contactHex = normalizedContact ? compressedToRawHex(normalizedContact).toLowerCase() : null;
+          if (contactHex && contactHex === targetHex) return true;
+        }
+        return false;
+      });
+    }, [compressedToRawHex, contacts, normalizeNostrPubkey, scannedContact]);
+    const scannedContactFollowed = useMemo(() => {
+      if (!scannedContact?.npub) return false;
+      const normalized = normalizeNostrPubkey(scannedContact.npub);
+      if (!normalized) return false;
+      const targetHex = compressedToRawHex(normalized).toLowerCase();
+      return (contactSyncMeta.publicFollows || []).some(
+        (follow) => (follow.pubkey || "").toLowerCase() === targetHex,
+      );
+    }, [compressedToRawHex, contactSyncMeta.publicFollows, normalizeNostrPubkey, scannedContact]);
+    const scannedContactCanShare = !!scannedContact && contactHasNpub(scannedContact);
+    const scannedContactCanFollow = !!scannedContact && scannedContactSaved && !!scannedContact.npub.trim();
+    useEffect(() => {
+      if (!scannedContact?.id) return;
+      ensureNip05Verification(
+        scannedContact.id,
+        scannedContact.nip05,
+        scannedContact.npub,
+        scannedContact.updatedAt ?? null,
+      );
+    }, [ensureNip05Verification, scannedContact]);
+
+    const handleSaveScannedContact = useCallback(() => {
+      if (!scannedContact || scannedContactSaved) return;
+      const saved = upsertContact({ ...scannedContact, source: scannedContact.source ?? "scan" });
+      if (!saved) {
+        showToast("Unable to add contact", 2500);
+        return;
+      }
+      setScannedContact(saved);
+      contactsPublishQueuedRef.current = true;
+      if (contactsSyncEnabled) {
+        void publishContactsToNostr({ silent: true });
+      }
+      showToast("Contact added", 2000);
+    }, [
+      contactsPublishQueuedRef,
+      contactsSyncEnabled,
+      publishContactsToNostr,
+      scannedContact,
+      scannedContactSaved,
+      showToast,
+      upsertContact,
+    ]);
+
+    const handleToggleFollowScannedContact = useCallback(() => {
+      if (!scannedContact) return;
+      const normalized = normalizeNostrPubkey(scannedContact.npub);
+      if (!normalized) {
+        showToast("Contact is missing a valid npub to follow.", 2500);
+        return;
+      }
+      const pubkeyHex = compressedToRawHex(normalized).toLowerCase();
+      const withoutExisting = (contactSyncMeta.publicFollows || []).filter(
+        (follow) => (follow.pubkey || "").toLowerCase() !== pubkeyHex,
+      );
+      const updatedFollows = scannedContactFollowed
+        ? withoutExisting
+        : [
+            ...withoutExisting,
+            {
+              pubkey: pubkeyHex,
+              username: sanitizeUsername(scannedContact.username || ""),
+              nip05: scannedContact.nip05?.trim() || undefined,
+            },
+          ];
+      const nextMeta = persistContactSyncMeta({ publicFollows: updatedFollows });
+      contactsPublishQueuedRef.current = true;
+      if (contactsSyncEnabled) {
+        const nextFollows = nextMeta?.publicFollows ?? updatedFollows;
+        void publishContactsToNostr({ silent: true, publicFollowsOverride: nextFollows });
+      }
+      showToast(scannedContactFollowed ? "Unfollowed contact" : "Following contact", 2000);
+    }, [
+      compressedToRawHex,
+      contactSyncMeta.publicFollows,
+      contactsPublishQueuedRef,
+      contactsSyncEnabled,
+      normalizeNostrPubkey,
+      persistContactSyncMeta,
+      publishContactsToNostr,
+      sanitizeUsername,
+      scannedContact,
+      scannedContactFollowed,
+      showToast,
+    ]);
+
+    const scannedContactHeader = scannedContact ? (
+      <div className="contacts-sheet-header contacts-sheet-header--detail">
+        <button
+          className="glass-icon-button pressable"
+          onClick={() => setScannedContact(null)}
+          aria-label="Close contact"
+        >
+          <CloseIcon className="h-4 w-4" />
+        </button>
+        <div className="contacts-header-spacer" aria-hidden="true" />
+        {!scannedContactSaved ? (
+          <button
+            type="button"
+            className="contact-pill contact-pill--accent contact-pill--compact contact-pill--wrap pressable"
+            onClick={handleSaveScannedContact}
+          >
+            Add contact
+          </button>
+        ) : scannedContactCanFollow ? (
+          <button
+            type="button"
+            className="contact-pill contact-pill--accent contact-pill--compact pressable"
+            onClick={handleToggleFollowScannedContact}
+          >
+            {scannedContactFollowed ? "Unfollow" : "Follow"}
+          </button>
+        ) : (
+          <div className="contacts-header-spacer" aria-hidden="true" />
+        )}
+      </div>
+    ) : null;
+
+  useEffect(() => {
+    const candidates: { id: string; nip05: string; npub: string; updatedAt?: number | null }[] = [];
+    const seen = new Set<string>();
+    const addCandidate = (contact: Contact | typeof profileCard) => {
+      if (!contact.id || !contact.nip05 || !contact.npub) return;
+      const normalizedNip05 = normalizeNip05(contact.nip05);
+      const normalizedNpub = normalizeNostrPubkey(contact.npub);
+      if (!normalizedNip05 || !normalizedNpub) return;
+      const key = `${contact.id}:${normalizedNip05}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const updatedAt = (contact as Contact).updatedAt ?? (contact === profileCard ? profileUpdatedAt : null);
+      candidates.push({ id: contact.id, nip05: normalizedNip05, npub: normalizedNpub, updatedAt });
+    };
+
+    if (contactsTabOpen) {
+      addCandidate(profileCard);
+      sortedContacts.forEach(addCandidate);
+    }
+
+    if (contactsOpen && contactsContext) {
+      visibleContacts.forEach(addCandidate);
+    }
+
+    candidates.forEach(({ id, nip05, npub, updatedAt }) => ensureNip05Verification(id, nip05, npub, updatedAt));
+  }, [
+    contactsContext,
+    contactsOpen,
+    contactsTabOpen,
+    ensureNip05Verification,
+    normalizeNip05,
+    normalizeNostrPubkey,
+    profileCard,
+    profileUpdatedAt,
+    sortedContacts,
+    visibleContacts,
+  ]);
+
+  const handleStartEditCurrentContact = useCallback(() => {
+    const source = activeContactId === "profile" ? profileCard : activeContact;
+    if (!source) {
+      resetContactEditDraft();
+    } else {
+      setContactEditDraft({
+        id: source.id === "profile" ? null : source.id,
+        name: source.name || "",
+        displayName: source.displayName || "",
+        username: sanitizeUsername(source.username || ""),
+        address: source.address || "",
+        npub: source.npub || "",
+        nip05: source.nip05 || "",
+        about: source.about || "",
+        picture: source.picture || "",
+        isProfile: activeContactId === "profile",
+      });
+    }
+    setContactEditError("");
+    setProfilePhotoError("");
+    setProfilePhotoBusy(false);
+    profilePhotoUploadRef.current = null;
+    setContactLookupError("");
+    setContactLookupInput("");
+    setShowCustomContactFields(true);
+    setContactView("edit");
+  }, [activeContact, activeContactId, profileCard, resetContactEditDraft]);
+
+    const handleCancelContactEdit = useCallback(() => {
+      setContactEditError("");
+      setContactLookupError("");
+      setShowCustomContactFields(false);
+      setContactView(detailTarget ? "detail" : "list");
+    }, [detailTarget]);
+
+    const detailTitle = detailTarget ? contactPrimaryName(detailTarget) : "Contact";
+    const detailIsNostrContact = useMemo(() => {
+      if (!detailTarget) return false;
+      if (detailTarget.id === "profile" || (detailTarget as any).isProfile || detailTarget.kind === "custom") {
+        return false;
+      }
+      const hasNpub = !!normalizeNostrPubkey(detailTarget.npub || "");
+      const hasVerifiedNip05 = !!(
+        detailTarget.nip05 &&
+        isNip05VerifiedFor(detailTarget.id, detailTarget.nip05, detailTarget.npub)
+      );
+      return hasNpub || hasVerifiedNip05;
+    }, [detailTarget, isNip05VerifiedFor, normalizeNostrPubkey]);
+    const detailContactFollowed = useMemo(() => {
+      if (!detailTarget?.npub) return false;
+      const normalized = normalizeNostrPubkey(detailTarget.npub);
+      if (!normalized) return false;
+      const targetHex = compressedToRawHex(normalized).toLowerCase();
+      return (contactSyncMeta.publicFollows || []).some(
+        (follow) => (follow.pubkey || "").toLowerCase() === targetHex,
+      );
+    }, [compressedToRawHex, contactSyncMeta.publicFollows, detailTarget, normalizeNostrPubkey]);
+    const detailContactCanFollow = !!detailTarget && detailIsNostrContact && !!detailTarget.npub.trim();
+    const handleToggleFollowDetailContact = useCallback(() => {
+      if (!detailTarget) return;
+      const normalized = normalizeNostrPubkey(detailTarget.npub);
+      if (!normalized) return;
+      const pubkeyHex = compressedToRawHex(normalized).toLowerCase();
+      const withoutExisting = (contactSyncMeta.publicFollows || []).filter(
+        (follow) => (follow.pubkey || "").toLowerCase() !== pubkeyHex,
+      );
+      const updatedFollows = detailContactFollowed
+        ? withoutExisting
+        : [
+            ...withoutExisting,
+            {
+              pubkey: pubkeyHex,
+              username: sanitizeUsername(detailTarget.username || ""),
+              nip05: detailTarget.nip05?.trim() || undefined,
+            },
+          ];
+      const nextMeta = persistContactSyncMeta({ publicFollows: updatedFollows });
+      contactsPublishQueuedRef.current = true;
+      if (contactsSyncEnabled) {
+        const nextFollows = nextMeta?.publicFollows ?? updatedFollows;
+        void publishContactsToNostr({ silent: true, publicFollowsOverride: nextFollows });
+      }
+      showToast(detailContactFollowed ? "Unfollowed contact" : "Following contact", 2000);
+    }, [
+      compressedToRawHex,
+      contactSyncMeta.publicFollows,
+      contactsPublishQueuedRef,
+      contactsSyncEnabled,
+      detailContactFollowed,
+      detailTarget,
+      normalizeNostrPubkey,
+      persistContactSyncMeta,
+      publishContactsToNostr,
+      sanitizeUsername,
+      showToast,
+    ]);
+
+    const profileHeaderPhoto = profileCard.picture?.trim();
+    const contactsHeaderTitle =
+      contactView === "edit"
+        ? contactEditDraft.isProfile
+          ? "Edit My Card"
+          : contactEditDraft.id
+            ? "Edit Contact"
+            : "New Contact"
+        : contactView === "detail"
+          ? ""
+          : isContactsPage
+            ? ""
+            : "Contacts";
+
+    const contactsHeaderLeft =
+      contactView === "list" && isContactsPage ? (
+        <button
+          type="button"
+          className={`contact-avatar pressable${profileHeaderPhoto ? " contact-avatar--image contact-avatar--profile" : " contact-avatar--profile"}`}
+          onClick={() => {
+            setActiveContactId("profile");
+            setContactView("detail");
+          }}
+          aria-label="Open profile"
+          title="Open profile"
+        >
+          {profileHeaderPhoto ? (
+            <img src={profileHeaderPhoto} alt={myCardName} className="contact-avatar__img" />
+          ) : (
+            contactInitials(myCardName)
+          )}
+        </button>
+      ) : contactView === "list" ? (
+        <button
+          className="glass-icon-button pressable"
+          onClick={closeContactsTab}
+          aria-label="Close contacts"
+        >
+          <CloseIcon className="h-4 w-4" />
+        </button>
+      ) : contactView === "detail" ? (
+        <button
+          className="glass-icon-button pressable"
+          onClick={handleBackToContactsList}
+          aria-label="Back to contacts"
+        >
+          <BackIcon className="h-5 w-5" />
+        </button>
+      ) : (
+        <button
+          className="glass-icon-button pressable"
+          onClick={handleCancelContactEdit}
+          aria-label="Cancel contact changes"
+        >
+          <CloseIcon className="h-4 w-4" />
+        </button>
+      );
+
+    const contactsHeaderRight =
+      contactView === "list" ? (
+        <button
+          type="button"
+          className="glass-icon-button glass-icon-button--accent pressable"
+          onClick={handleStartAddContact}
+          title="Add contact"
+          aria-label="Add contact"
+        >
+          <span className="text-xl leading-none">+</span>
+        </button>
+      ) : contactView === "detail" && detailTarget ? (
+        detailIsNostrContact ? (
+          detailContactCanFollow ? (
+            <button
+              type="button"
+              className="contact-pill contact-pill--accent contact-pill--compact pressable"
+              onClick={handleToggleFollowDetailContact}
+            >
+              {detailContactFollowed ? "Unfollow" : "Follow"}
+            </button>
+          ) : (
+            <div className="contacts-header-spacer" aria-hidden="true" />
+          )
+        ) : (
+          <button
+            type="button"
+            className="glass-icon-button glass-icon-button--accent pressable"
+            onClick={handleStartEditCurrentContact}
+            aria-label="Edit contact"
+          >
+            <PencilIcon className="h-4 w-4" />
+          </button>
+        )
+      ) : contactView === "edit" ? (
+        <button
+          type="button"
+          className="glass-icon-button glass-icon-button--accent pressable"
+          aria-label="Save contact"
+          onClick={() => {
+            void handleContactEditSubmit();
+          }}
+          disabled={contactsPublishState === "publishing" || profileStatus === "publishing" || profilePhotoBusy}
+        >
+          <CheckIcon className="h-4 w-4" />
+        </button>
+      ) : (
+        <div className="contacts-header-spacer" aria-hidden="true" />
+      );
+
+    const contactsHeader = (
+      <div className="contacts-sheet-header contacts-sheet-header--detail">
+        {contactsHeaderLeft}
+        {contactsHeaderTitle ? (
+          <div className="contacts-sheet-title">{contactsHeaderTitle}</div>
+        ) : (
+          <div className="contacts-header-spacer" aria-hidden="true" />
+        )}
+        {contactsHeaderRight}
+      </div>
+    );
+
+  const handleCopyContactField = useCallback(
+    async (value: string, label: string) => {
+      if (!value) return;
+      try {
+        await navigator.clipboard?.writeText(value);
+        showToast(`${label} copied`, 2000);
+      } catch {
+        showToast("Unable to copy", 2000);
+      }
+    },
+    [showToast],
+  );
+
+  const processProfilePhotoFile = useCallback(
+    async (file: File): Promise<{ dataUrl: string; blob: Blob; contentType: string; name?: string } | null> => {
+      if (!file) return null;
+      if (!file.type?.startsWith("image/")) {
+        setProfilePhotoError("Choose an image file.");
+        return null;
+      }
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+          reader.onerror = () => reject(new Error("Unable to read file."));
+          reader.readAsDataURL(file);
+        });
+        const trimmed = dataUrl.trim();
+        if (!trimmed) {
+          setProfilePhotoError("Unable to read image.");
+          return null;
+        }
+        const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error("Unable to load image."));
+          img.src = trimmed;
+        });
+        const initialSize = estimateDataUrlSize(trimmed);
+        const needsResize =
+          image.width > PROFILE_PHOTO_MAX_DIMENSION || image.height > PROFILE_PHOTO_MAX_DIMENSION;
+        if (!needsResize && initialSize <= PROFILE_PHOTO_CACHE_LIMIT_BYTES) {
+          const blobDirect = await fetch(trimmed).then((res) => res.blob());
+          return {
+            dataUrl: trimmed,
+            blob: blobDirect,
+            contentType: blobDirect.type || file.type || "image/jpeg",
+            name: file.name,
+          };
+        }
+        const maxSide = Math.max(image.width || 1, image.height || 1);
+        const scale = maxSide ? Math.min(1, PROFILE_PHOTO_MAX_DIMENSION / maxSide) : 1;
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round((image.width || PROFILE_PHOTO_MAX_DIMENSION) * scale));
+        canvas.height = Math.max(
+          1,
+          Math.round((image.height || PROFILE_PHOTO_MAX_DIMENSION) * scale),
+        );
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          return trimmed;
+        }
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        let quality = 0.9;
+        let output = canvas.toDataURL("image/jpeg", quality);
+        let outputSize = estimateDataUrlSize(output);
+        while (outputSize > PROFILE_PHOTO_CACHE_LIMIT_BYTES && quality > 0.55) {
+          quality -= 0.1;
+          output = canvas.toDataURL("image/jpeg", quality);
+          outputSize = estimateDataUrlSize(output);
+        }
+        if (outputSize > PROFILE_PHOTO_CACHE_LIMIT_BYTES) {
+          setProfilePhotoError("Profile photo is too large after compression.");
+          return null;
+        }
+        const blob = await fetch(output).then((res) => res.blob());
+        return {
+          dataUrl: output,
+          blob,
+          contentType: blob.type || file.type || "image/jpeg",
+          name: file.name,
+        };
+      } catch (error: any) {
+        setProfilePhotoError(error?.message || "Unable to process photo.");
+        return null;
+      }
+    },
+    [],
+  );
+
+  const handleProfilePhotoChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0] || null;
+      event.target.value = "";
+      if (!file) return;
+      setProfilePhotoError("");
+      setProfilePhotoBusy(true);
+      try {
+        const processed = await processProfilePhotoFile(file);
+        if (!processed) return;
+        profilePhotoUploadRef.current = {
+          blob: processed.blob,
+          name: processed.name,
+          contentType: processed.contentType,
+        };
+        setContactEditDraft((prev) => ({ ...prev, picture: processed.dataUrl }));
+      } finally {
+        setProfilePhotoBusy(false);
+      }
+    },
+    [processProfilePhotoFile],
+  );
+
+  const handleClearProfilePhoto = useCallback(() => {
+    setProfilePhotoError("");
+    setContactEditDraft((prev) => ({ ...prev, picture: "" }));
+    profilePhotoUploadRef.current = null;
+  }, []);
+
+  const handleContactEditSubmit = useCallback(
+    async (event?: React.FormEvent) => {
+      if (event) event.preventDefault();
+      const nickname = contactEditDraft.name.trim();
+      const displayName = contactEditDraft.displayName.trim();
+      const username = sanitizeUsername(contactEditDraft.username);
+      const address = contactEditDraft.address.trim();
+      const npub = contactEditDraft.npub.trim();
+      const nip05 = contactEditDraft.nip05.trim();
+      const about = contactEditDraft.about.trim();
+      const picture = contactEditDraft.picture.trim();
+      const primaryName = contactEditDraft.isProfile
+        ? displayName || username
+        : nickname || displayName || username;
+      if (!primaryName && !address && !npub && !nip05 && !about && !picture) {
+        setContactEditError(
+          contactEditDraft.isProfile
+            ? "Add a display name or another detail to save."
+            : "Add a nickname or another detail to save.",
+        );
+        return;
+      }
+      if (contactEditDraft.isProfile) {
+        const currentDisplayName = displayName || profileForm.displayName;
+        let nextPicture = picture;
+        if (profilePhotoUploadRef.current) {
+          const identity = ensureNostrIdentity();
+          if (!identity) {
+            setProfileStatus("error");
+            setProfileMessage(nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr.");
+            setContactEditError(nostrMissingReason || "Add your Taskify Nostr key in Settings → Nostr.");
+            return;
+          }
+          setProfilePhotoBusy(true);
+          setProfilePhotoError("");
+          setProfileMessage("Uploading profile photo…");
+          try {
+            const upload = await uploadAvatarToNip96({
+              serverUrl: preferredFileServer,
+              file: profilePhotoUploadRef.current.blob,
+              filename: profilePhotoUploadRef.current.name || "avatar.jpg",
+              contentType: profilePhotoUploadRef.current.contentType,
+              signer: identity.secret,
+            });
+            nextPicture = upload.url;
+            profilePhotoUploadRef.current = null;
+          } catch (err: any) {
+            const message = err?.message || "Unable to upload profile photo.";
+            setProfilePhotoError(message);
+            setProfileStatus("error");
+            setProfileMessage(message);
+            console.warn("[profile] Profile photo upload failed", err);
+            return;
+          } finally {
+            setProfilePhotoBusy(false);
+          }
+        } else if (isDataUrl(nextPicture)) {
+          const message = "Upload your profile photo before publishing.";
+          setProfilePhotoError(message);
+          setProfileStatus("error");
+          setProfileMessage(message);
+          return;
+        }
+        const profileDraft = {
+          displayName: currentDisplayName,
+          username,
+          lud16: address || deriveDefaultLightningAddress(),
+          nip05,
+          about,
+          picture: nextPicture,
+        };
+        setProfileForm((prev) => ({
+          ...prev,
+          displayName: profileDraft.displayName || prev.displayName,
+          username: profileDraft.username || prev.username,
+          lud16: profileDraft.lud16 || prev.lud16,
+          nip05: profileDraft.nip05 || prev.nip05,
+          about: profileDraft.about || prev.about,
+          picture: profileDraft.picture ?? prev.picture,
+        }));
+        const published = await publishProfileMetadata(profileDraft);
+        if (published) {
+          setProfilePhotoError("");
+          setContactEditDraft((prev) => ({ ...prev, picture: profileDraft.picture || "" }));
+          setContactEditError("");
+          setContactView("detail");
+          setActiveContactId("profile");
+        }
+        return;
+      }
+      const preservedPaymentRequest = contactEditDraft.id
+        ? (contactsRef.current.find((entry) => entry.id === contactEditDraft.id)?.paymentRequest ?? "")
+        : "";
+      const saved = upsertContact({
+        id: contactEditDraft.id || undefined,
+        name: nickname || displayName || username || address || npub,
+        displayName,
+        username,
+        address,
+        paymentRequest: preservedPaymentRequest,
+        npub,
+        nip05,
+        about,
+        picture,
+        source: "manual",
+        updatedAt: Date.now(),
+      });
+      if (!saved) {
+        setContactEditError("Unable to save contact.");
+        return;
+      }
+      if (contactsSyncEnabled) {
+        contactsPublishQueuedRef.current = true;
+        void publishContactsToNostr({ silent: true });
+      } else {
+        contactsPublishQueuedRef.current = false;
+      }
+      setContactEditError("");
+      setContactView("detail");
+      setActiveContactId(saved.id);
+    },
+    [
+      contactEditDraft,
+      deriveDefaultLightningAddress,
+      contactsSyncEnabled,
+      ensureNostrIdentity,
+      nostrMissingReason,
+      preferredFileServer,
+      profileForm,
+      publishContactsToNostr,
+      publishProfileMetadata,
+      setProfileMessage,
+      setProfilePhotoBusy,
+      setProfilePhotoError,
+      setProfileStatus,
+      setProfileForm,
+      upsertContact,
+      uploadAvatarToNip96,
+    ],
+  );
+
+  const walletRootClass = `wallet-modal${showBottomNav ? " wallet-modal--with-nav" : ""}${isContactsPage ? " wallet-modal--contacts" : ""}`;
+  const contactsPanelInline = !showTabSwitcher && isContactsPage;
+  const contactsPanelOpen = contactsTabOpen || contactsPanelInline;
+  const showWalletTabSwitcher = showTabSwitcher && !isContactsPage;
+
   if (!open) return null;
 
   return (
-    <div className="wallet-modal">
-      <div className="wallet-modal__header">
-        <button className="ghost-button button-sm pressable" onClick={onClose}>Close</button>
-        <button
-          type="button"
-          className={unitButtonClass}
-          onClick={handleTogglePrimary}
-          aria-disabled={!canToggleCurrency}
-          title={canToggleCurrency ? "Toggle primary currency" : "Currency toggle available when conversion is enabled"}
-        >
-          {unitLabel}
-        </button>
-        <button className="ghost-button button-sm pressable" onClick={()=>setShowHistory(true)}>History</button>
-      </div>
-      <div className="wallet-modal__toolbar">
-        <button className="ghost-button button-sm pressable" onClick={()=>setShowMintBalances(true)}>Mints</button>
-        <button className="ghost-button button-sm pressable" onClick={()=>setShowNwcSheet(true)}>Swap</button>
-      </div>
-      <div className="wallet-modal__content">
-        <button
-          type="button"
-          className={balanceCardClass}
-          onClick={handleTogglePrimary}
-          disabled={!canToggleCurrency}
-          title={
-            canToggleCurrency
-              ? "Toggle primary currency"
-              : "Currency toggle available when conversion is enabled"
-          }
-          aria-label={
-            canToggleCurrency
-              ? "Toggle wallet primary currency"
-              : "Wallet currency toggle disabled"
-          }
-        >
-          <div className="wallet-balance-card__amount">{primaryAmountDisplay}</div>
-          {secondaryAmountDisplay && (
-            <div className="wallet-balance-card__secondary">{secondaryAmountDisplay}</div>
-          )}
-          {(pendingBalanceDisplay || priceMeta) && (
-            <div className="wallet-balance-card__meta space-y-1">
-              {pendingBalanceDisplay && <div>{pendingBalanceDisplay}</div>}
-              {priceMeta && <div>{priceMeta}</div>}
+    <div className={walletRootClass}>
+      {!isContactsPage && (
+        <>
+          <div className="wallet-modal__header">
+            <button className="ghost-button button-sm pressable" onClick={onClose}>Close</button>
+            {walletTab !== "messages" && (
+              <>
+                <button
+                  type="button"
+                  className={unitButtonClass}
+                  onClick={handleTogglePrimary}
+                  aria-disabled={!canToggleCurrency}
+                  title={canToggleCurrency ? "Toggle primary currency" : "Currency toggle available when conversion is enabled"}
+                >
+                  {unitLabel}
+                </button>
+                <button className="ghost-button button-sm pressable" onClick={()=>setShowHistory(true)}>History</button>
+              </>
+            )}
+          </div>
+          {walletTab !== "messages" && (
+            <div className="wallet-modal__toolbar">
+              <button className="ghost-button button-sm pressable" onClick={()=>setShowMintBalances(true)}>Mints</button>
+              <button className="ghost-button button-sm pressable" onClick={()=>setShowNwcSheet(true)}>Swap</button>
+              {onOpenBounties && (
+                <button className="ghost-button button-sm pressable" onClick={onOpenBounties}>
+                  Bounties
+                </button>
+              )}
             </div>
           )}
-        </button>
-        <div className="wallet-modal__cta">
-          <button className="accent-button pressable" onClick={openReceiveLightningSheet}>{"Receive"}</button>
-          <button
-            type="button"
-            className="wallet-modal__scan-button pressable"
-            onClick={()=>{ void openScanner(); }}
-            aria-label="Scan code"
-            title="Scan code"
-          >
-            <svg className="wallet-modal__scan-icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M7 6h2.4l1.1-2h3l1.1 2H17a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" fill="none" />
-              <circle cx="12" cy="12" r="3.2" stroke="currentColor" strokeWidth="1.6" fill="none" />
-              <circle cx="18.25" cy="9.25" r="0.75" fill="currentColor" />
-            </svg>
-          </button>
-          <button className="ghost-button pressable" onClick={openLightningSendSheet}>Send</button>
-        </div>
-      </div>
+          <div className={contentClass}>
+            {walletTab === "wallet" && (
+              <>
+            <button
+              type="button"
+              className={balanceCardClass}
+              onClick={handleTogglePrimary}
+              disabled={!canToggleCurrency}
+              title={
+                canToggleCurrency
+                  ? "Toggle primary currency"
+                  : "Currency toggle available when conversion is enabled"
+              }
+              aria-label={
+                canToggleCurrency
+                  ? "Toggle wallet primary currency"
+                  : "Wallet currency toggle disabled"
+              }
+            >
+              <div className="wallet-balance-card__amount">{primaryAmountDisplay}</div>
+              {secondaryAmountDisplay && (
+                <div className="wallet-balance-card__secondary">{secondaryAmountDisplay}</div>
+              )}
+              {(pendingBalanceDisplay || priceMeta) && (
+                <div className="wallet-balance-card__meta space-y-1">
+                  {pendingBalanceDisplay && <div>{pendingBalanceDisplay}</div>}
+                  {priceMeta && <div>{priceMeta}</div>}
+                </div>
+              )}
+            </button>
+            <div className="wallet-modal__cta">
+              <button className="accent-button pressable" onClick={openReceiveLightningSheet}>{"Receive"}</button>
+              <button
+                type="button"
+                className="wallet-modal__scan-button pressable"
+                onClick={()=>{ void openScanner(); }}
+                aria-label="Scan code"
+                title="Scan code"
+              >
+                <svg className="wallet-modal__scan-icon" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7 6h2.4l1.1-2h3l1.1 2H17a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" fill="none" />
+                  <circle cx="12" cy="12" r="3.2" stroke="currentColor" strokeWidth="1.6" fill="none" />
+                  <circle cx="18.25" cy="9.25" r="0.75" fill="currentColor" />
+                </svg>
+              </button>
+              <button className="ghost-button pressable" onClick={openLightningSendSheet}>Send</button>
+            </div>
+              </>
+            )}
+            {walletTab === "messages" && (
+              <div className="wallet-messages">
+            <div className="wallet-messages__search">
+              <input
+                className="wallet-messages__search-input"
+                placeholder="Search"
+                value={dmSearch}
+                onChange={(event) => setDmSearch(event.target.value)}
+              />
+            </div>
+            <div className="wallet-messages__body">
+              {dmView === "list" && (
+                <div className="wallet-messages__list space-y-2">
+                {showStrangersOnly && (
+                  <button
+                    className="wallet-messages__thread pressable"
+                    onClick={() => {
+                      setShowStrangersOnly(false);
+                    }}
+                  >
+                    <div className="wallet-messages__avatar wallet-messages__avatar--stranger">⇠</div>
+                    <div className="wallet-messages__thread-body">
+                      <div className="wallet-messages__thread-title">Back to everyone</div>
+                      <div className="wallet-messages__thread-preview">View all conversations</div>
+                    </div>
+                  </button>
+                )}
+                {!showStrangersOnly && dmThreads.some((t) => t.isStranger) && (
+                  <button
+                    className="wallet-messages__thread wallet-messages__thread--stranger pressable"
+                    onClick={() => {
+                      setShowStrangersOnly(true);
+                      setActiveThreadPeer(null);
+                    }}
+                  >
+                    <div className="wallet-messages__avatar wallet-messages__avatar--stranger">◎</div>
+                    <div className="wallet-messages__thread-body">
+                      <div className="wallet-messages__thread-title">
+                        Strangers{strangerUnreadCount > 0 ? ` (${strangerUnreadCount})` : ""}
+                      </div>
+                      <div className="wallet-messages__thread-preview">
+                        {dmThreads.find((t) => t.isStranger)?.lastPreview || "New requests"}
+                      </div>
+                    </div>
+                    <div className="wallet-messages__thread-meta">
+                      <span className="wallet-messages__thread-date">
+                        {dmThreads.find((t) => t.isStranger)
+                          ? formatShortDate(dmThreads.find((t) => t.isStranger)!.lastCreatedAt)
+                          : ""}
+                      </span>
+                    </div>
+                  </button>
+                )}
+                {(showStrangersOnly
+                  ? dmThreads.filter((t) => t.isStranger)
+                  : dmThreads.filter((t) => {
+                      if (!dmSearch.trim()) return !t.isStranger;
+                      const meta = peerLabelFor(t.peerPubkey);
+                      const haystack = `${meta.label} ${meta.subtitle ?? ""} ${t.lastPreview} ${t.peerPubkey}`.toLowerCase();
+                      return haystack.includes(dmSearch.trim().toLowerCase());
+                    })
+                ).map((thread) => (
+                  <button
+                    key={thread.peerPubkey}
+                    className="wallet-messages__thread pressable"
+                    onClick={() => {
+                      setActiveThreadPeer(thread.peerPubkey);
+                      setDmView("thread");
+                      const unreadIds = thread.messages
+                        .map((m) => m.eventId)
+                        .filter((id) => {
+                          const item = messageItemsByEventId.get(id);
+                          if (!item) return false;
+                          const status = item.status;
+                          return status !== "accepted" && status !== "deleted" && status !== "read";
+                        });
+                      if (unreadIds.length) {
+                        onMarkMessagesRead(unreadIds);
+                      }
+                    }}
+                  >
+                    {(() => {
+                      const meta = peerLabelFor(thread.peerPubkey);
+                      const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
+                      return (
+                        <>
+                          <div className="wallet-messages__avatar">
+                            {meta.picture ? (
+                              <img
+                                src={meta.picture}
+                                alt={meta.label}
+                                className="wallet-messages__avatar-img"
+                              />
+                            ) : (
+                              <span>{meta.label.slice(0, 2)}</span>
+                            )}
+                          </div>
+                          <div className="wallet-messages__thread-body">
+                            <div className="wallet-messages__thread-title">
+                              {meta.label}
+                              {unreadCount > 0 ? ` (${unreadCount})` : ""}
+                            </div>
+                            {meta.subtitle && (
+                              <div className="wallet-messages__thread-subtitle">{meta.subtitle}</div>
+                            )}
+                            <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
+                          </div>
+                          <div className="wallet-messages__thread-meta">
+                            <span className="wallet-messages__thread-date">
+                              {formatShortDate(thread.lastCreatedAt)}
+                            </span>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </button>
+                ))}
+                {dmThreads.length === 0 && (
+                  <div className="wallet-messages__empty text-secondary text-sm text-center">
+                    No messages yet. Incoming DMs will appear here.
+                  </div>
+                )}
+                </div>
+              )}
+              {dmView === "thread" && activeThread && (
+                <div className="wallet-messages__thread-view">
+                <div className="wallet-messages__thread-header">
+                  <button
+                    className="glass-icon-button pressable"
+                    onClick={() => {
+                      setDmView(showStrangersOnly ? "list" : "list");
+                      setActiveThreadPeer(null);
+                    }}
+                  >
+                    <BackIcon className="h-4 w-4" />
+                  </button>
+                  {(() => {
+                    const meta = peerLabelFor(activeThread.peerPubkey);
+                    return (
+                      <div className="wallet-messages__thread-title">
+                        <div className="wallet-messages__thread-title-text">{meta.label}</div>
+                        {meta.subtitle && (
+                          <div className="wallet-messages__thread-subtitle">{meta.subtitle}</div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                  <span className="wallet-messages__thread-date">
+                    {formatDmDay(activeThread.lastCreatedAt)}
+                  </span>
+                </div>
+                {activeThread.isStranger && (
+                  <div className="wallet-messages__stranger-actions">
+                    <button
+                      type="button"
+                      className="wallet-messages__stranger-button wallet-messages__stranger-button--muted pressable"
+                      onClick={() => toggleBlockPeer(activeThread.peerPubkey)}
+                    >
+                      {activeThreadBlocked ? "Unblock User" : "Block User"}
+                    </button>
+                    <button
+                      type="button"
+                      className="wallet-messages__stranger-button wallet-messages__stranger-button--accent pressable"
+                      onClick={() => handleAddPeerToContacts(activeThread.peerPubkey)}
+                    >
+                      Add to contacts
+                    </button>
+                  </div>
+                )}
+                <div className="wallet-messages__thread-messages">
+                  {activeThread.messages.map((msg) => {
+                    const matchedItem = messageItemsByEventId.get(msg.eventId);
+                    const isPayment = msg.attachment?.type === "payment";
+                    const isContact = msg.attachment?.type === "contact";
+                    const isBoard = msg.attachment?.type === "board";
+                    const isTask = msg.attachment?.type === "task";
+                    const isStructured = !!msg.attachment && msg.attachment.type !== "text";
+                    const bubbleClass = `wallet-message__bubble${isStructured ? " wallet-message__bubble--card" : ""}`;
+                    const expanded = isDmMessageExpanded(msg.eventId);
+                    const paymentHistoryEntry = isPayment
+                      ? paymentHistoryByEventId.get(msg.eventId.toLowerCase())
+                      : null;
+                    const paymentCreatedSeconds = paymentHistoryEntry?.createdAt
+                      ? Math.floor(paymentHistoryEntry.createdAt / 1000)
+                      : msg.createdAt;
+                    const cardDayLabel = (() => {
+                      const date = new Date(paymentCreatedSeconds * 1000);
+                      const day = date.getDate();
+                      if (!Number.isFinite(day)) return "–";
+                      return `${day}`.padStart(2, "0");
+                    })();
+                    const cardDate = formatShortDate(paymentCreatedSeconds);
+                    const paymentDetails = isPayment
+                      ? selectIncomingPaymentFromPayload(
+                          tryParseJson<PaymentRequestPayload>(msg.attachment?.raw ?? null) ??
+                            tryParseJson<PaymentRequestPayload>(msg.content) ??
+                            msg.attachment?.raw ??
+                            msg.content,
+                        )
+                      : null;
+                    const paymentAmount =
+                      paymentDetails?.amount ??
+                      (isPayment ? msg.attachment?.amountSat ?? null : null);
+                    const paymentUnit =
+                      paymentDetails?.unit && typeof paymentDetails.unit === "string"
+                        ? paymentDetails.unit.toLowerCase()
+                        : "sat";
+                    const paymentMintRaw =
+                      paymentDetails?.mint && typeof paymentDetails.mint === "string"
+                        ? normalizeMintUrl(paymentDetails.mint)
+                        : null;
+                    const paymentMint = paymentHistoryEntry
+                      ? resolveMintDisplay(paymentHistoryEntry)
+                      : paymentMintRaw;
+                    const paymentToken =
+                      paymentHistoryEntry?.detail ||
+                      (paymentDetails?.token as string | undefined) ||
+                      (isPayment && typeof msg.attachment?.raw === "string" ? msg.attachment.raw : "");
+                    const paymentTitle =
+                      paymentHistoryEntry?.amountSat != null
+                        ? formatHistoryAmount(paymentHistoryEntry)
+                        : paymentAmount != null
+                        ? `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
+                        : "Payment request received";
+                    const paymentStatusInfo = paymentHistoryEntry ? deriveHistoryStatus(paymentHistoryEntry) : null;
+                    const paymentSubtitle =
+                      paymentHistoryEntry?.summary ||
+                      (paymentStatusInfo?.label
+                        ? [paymentStatusInfo.label, paymentMint].filter(Boolean).join(" • ")
+                        : null) ||
+                      (isPayment && msg.attachment?.detail) ||
+                      paymentMint ||
+                      "Tap to view payment details";
+                    const contactAttachment = isContact ? msg.attachment : null;
+                    const contactMeta = contactAttachment
+                      ? sharedContactMetaFor(
+                          contactAttachment.npub,
+                          contactAttachment.contactName ||
+                            contactAttachment.displayName ||
+                            contactAttachment.username ||
+                            matchedItem?.contact?.displayName ||
+                            matchedItem?.contact?.name ||
+                            matchedItem?.title,
+                          contactAttachment.picture,
+                        )
+                      : null;
+                    const taskAttachment = isTask ? msg.attachment?.task : null;
+                    const taskDueSeconds = taskAttachment?.dueISO
+                      ? Math.floor(new Date(taskAttachment.dueISO).getTime() / 1000)
+                      : null;
+                    const taskHasDue = !!(taskDueSeconds && Number.isFinite(taskDueSeconds) && taskDueSeconds > 0);
+                    const taskDayLabel = taskHasDue
+                      ? (() => {
+                          const date = new Date((taskDueSeconds as number) * 1000);
+                          const day = date.getDate();
+                          if (!Number.isFinite(day)) return cardDayLabel;
+                          return `${day}`.padStart(2, "0");
+                        })()
+                      : cardDayLabel;
+                    const taskCardDate = taskHasDue ? formatShortDate(taskDueSeconds as number) : cardDate;
+                    const taskDueLabel = taskHasDue
+                      ? `Due ${formatDmDay(taskDueSeconds as number)}${
+                          taskAttachment?.dueTimeEnabled ? ` · ${formatDmTime(taskDueSeconds as number)}` : ""
+                        }`
+                      : "Shared task";
+                    const taskSubtasks = Array.isArray(taskAttachment?.subtasks)
+                      ? taskAttachment.subtasks
+                          .map((subtask) => subtask.title?.trim())
+                          .filter((title): title is string => !!title)
+                      : [];
+                    const cardTime = `${formatDmDay(paymentCreatedSeconds)} · ${formatDmTime(paymentCreatedSeconds)}`;
+                    const paymentAmountLabel =
+                      paymentHistoryEntry?.amountSat != null
+                        ? formatHistoryAmount(paymentHistoryEntry)
+                        : paymentAmount != null
+                          ? `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
+                          : null;
+                    const paymentStatusLabel = paymentStatusInfo?.label;
+                    const paymentSummary = paymentHistoryEntry?.summary;
+                    const actionStatus = matchedItem?.status;
+                    const showActionButtons = actionStatus !== "accepted" && actionStatus !== "deleted";
+                    const boardStatusLabel = getWalletMessageStatusLabel("board", actionStatus);
+                    const contactStatusLabel = getWalletMessageStatusLabel("contact", actionStatus);
+                    const taskStatusLabel = getWalletMessageStatusLabel("task", actionStatus);
+                    const copyValue = buildDmCopyValue(msg, {
+                      paymentToken,
+                      boardId: isBoard
+                        ? msg.attachment?.boardId || msg.attachment?.boardName || msg.content
+                        : undefined,
+                      contactNpub:
+                        contactAttachment?.npub ||
+                        formatNpubDisplay(contactAttachment?.npub || msg.peerPubkey) ||
+                        formatNpub(msg.peerPubkey) ||
+                        msg.peerPubkey,
+                      taskPayload: taskAttachment || matchedItem?.task || null,
+                    });
+                    const copyLabel =
+                      msg.attachment?.type === "board"
+                        ? "Board ID"
+                        : msg.attachment?.type === "contact"
+                          ? "Pubkey"
+                          : msg.attachment?.type === "task"
+                            ? "Task"
+                          : msg.attachment?.type === "payment"
+                            ? "Token"
+                            : "Message";
+                    const isActionOpen = dmMessageActions?.eventId === msg.eventId;
+                    const stackClass = `wallet-message__stack${msg.isIncoming ? "" : " wallet-message__stack--out"}`;
+                    return (
+                      <div
+                        key={msg.eventId}
+                        className={`wallet-message ${msg.isIncoming ? "wallet-message--in" : "wallet-message--out"}`}
+                      >
+                        <div className={stackClass}>
+                          <div
+                            className={bubbleClass}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              cancelDmLongPress();
+                              setDmMessageActions({ eventId: msg.eventId, copyValue });
+                            }}
+                            onPointerDown={(event) => {
+                              if ((event.target as HTMLElement | null)?.closest("button")) return;
+                              cancelDmLongPress();
+                              dmLongPressTimerRef.current = window.setTimeout(() => {
+                                setDmMessageActions({ eventId: msg.eventId, copyValue });
+                              }, 420);
+                            }}
+                            onPointerUp={cancelDmLongPress}
+                            onPointerLeave={cancelDmLongPress}
+                            onPointerCancel={cancelDmLongPress}
+                          >
+                            {isBoard && (
+                              <div className="wallet-message__card wallet-message__card--inline">
+                                <div className="wallet-message__card-icon">{cardDayLabel}</div>
+                                <div className="wallet-message__card-body">
+                                  <div className="wallet-message__card-title">
+                                    {msg.attachment?.boardName || "Shared board"}
+                                  </div>
+                                  <div className="wallet-message__card-subtitle">
+                                    Add this board to your workspace
+                                  </div>
+                                  {showActionButtons ? (
+                                    <div className="wallet-message__card-actions">
+                                    <button
+                                      className="accent-button button-sm pressable"
+                                      onClick={() => {
+                                        if (matchedItem) onAcceptMessage(matchedItem.id);
+                                      }}
+                                      disabled={!matchedItem}
+                                    >
+                                      Add board
+                                    </button>
+                                    <button
+                                      className="ghost-button button-sm pressable"
+                                      onClick={() => {
+                                        if (matchedItem) onDismissMessage(matchedItem.id);
+                                      }}
+                                      disabled={!matchedItem}
+                                    >
+                                      Dismiss
+                                    </button>
+                                    </div>
+                                  ) : (
+                                    boardStatusLabel && (
+                                      <div className="wallet-message__card-status">{boardStatusLabel}</div>
+                                    )
+                                  )}
+                                </div>
+                                <div className="wallet-message__card-meta">{cardDate}</div>
+                              </div>
+                            )}
+                            {isContact && (
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                className="wallet-message__card pressable"
+                                onClick={() => toggleDmMessageExpanded(msg.eventId)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    toggleDmMessageExpanded(msg.eventId);
+                                  }
+                                }}
+                                aria-expanded={expanded}
+                              >
+                                <div className="wallet-message__card-icon wallet-message__card-icon--contact">
+                                  {contactMeta?.picture ? (
+                                    <img src={contactMeta.picture} alt={contactMeta.label} className="wallet-message__avatar-img" />
+                                  ) : (
+                                    <span>{cardDayLabel}</span>
+                                  )}
+                                </div>
+                                <div className="wallet-message__card-body">
+                                  <div className="wallet-message__card-title">
+                                    {contactMeta?.label || contactAttachment?.contactName || "Shared contact"}
+                                  </div>
+                                  <div className="wallet-message__card-subtitle">
+                                    {contactMeta?.subtitle || "Shared contact"}
+                                  </div>
+                                  {contactMeta?.verifiedNip05 && (
+                                    <div className="wallet-message__badge">NIP-05 verified</div>
+                                  )}
+                                </div>
+                                <div className="wallet-message__card-meta">{cardDate}</div>
+                                {expanded && (
+                                  <>
+                                    <div className="wallet-message__card-details">
+                                      {(contactMeta?.npub || contactAttachment?.npub) && (
+                                        <div className="wallet-message__detail-row">
+                                          <span>Npub</span>
+                                          <div className="wallet-message__detail-value">
+                                            <span className="wallet-message__mono">
+                                              {contactMeta?.npub ||
+                                                formatNpubDisplay(contactAttachment?.npub) ||
+                                                ""}
+                                            </span>
+                                            <button
+                                              type="button"
+                                              className="ghost-button button-xs pressable"
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                void copyMessageValue(
+                                                  contactMeta?.npub ||
+                                                    formatNpubDisplay(contactAttachment?.npub) ||
+                                                    "",
+                                                  "npub",
+                                                );
+                                              }}
+                                            >
+                                              Copy
+                                            </button>
+                                          </div>
+                                        </div>
+                                      )}
+                                      {(contactAttachment?.nip05 || contactMeta?.verifiedNip05) && (
+                                        <div className="wallet-message__detail-row">
+                                          <span>NIP-05</span>
+                                          <div className="wallet-message__detail-value">
+                                            {contactMeta?.verifiedNip05 || contactAttachment?.nip05}
+                                            {contactMeta?.verifiedNip05 && (
+                                              <span className="wallet-message__badge">Verified</span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {contactAttachment?.address && (
+                                        <div className="wallet-message__detail-row">
+                                          <span>Lightning</span>
+                                          <span className="wallet-message__detail-value">
+                                            {contactAttachment.address}
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
+                                    {showActionButtons ? (
+                                      <div className="wallet-message__card-actions">
+                                        <button
+                                          className="accent-button button-sm pressable"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            if (matchedItem) onAcceptMessage(matchedItem.id);
+                                          }}
+                                          disabled={!matchedItem}
+                                        >
+                                          Add contact
+                                        </button>
+                                        <button
+                                          className="ghost-button button-sm pressable"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            if (matchedItem) onDismissMessage(matchedItem.id);
+                                          }}
+                                          disabled={!matchedItem}
+                                        >
+                                          Dismiss
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      contactStatusLabel && (
+                                        <div className="wallet-message__card-status">{contactStatusLabel}</div>
+                                      )
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
+                            {isTask && (
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                className="wallet-message__card pressable"
+                                onClick={() => toggleDmMessageExpanded(msg.eventId)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    toggleDmMessageExpanded(msg.eventId);
+                                  }
+                                }}
+                                aria-expanded={expanded}
+                              >
+                                <div className="wallet-message__card-icon">{taskDayLabel}</div>
+                                <div className="wallet-message__card-body">
+                                  <div className="wallet-message__card-title">
+                                    {taskAttachment?.title || "Shared task"}
+                                  </div>
+                                  <div className="wallet-message__card-subtitle">{taskDueLabel}</div>
+                                </div>
+                                <div className="wallet-message__card-meta">{taskCardDate}</div>
+                                {expanded && (
+                                  <>
+                                    <div className="wallet-message__card-details">
+                                      {taskAttachment?.note && (
+                                        <div className="wallet-message__detail-row">
+                                          <span>Note</span>
+                                          <span className="wallet-message__detail-value">
+                                            {taskAttachment.note}
+                                          </span>
+                                        </div>
+                                      )}
+                                      {taskHasDue && (
+                                        <div className="wallet-message__detail-row">
+                                          <span>Due</span>
+                                          <span className="wallet-message__detail-value">
+                                            {taskDueLabel.replace("Due ", "")}
+                                          </span>
+                                        </div>
+                                      )}
+                                      {taskSubtasks.length > 0 && (
+                                        <div className="wallet-message__detail-row">
+                                          <span>Subtasks</span>
+                                          <span className="wallet-message__detail-value">
+                                            {taskSubtasks.join(", ")}
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
+                                    {showActionButtons ? (
+                                      <div className="wallet-message__card-actions">
+                                        <button
+                                          className="accent-button button-sm pressable"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            if (matchedItem) onAcceptMessage(matchedItem.id);
+                                          }}
+                                          disabled={!matchedItem}
+                                        >
+                                          Add task
+                                        </button>
+                                        <button
+                                          className="ghost-button button-sm pressable"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            if (matchedItem) onDismissMessage(matchedItem.id);
+                                          }}
+                                          disabled={!matchedItem}
+                                        >
+                                          Dismiss
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      taskStatusLabel && (
+                                        <div className="wallet-message__card-status">{taskStatusLabel}</div>
+                                      )
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
+                            {isPayment && (
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                className="wallet-message__card pressable"
+                                onClick={() => toggleDmMessageExpanded(msg.eventId)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    toggleDmMessageExpanded(msg.eventId);
+                                  }
+                                }}
+                                aria-expanded={expanded}
+                              >
+                                <div className="wallet-message__card-icon wallet-message__card-icon--payment">
+                                  {cardDayLabel}
+                                </div>
+                                <div className="wallet-message__card-body">
+                                  <div className="wallet-message__card-title">{paymentTitle}</div>
+                                  <div className="wallet-message__card-subtitle">{paymentSubtitle}</div>
+                                </div>
+                                <div className="wallet-message__card-meta">{cardDate}</div>
+                                {expanded && (
+                                  <>
+                                    <div className="wallet-message__card-details">
+                                      {paymentAmountLabel && (
+                                        <div className="wallet-message__detail-row">
+                                          <span>Amount</span>
+                                          <span className="wallet-message__detail-value">{paymentAmountLabel}</span>
+                                        </div>
+                                      )}
+                                      {paymentStatusLabel && (
+                                        <div className="wallet-message__detail-row">
+                                          <span>Status</span>
+                                          <span className="wallet-message__detail-value">{paymentStatusLabel}</span>
+                                        </div>
+                                      )}
+                                      {paymentMint && (
+                                        <div className="wallet-message__detail-row">
+                                          <span>Mint</span>
+                                          <span className="wallet-message__detail-value">{paymentMint}</span>
+                                        </div>
+                                      )}
+                                      <div className="wallet-message__detail-row">
+                                        <span>Received</span>
+                                        <span className="wallet-message__detail-value">{cardTime}</span>
+                                      </div>
+                                      {paymentSummary && (
+                                        <div className="wallet-message__detail-row wallet-message__detail-row--stacked">
+                                          <span>History</span>
+                                          <div className="wallet-message__token">{paymentSummary}</div>
+                                        </div>
+                                      )}
+                                      {paymentToken && (
+                                        <div className="wallet-message__detail-row wallet-message__detail-row--stacked">
+                                          <span>Token</span>
+                                          <div className="wallet-message__token">
+                                            {paymentToken}
+                                          </div>
+                                          <div className="wallet-message__card-actions">
+                                            <button
+                                              type="button"
+                                              className="ghost-button button-sm pressable"
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                void copyMessageValue(paymentToken, "Token");
+                                              }}
+                                            >
+                                              Copy token
+                                            </button>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            )}
+                            {msg.attachment?.type === "text" && (
+                              <>
+                                <div className="wallet-message__text">{msg.content}</div>
+                                <div className="wallet-message__time">
+                                  {formatDmDay(msg.createdAt)} · {formatDmTime(msg.createdAt)}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                          {isActionOpen && (
+                            <div className="wallet-message__actions">
+                              <button
+                                type="button"
+                                className="ghost-button button-xs pressable"
+                                onClick={() => {
+                                  void copyMessageValue(copyValue, copyLabel);
+                                  setDmMessageActions(null);
+                                }}
+                              >
+                                Copy {copyLabel.toLowerCase()}
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-button button-xs pressable wallet-message__action-delete"
+                                onClick={() => handleDeleteDmMessage(msg.eventId)}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              )}
+            </div>
+          </div>
+        )}
+            {walletTab === "contacts" && (
+              <div className="wallet-messages__empty text-secondary text-sm text-center space-y-3">
+            <div>Contacts live here now. Open the Contacts panel to add or manage entries.</div>
+            <button
+              className="accent-button button-sm pressable"
+              onClick={() => {
+                setWalletTab("contacts");
+                setContactsTabOpen(true);
+              }}
+            >
+              Open contacts
+            </button>
+          </div>
+            )}
+          </div>
+
+          {showWalletTabSwitcher && (
+            <div className="wallet-tab-switcher">
+              <div className="wallet-tab-switcher__pill">
+                <button
+                  className={`wallet-tab-switcher__btn pressable${walletTab === "wallet" ? " wallet-tab-switcher__btn--active" : ""}`}
+                  onClick={() => setWalletTab("wallet")}
+                >
+                  <div className="wallet-tab-switcher__icon">
+                    <WalletGlyphIcon className="wallet-tab-switcher__icon-svg" />
+                  </div>
+                  <div className="wallet-tab-switcher__label">Wallet</div>
+                </button>
+                <button
+                  className={`wallet-tab-switcher__btn pressable${walletTab === "messages" ? " wallet-tab-switcher__btn--active" : ""}`}
+                  onClick={() => {
+                    setWalletTab("messages");
+                    setDmView("list");
+                  }}
+                >
+                  <div className="wallet-tab-switcher__icon">
+                    <ChatBubbleIcon className="wallet-tab-switcher__icon-svg" />
+                  </div>
+                  <div className="wallet-tab-switcher__label">
+                    Messages{mainUnreadCount > 0 ? ` (${mainUnreadCount})` : ""}
+                  </div>
+                </button>
+                <button
+                  className={`wallet-tab-switcher__btn pressable${walletTab === "contacts" ? " wallet-tab-switcher__btn--active" : ""}`}
+                  onClick={() => {
+                    setWalletTab("contacts");
+                    setContactsTabOpen(true);
+                  }}
+                >
+                  <div className="wallet-tab-switcher__icon">
+                    <PersonIcon className="wallet-tab-switcher__icon-svg" />
+                  </div>
+                  <div className="wallet-tab-switcher__label">Contacts</div>
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
 
       <ActionSheet
         open={receiveMode === "ecash"}
@@ -9405,39 +15316,57 @@ useEffect(() => {
         </div>
       </ActionSheet>
 
-      <ActionSheet
-        open={sendMode === "ecash"}
-        onClose={closeEcashSendSheet}
-        title="Send eCash"
-        actions={(
-          <div className="flex items-center gap-2">
-            <button
-              className="glass-panel pressable rounded-full p-2"
-              type="button"
-              onClick={() => {
-                if (lockSendToPubkey) {
-                  handleClearSendLock();
-                } else {
-                  void handlePasteSendLock();
-                }
-              }}
-              title={lockSendToPubkey ? "Clear P2PK lock" : "Paste P2PK locking key"}
-              aria-label={lockSendToPubkey ? "Clear P2PK lock" : "Paste P2PK locking key"}
-            >
-              <LockIcon className={`h-4 w-4 ${lockSendToPubkey ? "text-accent" : "text-white"}`} />
-            </button>
-            <button
-              className="ghost-button button-sm pressable"
-              onClick={() => {
-                closeEcashSendSheet();
-                openLightningSendSheet();
-              }}
-            >
-              Lightning
-            </button>
-          </div>
-        )}
-      >
+	      <ActionSheet
+	        open={sendMode === "ecash"}
+	        onClose={closeEcashSendSheet}
+	        title={
+	          ecashSendView === "contact" && ecashSendRecipient
+	            ? (() => {
+	                const nip05 = ecashSendRecipient.nip05?.trim() || "";
+	                const nip05Verified = nip05 && isNip05VerifiedFor(ecashSendRecipient.id, nip05, ecashSendRecipient.npub);
+	                const label = nip05Verified ? nip05 : contactPrimaryName(ecashSendRecipient);
+	                return `Send to ${truncateContactName(label, 34)}`;
+	              })()
+	            : "Send eCash"
+	        }
+	        actions={
+	          ecashSendView === "contact" ? (
+	            <button
+	              className="ghost-button button-sm pressable"
+	              onClick={() => openContactsFor("ecash")}
+	            >
+	              Contacts
+	            </button>
+	          ) : (
+	            <div className="flex items-center gap-2">
+	              <button
+	                className="glass-panel pressable rounded-full p-2"
+	                type="button"
+	                onClick={() => {
+	                  if (lockSendToPubkey) {
+	                    handleClearSendLock();
+	                  } else {
+	                    void handlePasteSendLock();
+	                  }
+	                }}
+	                title={lockSendToPubkey ? "Clear P2PK lock" : "Paste P2PK locking key"}
+	                aria-label={lockSendToPubkey ? "Clear P2PK lock" : "Paste P2PK locking key"}
+	              >
+	                <LockIcon className={`h-4 w-4 ${lockSendToPubkey ? "text-accent" : "text-white"}`} />
+	              </button>
+	              <button
+	                className="ghost-button button-sm pressable"
+	                onClick={() => {
+	                  closeEcashSendSheet();
+	                  openLightningSendSheet();
+	                }}
+	              >
+	                Lightning
+	              </button>
+	            </div>
+	          )
+	        }
+	      >
         {ecashSendView === "amount" && (
           <div className="space-y-4">
             <div className="wallet-section wallet-section--compact space-y-3">
@@ -9548,6 +15477,98 @@ useEffect(() => {
               )}
             </div>
           </div>
+	        )}
+	        {ecashSendView === "contact" && ecashSendRecipient && (
+	          <div className="space-y-4">
+	            <div className="wallet-section space-y-5">
+	              <div className="space-y-2 text-left">
+	                <div className="text-[11px] uppercase tracking-wide text-secondary">Send from</div>
+	                {mintSelectionOptions.length ? (
+	                  <div className="relative">
+	                    <select
+	                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0 appearance-none z-10"
+	                      value={selectedMintValue}
+	                      aria-label="Select mint"
+	                      onChange={(event) => {
+	                        const next = event.target.value;
+	                        if (next && next !== selectedMintValue) {
+	                          void setMintUrl(next);
+	                        }
+	                      }}
+	                    >
+	                      {mintSelectionOptions.map((option) => {
+	                        const info = mintInfoByUrl[option.normalized];
+	                        const label = info?.name || formatMintDisplayName(option.url);
+	                        return (
+	                          <option key={option.normalized} value={option.normalized}>
+	                            {label}
+	                          </option>
+	                        );
+	                      })}
+	                    </select>
+	                    <div className="pill-input lightning-mint-select__display">
+	                      <div className="lightning-mint-select__label">{selectedMintLabel}</div>
+	                      <div className="lightning-mint-select__balance">{selectedMintBalanceLabel}</div>
+	                    </div>
+	                    <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-secondary" />
+	                  </div>
+	                ) : (
+	                  <div className="text-sm text-secondary">Add a mint in Wallet → Mint balances to send eCash.</div>
+	                )}
+	              </div>
+	              <button
+	                type="button"
+	                className={`lightning-amount-display glass-panel${canToggleCurrency ? " pressable" : ""}`}
+	                onClick={canToggleCurrency ? handleTogglePrimary : undefined}
+	                disabled={!canToggleCurrency}
+	              >
+	                <div className="wallet-balance-card__amount lightning-amount-display__primary">
+	                  {ecashPrimaryAmountText}
+	                </div>
+	                <div className="wallet-balance-card__secondary lightning-amount-display__secondary">
+	                  {ecashSecondaryAmountText}
+	                </div>
+	              </button>
+	              {sendLockError && <div className="text-[11px] text-rose-500">{sendLockError}</div>}
+	              <div className="grid grid-cols-3 gap-3">
+	                {(primaryCurrency === "usd"
+	                  ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
+	                  : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
+	                ).map((key) => {
+	                  const handlerKey = key === "⌫" ? "backspace" : key === "." ? "decimal" : key;
+	                  return (
+	                    <button
+	                      key={key}
+	                      type="button"
+	                      className="glass-panel pressable py-3 text-lg font-semibold"
+	                      onClick={() => handleEcashAmountKeypadInput(handlerKey)}
+	                    >
+	                      {key === "clear" ? "Clear" : key}
+	                    </button>
+	                  );
+	                })}
+	              </div>
+	              <button
+	                className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
+	                onClick={() => {
+	                  void applyEcashContact(ecashSendRecipient);
+	                }}
+	                disabled={!mintUrl || creatingSendToken || !canCreateSendTokenAmount}
+	              >
+	                {creatingSendToken ? (
+	                  <span className="inline-flex items-center gap-1">
+	                    Sending
+	                    <AnimatedEllipsis />
+	                  </span>
+	                ) : (
+	                  "Pay via nostr"
+	                )}
+	              </button>
+	            </div>
+	          </div>
+	        )}
+        {ecashSendView === "contact" && !ecashSendRecipient && (
+          <div className="wallet-section text-sm text-secondary">Select a contact to continue.</div>
         )}
         {ecashSendView === "token" && sendTokenStr && (
           <div className="space-y-4">
@@ -9630,122 +15651,614 @@ useEffect(() => {
       </ActionSheet>
 
       <ActionSheet
-        open={contactsManagerOpen}
-        onClose={closeContactsManager}
-        title="Manage contacts"
-        stackLevel={70}
+        open={contactsPanelOpen}
+        onClose={closeContactsTab}
+        header={contactsHeader}
+        stackLevel={contactsPanelInline ? undefined : 70}
+        panelClassName="sheet-panel--tall contacts-panel"
+        inline={contactsPanelInline}
       >
         <div
-          className="wallet-section space-y-3 text-sm"
-          style={{ minHeight: CONTACT_PANEL_HEIGHT, maxHeight: CONTACT_PANEL_HEIGHT }}
+          ref={contactsPanelRef}
+          className="contacts-shell"
+          aria-busy={contactSyncState.status === "loading" || contactsPublishState === "publishing"}
         >
-          <div className="flex items-start justify-between gap-2">
-            <div className="text-secondary text-[11px]">
-              Store lightning addresses and eCash payment requests for quick reuse.
-            </div>
-            {!contactFormVisible && (
-              <button className="ghost-button button-sm pressable" type="button" onClick={handleStartNewContact}>
-                Add contact
-              </button>
-            )}
-          </div>
-          {contactFormVisible && (
-            <form className="space-y-2 overflow-y-auto pr-1" onSubmit={handleSubmitContact}>
-              <div className="space-y-2">
-                <input
-                  className="pill-input"
-                  placeholder="Contact name (optional)"
-                  value={contactForm.name}
-                  onChange={(e) => setContactForm((prev) => ({ ...prev, name: e.target.value }))}
-                  autoComplete="name"
-                />
-                <input
-                  className="pill-input"
-                  placeholder="Lightning address (optional)"
-                  value={contactForm.address}
-                  onChange={(e) => setContactForm((prev) => ({ ...prev, address: e.target.value }))}
-                  autoComplete="off"
-                />
-                <input
-                  className="pill-input"
-                  placeholder="Nostr npub or hex (optional)"
-                  value={contactForm.npub}
-                  onChange={(e) => setContactForm((prev) => ({ ...prev, npub: e.target.value }))}
-                  autoComplete="off"
-                />
-                <textarea
-                  className="pill-textarea"
-                  rows={2}
-                  placeholder="eCash payment request (optional)"
-                  value={contactForm.paymentRequest}
-                  onChange={(e) => setContactForm((prev) => ({ ...prev, paymentRequest: e.target.value }))}
-                />
-              </div>
-              <div className="text-[11px] text-secondary">
-                {contactForm.id
-                  ? `Editing ${contactForm.name?.trim() || "saved contact"}`
-                  : "Store at least one lightning address, eCash payment request, or npub."}
-              </div>
-              {contactFormError && <div className="text-[11px] text-rose-500">{contactFormError}</div>}
-              <div className="flex flex-wrap gap-2 text-xs">
-                <button className="accent-button button-sm pressable" type="submit">
-                  {contactForm.id ? "Save contact" : "Add contact"}
-                </button>
-                <button className="ghost-button button-sm pressable" type="button" onClick={resetContactForm}>
-                  Cancel
-                </button>
-              </div>
-            </form>
-          )}
-          {sortedContacts.length > 0 ? (
-            <div className="flex-1 min-h-0 space-y-2 overflow-y-auto pr-1">
-              {sortedContacts.map((contact) => (
-                <div key={contact.id} className="flex flex-col gap-1 rounded-xl border border-transparent bg-surface px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <div className="font-medium text-sm truncate">
-                      {contact.name?.trim() || contact.address || contact.paymentRequest || contact.npub}
+          {contactView === "list" && (
+            <div className="contacts-list-view">
+              {(() => {
+                const profileSubtitleIsNip05 =
+                  !!profileCard.nip05 &&
+                  !!myCardSubtitle &&
+                  normalizeNip05(profileCard.nip05) === normalizeNip05(myCardSubtitle);
+                const profileNip05Verified =
+                  profileSubtitleIsNip05 &&
+                  isNip05VerifiedFor(profileCard.id, profileCard.nip05, profileCard.npub);
+                const profilePhoto = profileCard.picture?.trim();
+
+                return (
+                  <button
+                    type="button"
+                    className="contact-row contact-row--profile pressable"
+                    onClick={() => {
+                      setActiveContactId("profile");
+                      setContactView("detail");
+                    }}
+                  >
+                    <div
+                      className={
+                        profilePhoto
+                          ? "contact-avatar contact-avatar--image contact-avatar--profile"
+                          : "contact-avatar contact-avatar--profile"
+                      }
+                    >
+                      {profilePhoto ? (
+                        <img src={profilePhoto} alt={myCardName} className="contact-avatar__img" />
+                      ) : (
+                        contactInitials(myCardName)
+                      )}
                     </div>
-                    <div className="flex items-center gap-1 ml-auto">
-                      <button
-                        type="button"
-                        className="icon-button pressable"
-                        style={SMALL_ICON_BUTTON_STYLE}
-                        onClick={() => handleStartEditContact(contact)}
-                        aria-label={`Edit contact ${contact.name || contact.address || contact.paymentRequest}`}
-                        title={`Edit contact ${contact.name || contact.address || contact.paymentRequest}`}
+                    <div className="contact-row__text">
+                      <div className="contact-row__name">{myCardName}</div>
+                      <div
+                        className={`contact-row__meta${
+                          profileSubtitleIsNip05 ? " contact-row__meta--nip05" : ""
+                        }`}
                       >
-                        <PencilIcon className="h-4 w-4" />
-                      </button>
+                        <span className="contact-row__meta-text">{myCardSubtitle}</span>
+                        {profileSubtitleIsNip05 && profileNip05Verified && (
+                          <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                        )}
+                      </div>
+                    </div>
+                    <span className="contact-chevron">›</span>
+                  </button>
+                );
+              })()}
+
+              <div className="contact-list">
+                {sortedContacts.length > 0 ? (
+                  sortedContacts.map((contact) => {
+                    const displayName = contactDisplayLabel(contact);
+                    const displayNameTrimmed = truncateContactName(displayName);
+                    const subtitle = contactSubtitle(contact) || "No details added";
+                    const subtitleIsNip05 =
+                      !!contact.nip05 &&
+                      !!subtitle &&
+                      normalizeNip05(contact.nip05) === normalizeNip05(subtitle);
+                    const nip05Verified =
+                      subtitleIsNip05 && isNip05VerifiedFor(contact.id, contact.nip05, contact.npub);
+                    const photo = contact.picture?.trim();
+                    return (
                       <button
+                        key={contact.id}
                         type="button"
-                        className="icon-button pressable icon-button--danger"
-                        style={SMALL_ICON_BUTTON_STYLE}
+                        className="contact-row pressable"
                         onClick={() => {
-                          if (window.confirm("Remove this contact?")) {
-                            handleDeleteContact(contact.id);
-                          }
+                          setActiveContactId(contact.id);
+                          setContactView("detail");
                         }}
-                        aria-label={`Delete contact ${contact.name || contact.address || contact.paymentRequest}`}
-                        title={`Delete contact ${contact.name || contact.address || contact.paymentRequest}`}
                       >
-                        <TrashIcon className="h-4 w-4" />
-                      </button>
-                    </div>
+                        <div className={photo ? "contact-avatar contact-avatar--image" : "contact-avatar"}>
+                          {photo ? (
+                            <img src={photo} alt={displayName} className="contact-avatar__img" />
+                        ) : (
+                          contactInitials(displayName)
+                        )}
+                      </div>
+                      <div className="contact-row__text">
+                        <div className="contact-row__name">{displayNameTrimmed}</div>
+                        <div
+                          className={`contact-row__meta${subtitleIsNip05 ? " contact-row__meta--nip05" : ""}`}
+                        >
+                          <span className="contact-row__meta-text">{subtitle}</span>
+                          {subtitleIsNip05 && nip05Verified && (
+                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                          )}
+                        </div>
+                      </div>
+                      <span className="contact-chevron">›</span>
+                    </button>
+                  );
+                })
+                ) : (
+                  <div className="contact-empty text-secondary">No saved contacts yet. Tap + to add one.</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {contactView === "detail" && detailTarget && (
+            <div className="contact-detail-view">
+              <div className="contact-hero">
+                <div className="contact-hero__center">
+                  <div className="contact-qr-wrapper">
+                    {detailShareValue ? (
+                          <QrCodeCard
+                          className="contact-qr-card"
+                          value={detailShareValue}
+                          label={detailTitle}
+                          size={200}
+                          flat
+                          hideLabel
+                          hideCopyButton
+                        />
+                    ) : (
+                      <div className="contact-qr-placeholder text-secondary">No QR to share yet.</div>
+                    )}
                   </div>
-                  {contact.address.trim() && (
-                    <div className="contact-entry__value text-[11px] text-secondary">⚡ {contact.address}</div>
-                  )}
-                  {contact.paymentRequest.trim() && (
-                    <div className="contact-entry__value text-[11px] text-secondary">🥜 {contact.paymentRequest}</div>
-                  )}
-                  {contact.npub.trim() && (
-                    <div className="contact-entry__value text-[11px] text-secondary">🔐 {contact.npub}</div>
+                  <div
+                    className={`contact-heading${detailTarget.picture ? "" : " contact-heading--text-only"}`}
+                  >
+                    {detailTarget.picture && (
+                      <img src={detailTarget.picture} alt={detailTitle} className="contact-portrait" />
+                    )}
+                <div className="contact-heading__text">
+                  <div className="flex items-center gap-2">
+                    <div className="contact-name-lg" title={detailTitle}>
+                      {truncateContactName(detailTitle, 34)}
+                    </div>
+                    {activeContactId === "profile" && profileCard.npub && (
+                      <button
+                        type="button"
+                        className="contact-pill contact-pill--circle pressable"
+                        title="Share your npub"
+                        onClick={() => {
+                          setShareContactSource({ ...profileCard, relays: defaultNostrRelays } as Contact);
+                          setShareContactStatus(null);
+                          setShareContactPickerOpen(true);
+                        }}
+                      >
+                        <ShareArrowIcon className="contact-pill__icon" />
+                      </button>
+                    )}
+                  </div>
+                  {detailUsername && (
+                    <div className="contact-username" title={detailUsername}>
+                      {truncateContactValue(detailUsername, 33)}
+                    </div>
                   )}
                 </div>
-              ))}
+                  </div>
+                </div>
+              </div>
+
+              {activeContact &&
+                (detailHasLightning || detailCanShare) && (
+                  <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
+                    {detailHasLightning && (
+                      <button
+                        type="button"
+                        className="contact-pill pressable"
+                        onClick={() => {
+                          applyLightningContact(activeContact);
+                          setContactsTabOpen(false);
+                        }}
+                      >
+                        Pay lightning
+                      </button>
+                    )}
+                    {detailCanShare && (
+                      <button
+                        type="button"
+                        className="contact-pill pressable"
+                        onClick={() => {
+                          openEcashSendToContact(activeContact);
+                          setContactsTabOpen(false);
+                        }}
+                      >
+                        Pay eCash
+                      </button>
+                    )}
+                    {detailCanShare && (
+                      <button
+                        type="button"
+                        className="contact-pill contact-pill--circle pressable"
+                        title="Share contact"
+                        onClick={() => {
+                          setShareContactSource(activeContact);
+                          setShareContactStatus(null);
+                          setShareContactPickerOpen(true);
+                        }}
+                      >
+                        <ShareArrowIcon className="contact-pill__icon" />
+                      </button>
+                    )}
+                  </div>
+              )}
+
+              <div className="contact-fields">
+                {detailFields.length ? (
+                  detailFields.map((field) => {
+                    const isNip05Field = field.key === "nip05";
+                    return (
+                      <div key={field.key} className="contact-field">
+                        <div className="contact-field__label">{field.label}</div>
+                        <button
+                          type="button"
+                          className={`contact-field__value${field.multiline ? " contact-field__value--multiline" : ""}${
+                            isNip05Field ? " contact-field__value--nip05" : ""
+                          }`}
+                          onClick={() => handleCopyContactField(field.value, field.label)}
+                          title={field.value}
+                        >
+                          <span className={`contact-field__text${field.multiline ? " contact-field__text--multiline" : ""}`}>
+                            {field.multiline ? field.value : truncateContactValue(field.value, 36)}
+                          </span>
+                          {isNip05Field && detailNip05Verified && (
+                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="contact-empty text-secondary">No details saved for this contact yet.</div>
+                )}
+              </div>
+
+              {activeContact && (
+                <div className="contact-actions-row">
+                  <button
+                    type="button"
+                    className="contact-pill contact-pill--danger pressable"
+                    onClick={() => {
+                      if (window.confirm("Remove this contact?")) {
+                        handleDeleteContact(activeContact.id);
+                        setContactView("list");
+                        setActiveContactId(null);
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {contactView === "detail" && !detailTarget && (
+            <div className="contact-empty text-secondary">
+              Contact not found.{" "}
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-primary underline"
+                onClick={() => {
+                  setContactView("list");
+                  setActiveContactId(null);
+                }}
+              >
+                Go back
+              </button>
+            </div>
+          )}
+
+          {contactView === "edit" &&
+            (() => {
+              const profilePhoto = contactEditDraft.picture.trim();
+              const profileInitials =
+                contactEditDraft.displayName ||
+                contactEditDraft.name ||
+                contactEditDraft.username ||
+                myCardName;
+              const showContactFields = contactEditDraft.isProfile || showCustomContactFields;
+
+              return (
+                <form
+                  id="contact-edit-form"
+                  className="contact-edit-view"
+                  onSubmit={(event) => event.preventDefault()}
+                >
+                  {contactEditDraft.isProfile ? (
+                    <div className="contact-photo-card">
+                      <div className="contact-photo-title">Profile photo</div>
+                      <div className="contact-photo-body">
+                        <div
+                          className={
+                            profilePhoto
+                              ? "contact-avatar contact-avatar--image contact-avatar--xl"
+                              : "contact-avatar contact-avatar--xl"
+                          }
+                        >
+                          {profilePhoto ? (
+                            <img src={profilePhoto} alt={profileInitials} className="contact-avatar__img" />
+                          ) : (
+                            contactInitials(profileInitials)
+                          )}
+                        </div>
+                        <div className="contact-photo-actions">
+                          <button
+                            type="button"
+                            className="accent-button pressable contact-photo-upload"
+                            onClick={() => {
+                              setProfilePhotoError("");
+                              profilePhotoInputRef.current?.click();
+                            }}
+                            disabled={profilePhotoBusy}
+                          >
+                            {profilePhotoBusy ? "Processing…" : profilePhoto ? "Replace photo" : "Upload photo"}
+                          </button>
+                          {profilePhoto && (
+                            <button
+                              type="button"
+                              className="ghost-button button-sm pressable contact-photo-remove"
+                              onClick={handleClearProfilePhoto}
+                              disabled={profilePhotoBusy}
+                            >
+                              Remove photo
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          ref={profilePhotoInputRef}
+                          type="file"
+                          accept="image/*"
+                          style={{ display: "none" }}
+                          onChange={handleProfilePhotoChange}
+                        />
+                        {profilePhotoError && <div className="contact-error">{profilePhotoError}</div>}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="contact-import-card">
+                      <div className="contact-import-title">Import from npub / NIP-05</div>
+                      <div className="contact-import-actions contact-import-actions--top">
+                        <button
+                          type="button"
+                          className="ghost-button button-sm pressable contact-import-scan"
+                          onClick={() => {
+                            setShowScanner(true);
+                          }}
+                        >
+                          Scan QR
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button button-sm pressable contact-custom-toggle"
+                          onClick={() => setShowCustomContactFields((prev) => !prev)}
+                        >
+                          {showCustomContactFields ? "Hide custom fields" : "Custom contact"}
+                        </button>
+                        {publicFollowOptions.length > 0 && (
+                          <button
+                            type="button"
+                            className="ghost-button button-sm pressable contact-import-follow"
+                            onClick={() => setPublicFollowPickerOpen(true)}
+                          >
+                            Pick from follows
+                          </button>
+                        )}
+                      </div>
+                      <div className="contact-import-row">
+                        <input
+                          className="contact-edit-input contact-import-input"
+                          placeholder="npub1… or name@example.com"
+                          value={contactLookupInput}
+                          onChange={(e) => setContactLookupInput(e.target.value)}
+                          autoComplete="off"
+                        />
+                        <button
+                          type="button"
+                          className="accent-button pressable contact-import-button"
+                          onClick={async () => {
+                            await handleContactImportAction();
+                          }}
+                          disabled={contactLookupBusy}
+                        >
+                          {contactLookupBusy ? "…" : contactLookupInput.trim() ? "Import" : "Paste"}
+                        </button>
+                      </div>
+                      {contactLookupError && <div className="contact-error">{contactLookupError}</div>}
+                    </div>
+                  )}
+
+                  {showContactFields && (
+                    <div className="contact-edit-grid">
+                      {!contactEditDraft.isProfile && (
+                        <input
+                          className="contact-edit-input"
+                          placeholder="Nickname"
+                          value={contactEditDraft.name}
+                          onChange={(e) => setContactEditDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        />
+                      )}
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Display name"
+                        value={contactEditDraft.displayName}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, displayName: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Username"
+                        value={contactEditDraft.username}
+                        onChange={(e) => {
+                          const sanitized = sanitizeUsername(e.target.value);
+                          setContactEditDraft((prev) => ({ ...prev, username: sanitized }));
+                        }}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="Lightning address"
+                        autoComplete="off"
+                        value={contactEditDraft.address}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, address: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="npub or hex pubkey"
+                        autoComplete="off"
+                        value={contactEditDraft.npub}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, npub: e.target.value }))}
+                      />
+                      <input
+                        className="contact-edit-input"
+                        placeholder="NIP-05 (name@example.com)"
+                        autoComplete="off"
+                        value={contactEditDraft.nip05}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, nip05: e.target.value }))}
+                      />
+                      <textarea
+                        className="contact-edit-input contact-edit-textarea"
+                        rows={3}
+                        placeholder="About"
+                        value={contactEditDraft.about}
+                        onChange={(e) => setContactEditDraft((prev) => ({ ...prev, about: e.target.value }))}
+                      />
+                    </div>
+                  )}
+
+                  <div className="contact-edit-note text-secondary">
+                    Saving publishes your updates to Nostr (contacts stay encrypted).
+                  </div>
+
+                  {contactEditError && <div className="contact-error">{contactEditError}</div>}
+                </form>
+              );
+            })()}
+        </div>
+      </ActionSheet>
+
+      <ActionSheet
+        open={publicFollowPickerOpen}
+        onClose={() => setPublicFollowPickerOpen(false)}
+        title="Import from follows"
+        stackLevel={75}
+      >
+        <div className="wallet-section space-y-3 text-sm">
+          {publicFollowOptions.length ? (
+            <div className="contact-list">
+              {publicFollowOptions.map((follow) => {
+                const formattedUsername = follow.username ? formatContactUsername(follow.username) : "";
+                const nip05Label = follow.nip05 || "";
+                const label = follow.petname || nip05Label || formattedUsername || follow.npub;
+                const subtitle =
+                  nip05Label || formattedUsername || follow.relay || follow.npub;
+                return (
+                  <button
+                    key={follow.pubkey}
+                    type="button"
+                    className="contact-row pressable"
+                    onClick={() => {
+                      void handleImportPublicFollow(follow.npub);
+                    }}
+                  >
+                    <div className="contact-avatar">{contactInitials(label)}</div>
+                    <div className="contact-row__text">
+                      <div className="contact-row__name">{truncateContactName(label)}</div>
+                      <div className="contact-row__meta">
+                        <span className="contact-row__meta-text">{truncateContactValue(subtitle)}</span>
+                      </div>
+                    </div>
+                    <span className="contact-chevron">›</span>
+                  </button>
+                );
+              })}
             </div>
           ) : (
-            !contactFormVisible && <div className="text-secondary">No saved contacts yet.</div>
+            <div className="text-secondary">No public follows found yet. Sync contacts to load your follows.</div>
+          )}
+        </div>
+      </ActionSheet>
+
+      <ActionSheet
+        open={profileEditorOpen}
+        onClose={() => setProfileEditorOpen(false)}
+        title="Edit profile"
+        stackLevel={80}
+      >
+        <div className="wallet-section space-y-3 text-sm">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <div className="text-xs text-secondary uppercase tracking-wide">Profile</div>
+              <div className="font-semibold text-primary">Update your info</div>
+            </div>
+            <div className="text-right text-[11px] text-secondary">
+              {profileStatus === "publishing"
+                ? "Publishing…"
+                : profileStatus === "loading"
+                  ? "Loading…"
+                  : profileUpdatedAt
+                    ? `Updated ${new Date(profileUpdatedAt).toLocaleString()}`
+                    : "Draft"}
+            </div>
+          </div>
+          <div className="grid gap-2">
+            <input
+              className="pill-input"
+              placeholder="Username"
+              value={profileForm.username}
+              onChange={(e) => setProfileForm((prev) => ({ ...prev, username: e.target.value }))}
+              autoComplete="username"
+            />
+            <input
+              className="pill-input"
+              placeholder="Display name"
+              value={profileForm.displayName}
+              onChange={(e) => setProfileForm((prev) => ({ ...prev, displayName: e.target.value }))}
+              autoComplete="name"
+            />
+            <input
+              className="pill-input"
+              placeholder="Lightning address"
+              value={profileForm.lud16}
+              onChange={(e) => setProfileForm((prev) => ({ ...prev, lud16: e.target.value }))}
+              autoComplete="off"
+            />
+            <input
+              className="pill-input"
+              placeholder="NIP-05 (name@example.com)"
+              value={profileForm.nip05}
+              onChange={(e) => setProfileForm((prev) => ({ ...prev, nip05: e.target.value }))}
+              autoComplete="off"
+            />
+            <textarea
+              className="pill-textarea"
+              rows={2}
+              placeholder="About (optional)"
+              value={profileForm.about}
+              onChange={(e) => setProfileForm((prev) => ({ ...prev, about: e.target.value }))}
+            />
+          </div>
+          {profileMessage && (
+            <div className={`text-[11px] ${profileStatus === "error" ? "text-rose-400" : "text-secondary"}`}>
+              {profileMessage}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 text-xs">
+            <button
+              className="accent-button button-sm pressable"
+              type="button"
+              onClick={() => {
+                void publishProfileMetadata();
+              }}
+              disabled={profileStatus === "publishing" || profileStatus === "loading"}
+            >
+              {profileStatus === "publishing" ? "Publishing…" : "Save & publish"}
+            </button>
+            <button
+              className="ghost-button button-sm pressable"
+              type="button"
+              onClick={() => {
+                void loadProfileMetadata();
+              }}
+              disabled={profileStatus === "loading"}
+            >
+              Refresh
+            </button>
+          </div>
+          {profileShareValue && (
+            <div className="flex flex-col items-center gap-2">
+              <QrCodeCard
+                className="bg-surface-muted border border-surface rounded-2xl p-3 text-xs"
+                value={profileShareValue}
+                label="Your profile"
+                copyLabel="Copy profile"
+                size={200}
+              />
+              <div className="text-[11px] text-secondary text-center">
+                Share to add you, pay lightning, or send eCash via Nostr.
+              </div>
+            </div>
           )}
         </div>
       </ActionSheet>
@@ -10180,8 +16693,17 @@ useEffect(() => {
               </div>
               <button
                 type="button"
-                className={`lightning-amount-display glass-panel${canEditPaymentRequestAmount ? " pressable" : ""}`}
-                disabled={!canEditPaymentRequestAmount}
+                className={`lightning-amount-display glass-panel${paymentRequestAmountButtonEnabled ? " pressable" : ""}`}
+                onClick={
+                  paymentRequestAmountButtonEnabled
+                    ? () => {
+                        if (canTogglePaymentRequestCurrency) {
+                          handlePaymentRequestAmountUnitToggle();
+                        }
+                      }
+                    : undefined
+                }
+                disabled={!paymentRequestAmountButtonEnabled}
               >
                 <div className="wallet-balance-card__amount lightning-amount-display__primary">
                   {paymentRequestPrimaryAmountText}
@@ -10192,8 +16714,11 @@ useEffect(() => {
               </button>
               {!paymentRequestHasFixedAmount && (
                 <div className="grid grid-cols-3 gap-3">
-                  {["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"].map((key) => {
-                    const handlerKey = key === "⌫" ? "backspace" : key;
+                  {(primaryCurrency === "usd"
+                    ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"]
+                    : ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "⌫"]
+                  ).map((key) => {
+                    const handlerKey = key === "⌫" ? "backspace" : key === "." ? "decimal" : key;
                     return (
                       <button
                         key={key}
@@ -10257,6 +16782,7 @@ useEffect(() => {
         open={showScanner}
         onClose={closeScanner}
         title="Scan Code"
+        stackLevel={95}
         actions={(
           <button
             className="ghost-button button-sm pressable"
@@ -10276,6 +16802,196 @@ useEffect(() => {
         </div>
       </ActionSheet>
 
+        <ActionSheet
+          open={!!scannedContact}
+          onClose={() => setScannedContact(null)}
+          header={scannedContactHeader}
+          stackLevel={75}
+        >
+          {scannedContact && (
+            <div className="contact-detail-view">
+              <div className="contact-hero">
+                <div className="contact-hero__center">
+                  <div className="contact-qr-wrapper">
+                    {scannedContactShareValue ? (
+                      <QrCodeCard
+                        className="contact-qr-card"
+                        value={scannedContactShareValue}
+                        label={scannedContactTitle}
+                        size={200}
+                        flat
+                        hideLabel
+                        hideCopyButton
+                      />
+                    ) : (
+                      <div className="contact-qr-placeholder text-secondary">No QR to share yet.</div>
+                    )}
+                  </div>
+                  <div
+                    className={`contact-heading${scannedContact.picture ? "" : " contact-heading--text-only"}`}
+                  >
+                    {scannedContact.picture && (
+                      <img src={scannedContact.picture} alt={scannedContactTitle} className="contact-portrait" />
+                    )}
+                    <div className="contact-heading__text">
+                      <div className="contact-name-lg" title={scannedContactTitle}>
+                        {truncateContactName(scannedContactTitle, 34)}
+                      </div>
+                      {scannedContactUsername && (
+                        <div className="contact-username" title={scannedContactUsername}>
+                          {truncateContactValue(scannedContactUsername, 33)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {scannedContact &&
+                (contactHasLightning(scannedContact) ||
+                  scannedContactCanShare) && (
+                <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
+                  {contactHasLightning(scannedContact) && (
+                    <button
+                      type="button"
+                      className="contact-pill pressable"
+                      onClick={() => {
+                        applyLightningContact(scannedContact);
+                        setScannedContact(null);
+                      }}
+                    >
+                      Pay lightning
+                    </button>
+                  )}
+                  {scannedContactCanShare && (
+                    <button
+                      type="button"
+                      className="contact-pill pressable"
+                      onClick={() => {
+                        openEcashSendToContact(scannedContact);
+                        setScannedContact(null);
+                      }}
+                    >
+                      Pay eCash
+                    </button>
+                  )}
+                  {scannedContactCanShare && (
+                    <button
+                      type="button"
+                      className="contact-pill contact-pill--circle pressable"
+                      title="Share contact"
+                      onClick={() => {
+                        setShareContactSource(scannedContact);
+                        setShareContactStatus(null);
+                        setShareContactPickerOpen(true);
+                      }}
+                    >
+                      <ShareArrowIcon className="contact-pill__icon" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="contact-fields">
+                {scannedContactFields.length ? (
+                  scannedContactFields.map((field) => {
+                    const isNip05Field = field.key === "nip05";
+                    return (
+                      <div key={field.key} className="contact-field">
+                        <div className="contact-field__label">{field.label}</div>
+                        <button
+                          type="button"
+                          className={`contact-field__value${field.multiline ? " contact-field__value--multiline" : ""}${
+                            isNip05Field ? " contact-field__value--nip05" : ""
+                          }`}
+                          onClick={() => handleCopyContactField(field.value, field.label)}
+                          title={field.value}
+                        >
+                          <span
+                            className={`contact-field__text${field.multiline ? " contact-field__text--multiline" : ""}`}
+                          >
+                            {field.multiline ? field.value : truncateContactValue(field.value, 36)}
+                          </span>
+                          {isNip05Field && scannedContactNip05Verified && (
+                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="contact-empty text-secondary">No details saved for this contact yet.</div>
+                )}
+              </div>
+            </div>
+          )}
+        </ActionSheet>
+
+      <ActionSheet
+        open={shareContactPickerOpen}
+        onClose={() => {
+          if (shareContactBusy) return;
+          setShareContactPickerOpen(false);
+          setShareContactSource(null);
+          setShareContactStatus(null);
+        }}
+        title="Send contact"
+        stackLevel={90}
+      >
+        {shareContactSource ? (
+          <div className="text-sm text-secondary mb-2">
+            Send <span className="font-semibold">{contactPrimaryName(shareContactSource)}</span> to a contact.
+          </div>
+        ) : (
+          <div className="text-sm text-secondary mb-2">Choose who to send this contact to.</div>
+        )}
+        {shareContactStatus && <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>}
+        {shareRecipientOptions.length ? (
+          <div className="space-y-2">
+            {shareRecipientOptions.map((contact) => {
+              const label = contactPrimaryName(contact);
+              const subtitle = formatContactNpub(contact.npub);
+              return (
+                <button
+                  key={contact.id}
+                  type="button"
+                  className="contact-row pressable"
+                  disabled={shareContactBusy}
+                  onClick={() => handleShareContactToContact(contact)}
+                >
+                  <div className="contact-avatar">{contactInitials(label)}</div>
+                  <div className="contact-row__text">
+                    <div className="contact-row__name">{label}</div>
+                    {subtitle ? (
+                      <div className="contact-row__meta">
+                        <span className="contact-row__meta-text">{subtitle}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-sm text-secondary">Add another contact with an npub to share to.</div>
+        )}
+        <div className="flex gap-2 mt-3">
+          <button
+            type="button"
+            className="ghost-button button-sm pressable flex-1 justify-center"
+            onClick={() => {
+              if (shareContactBusy) return;
+              setShareContactPickerOpen(false);
+              setShareContactSource(null);
+              setShareContactStatus(null);
+            }}
+            disabled={shareContactBusy}
+          >
+            Cancel
+          </button>
+        </div>
+      </ActionSheet>
+
       <ActionSheet
         open={showHistory}
         onClose={() => {
@@ -10288,29 +17004,18 @@ useEffect(() => {
         {history.length ? (
           filteredHistory.length ? (
             <>
-              {pendingHistoryItems.length > 0 && (
-                <button
-                  type="button"
-                  className="wallet-history__filter-toggle"
-                  onClick={() => {
-                    if (historyFilter === "pending") {
-                      setHistoryFilter("all");
-                    } else {
-                      setHistoryFilter("pending");
-                    }
-                    setExpandedHistoryId(null);
-                  }}
-                >
-                  {historyFilter === "pending"
-                    ? "Show all history"
-                    : `Filter pending${pendingHistoryItems.length ? ` (${pendingHistoryItems.length})` : ""}`}
-                </button>
+              {historyFilterControls && (
+                <div className="wallet-history__filters-inline">{historyFilterControls}</div>
               )}
               <ul className="wallet-history">
-                {filteredHistory.map((entry) => {
+                {filteredHistory.map((entry, index) => {
                   const isExpanded = expandedHistoryId === entry.id;
+                  const detailKind = entry.detailKind;
+                  const detailIsToken = isCashuTokenDetail(entry.detail, detailKind);
+                  const resolvedType =
+                    entry.type ?? (detailKind === "invoice" ? "lightning" : detailIsToken ? "ecash" : undefined);
                   const typeLabel =
-                    entry.type === "lightning" ? "Lightning" : entry.type === "ecash" ? "Ecash" : "History";
+                    resolvedType === "lightning" ? "Lightning" : resolvedType === "ecash" ? "Ecash" : "History";
                   const timeLabel = formatRelativeTime(entry.createdAt);
                   const amountLabel = formatHistoryAmount(entry);
                   const fiatLabel =
@@ -10319,8 +17024,6 @@ useEffect(() => {
                       : null;
                   const mintLabel = resolveMintDisplay(entry);
                   const statusInfo = deriveHistoryStatus(entry);
-                  const detailKind = entry.detailKind;
-                  const detailIsToken = isCashuTokenDetail(entry.detail, detailKind);
                   const detailLabel = detailIsToken
                     ? "Cashu token"
                     : detailKind === "invoice"
@@ -10358,16 +17061,28 @@ useEffect(() => {
                             }
                           : null;
                   const showRedeemButton = entry.pendingTokenId && entry.pendingStatus !== "redeemed";
+                  const canMarkTokenSpent = !!entry.tokenState && entry.tokenState.lastState !== "SPENT";
                   return (
-                    <li key={entry.id} className={`wallet-history__item${isExpanded ? " wallet-history__item--open" : ""}`}>
-                      <button
-                        type="button"
+                    <li
+                      key={`${entry.id}-${index}`}
+                      className={`wallet-history__item${isExpanded ? " wallet-history__item--open" : ""}`}
+                    >
+                      <div
+                        role="button"
+                        tabIndex={0}
                         className="wallet-history__summary"
                         onClick={() => setExpandedHistoryId(isExpanded ? null : entry.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setExpandedHistoryId(isExpanded ? null : entry.id);
+                          }
+                        }}
                         aria-expanded={isExpanded}
+                        aria-label="Toggle history details"
                       >
                         <div className="wallet-history__icon" aria-hidden="true">
-                          {entry.type === "lightning" ? (
+                          {resolvedType === "lightning" ? (
                             <LightningGlyph className="wallet-history__glyph" />
                           ) : (
                             <EcashGlyph className="wallet-history__glyph" />
@@ -10415,7 +17130,7 @@ useEffect(() => {
                             </button>
                           )}
                         </div>
-                      </button>
+                      </div>
                       {isExpanded && (
                         <div className="wallet-history__details">
                           {detailLabel && entry.detail && (
@@ -10469,7 +17184,14 @@ useEffect(() => {
                             )}
                           </div>
                           {entry.summary && (
-                            <div className="wallet-history__detail-note">{entry.summary}</div>
+                            <div className="wallet-history__detail-note">
+                              {entry.summary}
+                              {entry.relatedTaskTitle && (
+                                <div className="wallet-history__detail-task">
+                                  Task: {entry.relatedTaskTitle}
+                                </div>
+                              )}
+                            </div>
                           )}
                           {pendingAction?.status?.message && (
                             <div
@@ -10610,6 +17332,27 @@ useEffect(() => {
                               </div>
                             </div>
                           )}
+                          <div className="wallet-history__section space-y-2">
+                            <div className="wallet-history__section-title">Actions</div>
+                            <div className="wallet-history__section-content flex flex-wrap gap-2 items-center text-xs text-secondary">
+                              {canMarkTokenSpent && (
+                                <button
+                                  type="button"
+                                  className="ghost-button button-sm pressable"
+                                  onClick={() => handleMarkHistoryTokenSpent(entry)}
+                                >
+                                  Mark token spent
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="ghost-button button-sm pressable"
+                                onClick={() => handleDeleteHistoryEntry(entry)}
+                              >
+                                Delete entry
+                              </button>
+                            </div>
+                          </div>
                         </div>
                       )}
                     </li>

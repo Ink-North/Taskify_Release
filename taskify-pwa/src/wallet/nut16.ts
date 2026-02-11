@@ -2,12 +2,14 @@ import {
   getDecodedToken,
   getDecodedTokenBinary,
   getEncodedToken,
-  getEncodedTokenBinary,
   type Token,
 } from "@cashu/cashu-ts";
+import { Buffer } from "buffer";
+import { UR, UREncoder, URDecoder } from "@gandlaf21/bc-ur";
+import { sha256 } from "@noble/hashes/sha256";
 
 const BASE64_PAD = "=";
-const DEFAULT_CHUNK_SIZE = 780; // tuned for QR capacity at high error correction
+const DEFAULT_CHUNK_SIZE = 200; // max fragment length passed to UR encoder (bc-ur default)
 const DEFAULT_INTERVAL_MS = 450;
 const NUT16_VERSION = 1;
 const FRAME_PATTERN = /^cashuA:(\d+):(\d+):(\d+):([A-Za-z0-9_-]{6,}):([A-Za-z0-9_-]+)$/;
@@ -113,6 +115,67 @@ function fromBase64Url(value: string): Uint8Array {
 function buildFrameValue(frame: Nut16Frame): string {
   return `cashuA:${frame.version}:${frame.index}:${frame.total}:${frame.digest}:${frame.chunk}`;
 }
+function isUrString(value: string): boolean {
+  return /^ur:/i.test(value?.trim?.() ?? "");
+}
+
+function parseUrSequence(value: string): { index: number; total: number } | null {
+  const trimmed = value.trim();
+  const parts = trimmed.split("/");
+  if (parts.length < 2) return null;
+  const seq = parts[1];
+  const match = /^(\d+)(?:-|of)(\d+)$/i.exec(seq);
+  if (!match) return null;
+  const index = Number(match[1]);
+  const total = Number(match[2]);
+  if (!Number.isFinite(index) || !Number.isFinite(total)) return null;
+  return { index, total };
+}
+
+function extractUrType(value: string): string | null {
+  if (!isUrString(value)) return null;
+  const match = value.trim().match(/^ur:([^/]+)\//i);
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+function extractUrDigest(value: string): string | null {
+  if (!isUrString(value)) return null;
+  const parts = value.split("/");
+  if (!parts.length) return null;
+  const sequencePattern = /^\d+(?:-\d+|of\d+)$/i;
+  // Ignore explicit sequence markers (e.g., "1-10") to avoid changing keys per frame.
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i];
+    if (!part) continue;
+    if (sequencePattern.test(part)) continue;
+    return part;
+  }
+  // Fallback to UR type to keep a stable key for multi-part animations.
+  return extractUrType(value);
+}
+
+function deriveUrKey(value: string, providedDigest?: string | null): string {
+  const digest = providedDigest && !/^\d+(?:-\d+|of\d+)$/i.test(providedDigest) ? providedDigest : null;
+  if (digest) return digest;
+  const type = extractUrType(value);
+  if (type) return type;
+  return digestFromBytes(new TextEncoder().encode(value));
+}
+
+function canonicalizeUrFragment(value: string): string {
+  if (!isUrString(value)) return value.trim();
+  const trimmed = value.trim();
+  const parts = trimmed.split("/");
+  if (parts.length <= 2) return trimmed;
+  // Drop type and sequence so repeats with different sequence numbers dedupe.
+  const payload = parts.slice(2).join("/");
+  return payload || trimmed;
+}
+
+function digestFromBytes(bytes: Uint8Array): string {
+  const hash = sha256(bytes);
+  return toBase64Url(hash as Uint8Array).slice(0, 16);
+}
 
 function ensureToken(token: string): Token {
   const trimmed = token.trim();
@@ -122,20 +185,78 @@ function ensureToken(token: string): Token {
   return getDecodedToken(trimmed);
 }
 
+function decodeTokenFromBytes(bytes: Uint8Array): string {
+  // Prefer text tokens (UR "bytes" carrying the encoded token string)
+  try {
+    const text = new TextDecoder().decode(bytes);
+    const decoded = getDecodedToken(text);
+    return getEncodedToken(decoded, { version: 4 });
+  } catch {
+    // Fallback to binary encoding path
+  }
+  const token = getDecodedTokenBinary(bytes);
+  const encoded = getEncodedToken(token, { version: 4 });
+  if (!encoded) {
+    throw new Error("Failed to re-encode animated token");
+  }
+  return encoded;
+}
+
 export function createNut16Animation(
   token: string,
   opts?: { chunkSize?: number; intervalMs?: number },
 ): Nut16Animation | null {
   try {
     const decoded = ensureToken(token);
-    const binary = getEncodedTokenBinary(decoded);
-    const base64 = toBase64Url(binary);
+    const canonical = getEncodedToken(decoded, { version: 4 });
+    const payloadBytes = new TextEncoder().encode(canonical);
+    const digest = digestFromBytes(payloadBytes);
+    const fragmentLength = Math.max(30, opts?.chunkSize ?? DEFAULT_CHUNK_SIZE);
+    try {
+      const ur = UR.fromBuffer(Buffer.from(payloadBytes));
+      const encoder = new UREncoder(ur, fragmentLength, 0);
+      const frames: Nut16Frame[] = [];
+      const seen = new Set<string>();
+      const target = encoder.fragmentsLength ?? 0;
+      const maxFrames = target > 0 ? target : 100;
+      let guard = Math.max(maxFrames * 3, 200);
+      while (frames.length < maxFrames && guard > 0) {
+        guard -= 1;
+        const part = encoder.nextPart();
+        const fragmentId = canonicalizeUrFragment(part);
+        if (seen.has(fragmentId)) {
+          continue;
+        }
+        seen.add(fragmentId);
+        frames.push({
+          version: NUT16_VERSION,
+          index: frames.length + 1,
+          total: target,
+          digest,
+          chunk: part,
+          value: part,
+        });
+        if (target > 0 && seen.size >= target) break;
+      }
+      if (frames.length > 1) {
+        return {
+          frames,
+          totalBytes: payloadBytes.length,
+          digest,
+          version: NUT16_VERSION,
+          intervalMs: opts?.intervalMs ?? DEFAULT_INTERVAL_MS,
+        };
+      }
+    } catch (error) {
+      console.warn("Unable to init UR encoder, falling back to legacy chunks", error);
+    }
+
+    const base64 = toBase64Url(payloadBytes);
     const chunkSize = Math.max(1, opts?.chunkSize ?? DEFAULT_CHUNK_SIZE);
     if (base64.length <= chunkSize) {
       return null;
     }
     const total = Math.ceil(base64.length / chunkSize);
-    const digest = base64.slice(0, 16);
     const frames: Nut16Frame[] = [];
     for (let index = 0; index < total; index++) {
       const chunk = base64.slice(index * chunkSize, (index + 1) * chunkSize);
@@ -152,7 +273,7 @@ export function createNut16Animation(
     }
     return {
       frames,
-      totalBytes: binary.length,
+      totalBytes: payloadBytes.length,
       digest,
       version: NUT16_VERSION,
       intervalMs: opts?.intervalMs ?? DEFAULT_INTERVAL_MS,
@@ -166,6 +287,20 @@ export function createNut16Animation(
 export function parseNut16FrameString(value: string): Nut16Frame | null {
   if (!value) return null;
   const trimmed = value.trim();
+  if (isUrString(trimmed)) {
+    const digest = deriveUrKey(trimmed, extractUrDigest(trimmed));
+    const seq = parseUrSequence(trimmed);
+    const index = seq?.index ?? 1;
+    const total = seq?.total ?? 0;
+    return {
+      version: NUT16_VERSION,
+      index,
+      total,
+      digest,
+      chunk: trimmed,
+      value: trimmed,
+    };
+  }
   const match = FRAME_PATTERN.exec(trimmed);
   if (!match) return null;
   const [, versionStr, indexStr, totalStr, digest, chunk] = match;
@@ -190,6 +325,23 @@ export function combineNut16Frames(frames: Nut16Frame[]): string {
   if (!frames.length) {
     throw new Error("No frames provided");
   }
+  const urFrames = frames.filter((f) => isUrString(f.value));
+  if (urFrames.length) {
+    const decoder = new URDecoder();
+    for (const frame of urFrames) {
+      decoder.receivePart(frame.value.trim());
+    }
+    if (!decoder.isSuccess()) {
+      throw new Error("Animated Cashu token incomplete");
+    }
+    const ur = decoder.resultUR();
+    const bytes = new Uint8Array(ur.decodeCBOR());
+    if (!bytes.length) {
+      throw new Error("Animated Cashu token payload empty");
+    }
+    return decodeTokenFromBytes(bytes);
+  }
+
   const [first] = frames;
   const total = first.total;
   const sorted = [...frames].sort((a, b) => a.index - b.index);
@@ -210,18 +362,14 @@ export function combineNut16Frames(frames: Nut16Frame[]): string {
   if (!bytes.length) {
     throw new Error("Animated token payload empty");
   }
-  const token = getDecodedTokenBinary(bytes);
-  const encoded = getEncodedToken(token, { version: 4 });
-  if (!encoded) {
-    throw new Error("Failed to re-encode animated token");
-  }
-  return encoded;
+  return decodeTokenFromBytes(bytes);
 }
 
 export function findNut16FrameStrings(text: string): string[] {
   if (!text) return [];
-  const matches = text.match(FRAME_GLOBAL_PATTERN);
-  return matches ? matches.map((m) => m.trim()).filter(Boolean) : [];
+  const matches = text.match(FRAME_GLOBAL_PATTERN) ?? [];
+  const urMatches = text.match(/ur:[a-z0-9-]+\/[a-z0-9-]+(?:\/[a-z0-9-]+)*/gi) ?? [];
+  return [...matches, ...urMatches].map((m) => m.trim()).filter(Boolean);
 }
 
 export function assembleNut16FromText(text: string): { token: string; frames: Nut16Frame[] } {
@@ -239,8 +387,10 @@ export function assembleNut16FromText(text: string): { token: string; frames: Nu
       bucket = new Map();
       grouped.set(key, bucket);
     }
-    if (!bucket.has(frame.index)) {
-      bucket.set(frame.index, frame);
+    // For UR frames, use index as insertion order
+    const bucketIndex = frame.index || bucket.size + 1;
+    if (!bucket.has(bucketIndex)) {
+      bucket.set(bucketIndex, frame);
     }
   }
   if (!grouped.size) {
@@ -255,7 +405,7 @@ export function assembleNut16FromText(text: string): { token: string; frames: Nu
     throw new Error("Animated Cashu token is empty");
   }
   const expectedTotal = frames[0].total;
-  if (frames.length !== expectedTotal) {
+  if (expectedTotal > 0 && frames.length !== expectedTotal) {
     const missing = expectedTotal - frames.length;
     throw new Error(`Animated Cashu token incomplete. ${missing} frame${missing === 1 ? "" : "s"} missing.`);
   }
@@ -265,6 +415,7 @@ export function assembleNut16FromText(text: string): { token: string; frames: Nu
 
 export function containsNut16Frame(text: string): boolean {
   if (!text) return false;
+  if (isUrString(text.trim())) return true;
   if (FRAME_PATTERN.test(text.trim())) return true;
   FRAME_GLOBAL_PATTERN.lastIndex = 0;
   return FRAME_GLOBAL_PATTERN.test(text);
@@ -272,6 +423,7 @@ export function containsNut16Frame(text: string): boolean {
 
 export class Nut16Collector {
   private readonly sets = new Map<string, FrameSet>();
+  private urSet: { key: string; decoder: URDecoder; fragments: Set<string>; lastUpdated: number } | null = null;
   private readonly expiryMs: number;
 
   constructor(opts?: { expiryMs?: number }) {
@@ -280,10 +432,48 @@ export class Nut16Collector {
 
   reset(): void {
     this.sets.clear();
+    this.urSet = null;
   }
 
   addFrame(frame: Nut16Frame): Nut16CollectorResult {
     this.cleanup();
+    if (isUrString(frame.value)) {
+      const key = this.urSet?.key ?? deriveUrKey(frame.value, frame.digest || extractUrDigest(frame.value));
+      let state = this.urSet;
+      if (!state || state.key !== key) {
+        state = { key, decoder: new URDecoder(), fragments: new Set<string>(), lastUpdated: Date.now() };
+        this.urSet = state;
+      }
+      const fragmentId = canonicalizeUrFragment(frame.value);
+      const hadFragment = state.fragments.has(fragmentId);
+      state.fragments.add(fragmentId);
+      state.decoder.receivePart(frame.value);
+      state.lastUpdated = Date.now();
+      const received = state.fragments.size;
+      const total = state.decoder.expectedPartCount?.() ?? frame.total ?? 0;
+      const missing = total ? Math.max(total - received, 0) : 0;
+      if (state.decoder.isSuccess()) {
+        try {
+          const ur = state.decoder.resultUR();
+          const bytes = new Uint8Array(ur.decodeCBOR());
+          const encoded = decodeTokenFromBytes(bytes);
+          this.urSet = null;
+          return { status: "complete", frame, token: encoded, key };
+        } catch (error) {
+          this.urSet = null;
+          return { status: "error", frame, error: error instanceof Error ? error : new Error(String(error)), key };
+        }
+      }
+      return {
+        status: hadFragment ? "duplicate" : "stored",
+        frame,
+        received,
+        total,
+        missing,
+        key,
+      };
+    }
+
     const key = `${frame.version}:${frame.digest}`;
     let state = this.sets.get(key);
     if (!state || state.version !== frame.version || state.total !== frame.total) {
@@ -327,12 +517,15 @@ export class Nut16Collector {
   }
 
   private cleanup(): void {
-    if (!this.sets.size) return;
+    if (!this.sets.size && !this.urSet) return;
     const threshold = Date.now() - this.expiryMs;
     for (const [key, state] of this.sets.entries()) {
       if (state.lastUpdated < threshold) {
         this.sets.delete(key);
       }
+    }
+    if (this.urSet && this.urSet.lastUpdated < threshold) {
+      this.urSet = null;
     }
   }
 }

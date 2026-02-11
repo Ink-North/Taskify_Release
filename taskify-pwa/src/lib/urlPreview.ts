@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { LS_URL_PREVIEW_CACHE } from "../localStorageKeys";
+import { kvStorage } from "../storage/kvStorage";
 
 export type UrlPreviewData = {
   url: string;
@@ -97,7 +98,7 @@ function ensurePersistentCacheLoaded(): void {
   persistentCacheLoaded = true;
   if (typeof window === "undefined") return;
   try {
-    const raw = window.localStorage.getItem(LS_URL_PREVIEW_CACHE);
+    const raw = kvStorage.getItem(LS_URL_PREVIEW_CACHE);
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return;
@@ -141,11 +142,11 @@ function writePersistentCache(): void {
   if (typeof window === "undefined") return;
   try {
     if (persistentCache.size === 0) {
-      window.localStorage.removeItem(LS_URL_PREVIEW_CACHE);
+      kvStorage.removeItem(LS_URL_PREVIEW_CACHE);
       return;
     }
     const payload = serializePersistentCache();
-    window.localStorage.setItem(LS_URL_PREVIEW_CACHE, JSON.stringify(payload));
+    kvStorage.setItem(LS_URL_PREVIEW_CACHE, JSON.stringify(payload));
   } catch {
     /* ignore */
   }

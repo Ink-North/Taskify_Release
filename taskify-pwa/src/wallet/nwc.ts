@@ -1,4 +1,5 @@
-import { finalizeEvent, getPublicKey, nip04, nip19, type EventTemplate } from "nostr-tools";
+import { getPublicKey, nip04, nip19, type EventTemplate } from "nostr-tools";
+import { NostrSession } from "../nostr/NostrSession";
 
 export type ParsedNwcUri = {
   uri: string;
@@ -155,64 +156,21 @@ export class NwcClient {
 
   private requestViaRelay<T>(relayUrl: string, method: string, params: Record<string, unknown>, timeoutMs = 20000): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      let settled = false;
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-      let ws: WebSocket | null = null;
-      let requestEventId = "";
-      const subId = `nwc-${Math.random().toString(36).slice(2, 9)}`;
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+      let release: (() => void) | null = null;
+      let requestEventId: string | null = null;
 
-      const finish = (err: Error | null, value?: T) => {
-        if (settled) return;
-        settled = true;
+      const cleanup = () => {
         if (timeoutHandle) clearTimeout(timeoutHandle);
-        timeoutHandle = undefined;
-        try {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(["CLOSE", subId]));
-          }
-        } catch {}
-        try { ws?.close(); } catch {}
-        ws = null;
-        if (err) reject(err);
-        else resolve(value as T);
+        timeoutHandle = null;
+        try { release?.(); } catch {}
+        release = null;
       };
 
-      const handleResponse = async (data: any) => {
-        if (!Array.isArray(data)) return;
-        const [type, ...rest] = data;
-        if (type === "EVENT") {
-          const [incomingSubId, ev] = rest as [string, any];
-          if (incomingSubId !== subId) return;
-          if (!ev || ev.kind !== NWC_EVENT_KIND_RESPONSE) return;
-          const eTag = Array.isArray(ev.tags) ? ev.tags.find((t: string[]) => t[0] === "e") : null;
-          if (eTag && requestEventId && eTag[1] && eTag[1] !== requestEventId) return;
-          try {
-            const decrypted = await nip04.decrypt(this.connection.clientSecretHex, this.connection.walletPubkey, ev.content);
-            const payload = JSON.parse(decrypted) as NwcResponse<T>;
-            if (payload.error) {
-              const msg = payload.error.message || payload.error.code || "NWC request failed";
-              finish(new Error(msg));
-              return;
-            }
-            finish(null, payload.result as T);
-          } catch (err: any) {
-            finish(err instanceof Error ? err : new Error(String(err)));
-          }
-        } else if (type === "NOTICE") {
-          const [msg] = rest as [string];
-          console.warn("NWC relay notice", relayUrl, msg);
-        }
-      };
-
-      try {
-        ws = new WebSocket(relayUrl);
-      } catch (err: any) {
-        reject(err instanceof Error ? err : new Error(String(err)));
-        return;
-      }
-
-      ws.onopen = async () => {
+      (async () => {
         try {
+          const relayList = [relayUrl];
+          const session = await NostrSession.init(relayList);
           const payload = JSON.stringify({ method, params });
           const encrypted = await nip04.encrypt(this.connection.clientSecretHex, this.connection.walletPubkey, payload);
           const template: EventTemplate = {
@@ -222,30 +180,51 @@ export class NwcClient {
             tags: [["p", this.connection.walletPubkey], ["t", "nwc"]],
             pubkey: this.connection.clientPubkey,
           };
-          const signed = finalizeEvent(template, this.connection.clientSecretBytes);
-          requestEventId = signed.id;
-          ws!.send(JSON.stringify(["REQ", subId, { kinds: [NWC_EVENT_KIND_RESPONSE], "#p": [this.connection.clientPubkey] }]));
-          ws!.send(JSON.stringify(["EVENT", signed]));
-        } catch (err: any) {
-          finish(err instanceof Error ? err : new Error(String(err)));
+          const subscription = await session.subscribe(
+            [{ kinds: [NWC_EVENT_KIND_RESPONSE], "#p": [this.connection.clientPubkey] }],
+            {
+              relayUrls: relayList,
+              onEvent: async (ev) => {
+                if (requestEventId) {
+                  const eTag = ev.tags.find((t) => t[0] === "e");
+                  if (eTag && eTag[1] && eTag[1] !== requestEventId) return;
+                }
+                try {
+                  const decrypted = await nip04.decrypt(this.connection.clientSecretHex, this.connection.walletPubkey, ev.content);
+                  const response = JSON.parse(decrypted) as NwcResponse<T>;
+                  if (response.error) {
+                    const msg = response.error.message || response.error.code || "NWC request failed";
+                    cleanup();
+                    reject(new Error(msg));
+                    return;
+                  }
+                  cleanup();
+                  resolve(response.result as T);
+                } catch (err: any) {
+                  cleanup();
+                  reject(err instanceof Error ? err : new Error(String(err)));
+                }
+              },
+            },
+          );
+          release = subscription.release;
+          const publishResult = await session.publish(template, {
+            relayUrls: relayList,
+            signer: this.connection.clientSecretBytes,
+            returnEvent: true,
+          });
+          if (typeof publishResult === "object" && (publishResult as any).event?.id) {
+            requestEventId = (publishResult as any).event.id as string;
+          }
+          timeoutHandle = setTimeout(() => {
+            cleanup();
+            reject(new Error("Timed out waiting for NWC response"));
+          }, timeoutMs);
+        } catch (error: any) {
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
         }
-      };
-
-      ws.onmessage = (evt) => {
-        try {
-          const data = JSON.parse(evt.data);
-          handleResponse(data);
-        } catch {
-          // ignore malformed messages
-        }
-      };
-      ws.onerror = () => {
-        finish(new Error("NWC relay error"));
-      };
-      ws.onclose = () => {
-        if (!settled) finish(new Error("NWC relay closed connection"));
-      };
-      timeoutHandle = setTimeout(() => finish(new Error("Timed out waiting for NWC response")), timeoutMs);
+      })();
     });
   }
 }

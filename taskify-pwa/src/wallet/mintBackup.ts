@@ -3,6 +3,8 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { getPublicKey, nip44, type EventTemplate } from "nostr-tools";
 import { LS_MINT_BACKUP_CACHE } from "../localStorageKeys";
+import { idbKeyValue } from "../storage/idbKeyValue";
+import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
 import { sanitizeMintList } from "./storage";
 
 export const MINT_BACKUP_KIND = 30078;
@@ -94,7 +96,7 @@ export function isMintBackupEvent(event: { kind?: number; tags?: string[][] }): 
 
 export function loadMintBackupCache(): MintBackupPayload | null {
   try {
-    const raw = localStorage.getItem(LS_MINT_BACKUP_CACHE);
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_MINT_BACKUP_CACHE);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && Array.isArray(parsed.mints)) {
@@ -112,10 +114,11 @@ export function loadMintBackupCache(): MintBackupPayload | null {
 export function persistMintBackupCache(payload: MintBackupPayload | null): MintBackupPayload | null {
   try {
     if (!payload) {
-      localStorage.removeItem(LS_MINT_BACKUP_CACHE);
+      idbKeyValue.removeItem(TASKIFY_STORE_WALLET, LS_MINT_BACKUP_CACHE);
       return null;
     }
-    localStorage.setItem(
+    idbKeyValue.setItem(
+      TASKIFY_STORE_WALLET,
       LS_MINT_BACKUP_CACHE,
       JSON.stringify({ mints: payload.mints ?? [], timestamp: payload.timestamp ?? 0 }),
     );
