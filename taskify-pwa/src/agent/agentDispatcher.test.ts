@@ -272,6 +272,36 @@ test("task.list pagination returns nextCursor", async () => {
   assert.equal(second.result?.nextCursor, null);
 });
 
+test("task.list query filters by title and note text", async () => {
+  const runtimeState = createRuntime({
+    tasks: [
+      makeTask({ id: "task-q", title: "qwen35b test", note: "model regression" }),
+      makeTask({ id: "task-g", title: "gpt20b test", note: "follow up" }),
+      makeTask({ id: "task-n", title: "other", note: "mentions QWEN35B inside note" }),
+    ],
+  });
+  setAgentRuntime(runtimeState.runtime);
+
+  const response = await run({
+    v: 1,
+    id: "list-query",
+    op: "task.list",
+    params: { status: "any", query: "qwen35b", limit: 10 },
+  });
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(
+    (response.result?.items as Array<{ id: string }>).map((item) => item.id),
+    ["task-n", "task-q"],
+  );
+  assert.deepEqual(response.result?.counts, {
+    trusted: 0,
+    untrusted: 0,
+    unknown: 2,
+    returned: 2,
+  });
+});
+
 test("strict mode filters out untrusted and unknown tasks", async () => {
   const runtimeState = createRuntime({
     tasks: [
