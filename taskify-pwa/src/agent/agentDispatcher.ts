@@ -81,6 +81,7 @@ type TaskListCommand = {
   params: {
     boardId?: string;
     status?: "open" | "done" | "any";
+    query?: string;
     limit?: number;
     cursor?: string;
   };
@@ -486,6 +487,12 @@ function validateCommand(raw: unknown): ValidationResult<AgentCommandV1> {
           : params.status === "open" || params.status === "done" || params.status === "any"
             ? params.status
             : (nextDetails["params.status"] = 'Expected "open", "done", or "any"', "open");
+      const query =
+        params.query === undefined
+          ? undefined
+          : typeof params.query === "string" && params.query.trim()
+            ? params.query.trim()
+            : (nextDetails["params.query"] = "Expected non-empty string", undefined);
       const limit =
         params.limit === undefined
           ? 50
@@ -510,7 +517,13 @@ function validateCommand(raw: unknown): ValidationResult<AgentCommandV1> {
           v: version!,
           id: id!,
           op,
-          params: { ...(boardId ? { boardId } : {}), status, limit, ...(cursor ? { cursor } : {}) },
+          params: {
+            ...(boardId ? { boardId } : {}),
+            status,
+            ...(query ? { query } : {}),
+            limit,
+            ...(cursor ? { cursor } : {}),
+          },
         } as AgentCommandV1,
       };
     }
@@ -642,6 +655,7 @@ function buildHelpResult(): Record<string, unknown> {
         paramsSchema: {
           boardId: "string (optional)",
           status: '"open"|"done"|"any" (optional, default "open")',
+          query: "string (optional, case-insensitive title/note contains)",
           limit: "number 1-200 (optional, default 50)",
           cursor: "string (optional)",
         },
@@ -649,7 +663,7 @@ function buildHelpResult(): Record<string, unknown> {
           v: 1,
           id: "list-1",
           op: "task.list",
-          params: { status: "open", limit: 50 },
+          params: { status: "any", query: "qwen35b", limit: 50 },
         },
       },
       {
@@ -729,6 +743,7 @@ function buildHelpResult(): Record<string, unknown> {
       "In strict mode, task.get returns FORBIDDEN for untrusted or unknown items.",
       "Trusted means lastEditedByNpub is in trustedNpubs.",
       "task.list returns counts.trusted, counts.untrusted, counts.unknown, and counts.returned.",
+      "task.list query performs a case-insensitive contains match across title and note.",
       "task.create supports idempotencyKey so retries do not create duplicates.",
     ],
     examples: [
@@ -740,9 +755,9 @@ function buildHelpResult(): Record<string, unknown> {
         ],
       },
       {
-        title: "List open tasks and inspect trust counts",
+        title: "Find tasks by title text across statuses",
         commands: [
-          { v: 1, id: "l1", op: "task.list", params: { status: "open", limit: 25 } },
+          { v: 1, id: "l1", op: "task.list", params: { status: "any", query: "qwen35b", limit: 25 } },
         ],
       },
     ],
@@ -877,9 +892,16 @@ export async function dispatchAgentCommand(raw: string): Promise<AgentResponseV1
         });
 
         const annotatedAll = sorted.map((task) => summarizeTaskWithTrust(task, securityConfig));
-        const filtered = getEffectiveAgentSecurityMode(securityConfig) === "strict"
-          ? annotatedAll.filter((item) => item.trusted)
+        const query = command.params.query?.trim().toLowerCase();
+        const queryFiltered = query
+          ? annotatedAll.filter((item) => {
+            const haystack = `${item.title}\n${item.note}`.toLowerCase();
+            return haystack.includes(query);
+          })
           : annotatedAll;
+        const filtered = getEffectiveAgentSecurityMode(securityConfig) === "strict"
+          ? queryFiltered.filter((item) => item.trusted)
+          : queryFiltered;
         const offset = command.params.cursor ? decodeCursor(command.params.cursor) ?? 0 : 0;
         const limit = command.params.limit ?? 50;
         const items = filtered.slice(offset, offset + limit);
@@ -888,7 +910,7 @@ export async function dispatchAgentCommand(raw: string): Promise<AgentResponseV1
         return success(command.id, {
           items,
           nextCursor,
-          counts: summarizeTrustCounts(annotatedAll, items.length),
+          counts: summarizeTrustCounts(queryFiltered, items.length),
         }, command.v);
       }
 
