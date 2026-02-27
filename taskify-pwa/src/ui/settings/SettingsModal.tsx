@@ -33,6 +33,7 @@ import { PushSection } from "./PushSection";
 import { NostrSection } from "./NostrSection";
 import { BackupSection } from "./BackupSection";
 import { ManageBoardModal } from "./ManageBoardModal";
+import { TASKIFY_AGENT_CONTRACT_BLOCK } from "../agent/agentPromptContract";
 
 export function SettingsModal({
   embedded,
@@ -252,6 +253,15 @@ export function SettingsModal({
     }
   }, [showToast, taskifyAiInstructionBlock]);
 
+  const handleCopyTaskifyAgentContract = useCallback(async () => {
+    try {
+      await navigator.clipboard?.writeText(TASKIFY_AGENT_CONTRACT_BLOCK);
+      showToast("Taskify agent contract copied", 2000);
+    } catch {
+      showToast("Unable to copy contract", 2000);
+    }
+  }, [showToast]);
+
   async function handleDonate() {
     setDonateState("sending");
     setDonateMsg("");
@@ -399,27 +409,55 @@ export function SettingsModal({
           onReloadNeeded={onReloadNeeded}
         />
 
-        {/* AI import prompt */}
+        {/* AI prompts */}
         <section className="wallet-section space-y-3">
           <div className="flex items-center gap-2">
-            <div className="text-sm font-medium">AI task/event import</div>
-            <button
-              className="ghost-button button-sm pressable ml-auto"
-              onClick={handleCopyTaskifyAiInstructions}
-            >
-              Copy instructions
-            </button>
+            <div className="text-sm font-medium">AI prompts</div>
           </div>
-          <div className="text-xs text-secondary">
-            Paste this prompt into your AI app, ask it to make Taskify tasks/events, then paste the JSON response into any
-            board&apos;s add box.
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="text-sm font-medium">Task/event import prompt</div>
+              <button
+                className="ghost-button button-sm pressable ml-auto"
+                onClick={handleCopyTaskifyAiInstructions}
+              >
+                Copy instructions
+              </button>
+            </div>
+            <div className="text-xs text-secondary">
+              Paste this prompt into your AI app, ask it to make Taskify tasks/events, then paste the JSON response into any
+              board&apos;s add box.
+            </div>
+            <textarea
+              readOnly
+              value={taskifyAiInstructionBlock}
+              className="pill-textarea w-full min-h-[16rem] font-mono text-[11px] leading-relaxed"
+              spellCheck={false}
+            />
           </div>
-          <textarea
-            readOnly
-            value={taskifyAiInstructionBlock}
-            className="pill-textarea w-full min-h-[16rem] font-mono text-[11px] leading-relaxed"
-            spellCheck={false}
-          />
+
+          <div className="space-y-2 pt-2 border-t border-neutral-800">
+            <div className="flex items-center gap-2">
+              <div className="text-sm font-medium">Browser agent contract</div>
+              <button
+                className="ghost-button button-sm pressable ml-auto"
+                onClick={handleCopyTaskifyAgentContract}
+              >
+                Copy contract
+              </button>
+            </div>
+            <div className="text-xs text-secondary">
+              Paste this into an AI agent that can open the Taskify URL and execute JavaScript in the page. It describes
+              the strict v1 JSON command envelope, the Allow Agent Commands permission gate, and the trusted-npub security modes.
+            </div>
+            <textarea
+              readOnly
+              value={TASKIFY_AGENT_CONTRACT_BLOCK}
+              className="pill-textarea w-full min-h-[20rem] font-mono text-[11px] leading-relaxed"
+              spellCheck={false}
+            />
+          </div>
         </section>
 
         {/* Development donation */}
