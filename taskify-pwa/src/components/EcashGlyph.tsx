@@ -1,5 +1,3 @@
-import React from "react";
-
 export function EcashGlyph({ className }: { className?: string }) {
   return (
     <svg

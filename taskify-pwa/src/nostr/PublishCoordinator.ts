@@ -23,6 +23,7 @@ type PendingPublish = {
 };
 
 export type PublishResult = number | { createdAt: number; event: NostrEvent };
+type PublishEventResult = { createdAt: number; event: NostrEvent };
 
 function normalizeRelayList(relays?: string[]): string[] {
   const set = new Set(
@@ -78,7 +79,7 @@ export class PublishCoordinator {
     return `replaceable:${event.kind}:${pubkey}`;
   }
 
-  private async publishNow(event: NDKEvent, relaySet?: NDKRelaySet): Promise<PublishResult> {
+  private async publishNow(event: NDKEvent, relaySet?: NDKRelaySet): Promise<PublishEventResult> {
     const createdAt = event.created_at || Math.floor(Date.now() / 1000);
     await event.publish(relaySet);
     const raw = event.rawEvent() as NostrEvent;

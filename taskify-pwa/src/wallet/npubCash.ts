@@ -1,4 +1,4 @@
-import { bytesToHex } from "@noble/hashes/utils";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { finalizeEvent, getPublicKey, nip19, type EventTemplate } from "nostr-tools";
 
 const NPUB_CASH_DEFAULT_DOMAIN = "npub.cash";
@@ -146,7 +146,7 @@ function ensureApiBase(baseUrl: string): string {
 
 export function deriveNpubCashIdentity(secretKey: string, options: { domain?: string } = {}): NpubCashIdentity {
   const normalizedSecret = normalizeSecretKey(secretKey);
-  const pubkey = getPublicKey(normalizedSecret);
+  const pubkey = getPublicKey(hexToBytes(normalizedSecret));
   const npub = nip19.npubEncode(pubkey);
   const domain = sanitizeDomain(options.domain || NPUB_CASH_DEFAULT_DOMAIN);
   return {
@@ -168,7 +168,7 @@ function buildNip98AuthHeader(url: string, method: string, secretKeyHex: string,
     ],
     content: body ?? "",
   };
-  const event = finalizeEvent(template, secretKeyHex);
+  const event = finalizeEvent(template, hexToBytes(secretKeyHex));
   const payload = JSON.stringify(event);
   return `Nostr ${encodeBase64(payload)}`;
 }

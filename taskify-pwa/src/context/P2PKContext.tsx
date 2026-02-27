@@ -100,7 +100,7 @@ function loadStoredKeys(): { keys: P2PKKey[]; primaryKeyId: string | null } {
               : undefined,
         } satisfies P2PKKey;
       })
-      .filter((key): key is P2PKKey => !!key);
+      .filter((key: P2PKKey | null): key is P2PKKey => !!key);
     const primary =
       typeof parsed.primaryKeyId === "string" ? parsed.primaryKeyId : null;
     return { keys, primaryKeyId: primary };

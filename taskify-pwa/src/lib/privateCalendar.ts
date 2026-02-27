@@ -1,4 +1,5 @@
 import { sha256 } from "@noble/hashes/sha256";
+import { hexToBytes } from "@noble/hashes/utils";
 import { nip44 } from "nostr-tools";
 
 export const TASKIFY_CALENDAR_EVENT_KIND = 30310;
@@ -18,6 +19,8 @@ export type CalendarCanonicalPayload = {
   v: 1;
   eventId: string;
   eventKey: string;
+  createdBy?: string;
+  lastEditedBy?: string;
   kind?: "date" | "time";
   title?: string;
   summary?: string;
@@ -42,6 +45,8 @@ export type CalendarCanonicalPayload = {
 export type CalendarViewPayload = {
   v: 1;
   eventId: string;
+  createdBy?: string;
+  lastEditedBy?: string;
   kind?: "date" | "time";
   title?: string;
   summary?: string;
@@ -124,6 +129,13 @@ function normalizeString(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
+function normalizePubkey(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!/^[0-9a-f]{64}$/i.test(trimmed)) return undefined;
+  return trimmed.toLowerCase();
+}
+
 function normalizeStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const out = value
@@ -203,7 +215,7 @@ export async function encryptCalendarPayloadForBoard(
   boardPk: string,
 ): Promise<string> {
   const nip44v2 = ensureNip44V2();
-  const conversationKey = nip44v2.utils.getConversationKey(boardSkHex, boardPk);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(boardSkHex), boardPk);
   return nip44v2.encrypt(JSON.stringify(payload), conversationKey);
 }
 
@@ -213,7 +225,7 @@ export async function decryptCalendarPayloadForBoard(
   boardPk: string,
 ): Promise<unknown> {
   const nip44v2 = ensureNip44V2();
-  const conversationKey = nip44v2.utils.getConversationKey(boardSkHex, boardPk);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(boardSkHex), boardPk);
   const plaintext = await nip44v2.decrypt(content, conversationKey);
   return JSON.parse(plaintext);
 }
@@ -239,7 +251,7 @@ export async function encryptCalendarRsvpPayload(
   boardPubkey: string,
 ): Promise<string> {
   const nip44v2 = ensureNip44V2();
-  const conversationKey = nip44v2.utils.getConversationKey(attendeeSkHex, boardPubkey);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(attendeeSkHex), boardPubkey);
   return nip44v2.encrypt(JSON.stringify(payload), conversationKey);
 }
 
@@ -249,7 +261,7 @@ export async function decryptCalendarRsvpPayload(
   attendeePubkey: string,
 ): Promise<unknown> {
   const nip44v2 = ensureNip44V2();
-  const conversationKey = nip44v2.utils.getConversationKey(boardSkHex, attendeePubkey);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(boardSkHex), attendeePubkey);
   const plaintext = await nip44v2.decrypt(content, conversationKey);
   return JSON.parse(plaintext);
 }
@@ -260,7 +272,7 @@ export async function decryptCalendarRsvpPayloadForAttendee(
   boardPubkey: string,
 ): Promise<unknown> {
   const nip44v2 = ensureNip44V2();
-  const conversationKey = nip44v2.utils.getConversationKey(attendeeSkHex, boardPubkey);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(attendeeSkHex), boardPubkey);
   const plaintext = await nip44v2.decrypt(content, conversationKey);
   return JSON.parse(plaintext);
 }
@@ -286,6 +298,10 @@ export function parseCalendarCanonicalPayload(raw: unknown): CalendarCanonicalPa
     ...(kind ? { kind } : {}),
     ...(title ? { title } : {}),
   };
+  const createdBy = normalizePubkey((raw as any).createdBy);
+  if (createdBy) payload.createdBy = createdBy;
+  const lastEditedBy = normalizePubkey((raw as any).lastEditedBy);
+  if (lastEditedBy) payload.lastEditedBy = lastEditedBy;
   const summary = normalizeString((raw as any).summary);
   if (summary) payload.summary = summary;
   const description = normalizeString((raw as any).description);
@@ -345,6 +361,10 @@ export function parseCalendarViewPayload(raw: unknown): CalendarViewPayload | nu
     ...(kind ? { kind } : {}),
     ...(title ? { title } : {}),
   };
+  const createdBy = normalizePubkey((raw as any).createdBy);
+  if (createdBy) payload.createdBy = createdBy;
+  const lastEditedBy = normalizePubkey((raw as any).lastEditedBy);
+  if (lastEditedBy) payload.lastEditedBy = lastEditedBy;
   const summary = normalizeString((raw as any).summary);
   if (summary) payload.summary = summary;
   const description = normalizeString((raw as any).description);

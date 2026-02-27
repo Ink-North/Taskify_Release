@@ -1,6 +1,6 @@
 import { mnemonicToSeedSync } from "@scure/bip39";
 import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex } from "@noble/hashes/utils";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { getPublicKey, nip44, type EventTemplate } from "nostr-tools";
 import { LS_MINT_BACKUP_CACHE } from "../localStorageKeys";
 import { idbKeyValue } from "../storage/idbKeyValue";
@@ -47,7 +47,7 @@ export async function encryptMintBackupPayload(
   keys: DerivedMintBackupKeys,
 ): Promise<string> {
   const nip44v2 = ensureNip44();
-  const conversationKey = nip44v2.utils.getConversationKey(keys.privateKeyHex, keys.publicKeyHex);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(keys.privateKeyHex), keys.publicKeyHex);
   return nip44v2.encrypt(JSON.stringify(payload), conversationKey);
 }
 
@@ -56,7 +56,7 @@ export async function decryptMintBackupPayload(
   keys: DerivedMintBackupKeys,
 ): Promise<MintBackupPayload> {
   const nip44v2 = ensureNip44();
-  const conversationKey = nip44v2.utils.getConversationKey(keys.privateKeyHex, keys.publicKeyHex);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(keys.privateKeyHex), keys.publicKeyHex);
   const plaintext = await nip44v2.decrypt(encryptedContent, conversationKey);
   const parsed = JSON.parse(plaintext);
   if (!parsed || typeof parsed !== "object") {

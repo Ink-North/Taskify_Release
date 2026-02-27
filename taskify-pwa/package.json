@@ -16,7 +16,6 @@
     "@gandlaf21/bc-ur": "^1.1.12",
     "@nostr-dev-kit/ndk": "^2.18.1",
     "@scure/bip39": "^1.2.1",
-    "@vitejs/plugin-react": "^4.3.0",
     "bech32": "^2.0.0",
     "buffer": "^6.0.3",
     "events": "^3.3.0",

@@ -47,7 +47,7 @@ The Worker lives in `worker/src/index.ts` and shares this repository. It serves 
    npx web-push generate-vapid-keys
    ```
 
-   - Put the generated **public key** into `.env.local` as `VITE_VAPID_PUBLIC_KEY` and into `wrangler.toml` (`VAPID_PUBLIC_KEY`).
+   - Put the generated **public key** into `.env.local` as `VITE_VAPID_PUBLIC_KEY`.
    - Store the **private key** as a Worker secret:
 
      ```bash
@@ -67,14 +67,12 @@ The Worker lives in `worker/src/index.ts` and shares this repository. It serves 
 
    Update the placeholder IDs in `wrangler.toml` with the values printed by each command.
 
-3. **Set remaining Worker vars** (public key + VAPID subject/email):
+3. **Set remaining Worker vars/secrets** (public key + VAPID subject/email):
 
    ```bash
-   wrangler secret put VAPID_PUBLIC_KEY   # optional – or keep in wrangler.toml
+   wrangler secret put VAPID_PUBLIC_KEY
    wrangler secret put VAPID_SUBJECT
    ```
-
-   Alternatively keep `VAPID_PUBLIC_KEY` / `VAPID_SUBJECT` in `wrangler.toml` as shown, but never commit real keys.
 
 4. **Build the frontend** so the assets directory is populated:
 
@@ -131,7 +129,7 @@ npm run lint
 | Location | Purpose |
 | --- | --- |
 | `.env.local` | `VITE_WORKER_BASE_URL`, `VITE_VAPID_PUBLIC_KEY` |
-| `wrangler.toml` | Worker name, KV namespace IDs, asset config, public VAPID key, subject |
-| Worker secrets | `VAPID_PRIVATE_KEY` (and optionally others) |
+| `wrangler.toml` | Worker name, KV namespace IDs, asset config |
+| Worker vars/secrets | `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT`, `VAPID_PRIVATE_KEY` |
 
 Keep VAPID private keys out of version control. Each device uses the Worker API to synchronise reminders; if you rotate keys, re-enable push in Settings so browsers resubscribe.

@@ -249,7 +249,11 @@ export class NostrSession {
         const relay = this.ndk.pool.getRelay(relayUrl, true);
         const connectPromise = relay.connect?.();
         if (connectPromise?.catch) {
-          connectPromise.catch(() => {});
+          connectPromise.catch((err: unknown) => {
+            if ((import.meta as any)?.env?.DEV) {
+              console.debug("[nostr] relay reconnect failed", relayUrl, err);
+            }
+          });
         }
       } catch {
         // ignore

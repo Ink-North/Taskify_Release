@@ -6,7 +6,6 @@
  * Storage boundaries:
  * - `kvStorage` is the only module allowed to read/write `localStorage`.
  * - IndexedDB (`idbKeyValue` / `idbStorage`) holds domain persistence.
- * - `legacyStorage` is read-only access for migration + fallback reads.
  *
  * In development, this module patches `Storage` methods and logs a warning if
  * `localStorage.*` is called outside `kvStorage`.

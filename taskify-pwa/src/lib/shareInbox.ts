@@ -40,6 +40,15 @@ export type SharedTaskPayload = {
   reminders?: Array<string | number>;
   subtasks?: { title: string; completed?: boolean }[];
   recurrence?: { type: string; [key: string]: unknown };
+  assignees?: Array<{
+    pubkey: string;
+    relay?: string;
+    status?: "pending" | "accepted" | "declined" | "tentative";
+    respondedAt?: number;
+  }>;
+  sourceTaskId?: string;
+  assignment?: boolean;
+  relays?: string[];
 };
 
 export type SharedCalendarEventInvitePayload = {
@@ -55,12 +64,127 @@ export type SharedCalendarEventInvitePayload = {
   relays?: string[];
 };
 
+export type SharedTaskAssignmentResponsePayload = {
+  type: "task-assignment-response";
+  taskId: string;
+  status: "accepted" | "declined" | "tentative";
+  respondedAt?: string;
+};
+
 export type ShareEnvelope = {
   v: 1;
   kind: "taskify-share";
-  item: SharedBoardPayload | SharedContactPayload | SharedTaskPayload | SharedCalendarEventInvitePayload;
+  item:
+    | SharedBoardPayload
+    | SharedContactPayload
+    | SharedTaskPayload
+    | SharedCalendarEventInvitePayload
+    | SharedTaskAssignmentResponsePayload;
   sender?: { npub?: string; name?: string };
 };
+
+const SHARE_ENVELOPE_EMBED_MARKER = "Taskify-Share:";
+const SHARE_ENVELOPE_EMBED_REGEX = /(?:^|\n)Taskify-Share:\s*([A-Za-z0-9_-]+)\s*(?:\n|$)/m;
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
+}
+
+function base64ToBytes(base64: string): Uint8Array | null {
+  try {
+    const binary = atob(base64);
+    return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+function encodeBase64UrlUtf8(value: string): string {
+  const base64 = bytesToBase64(new TextEncoder().encode(value));
+  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodeBase64UrlUtf8(value: string): string | null {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const bytes = base64ToBytes(padded);
+  if (!bytes) return null;
+  try {
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function formatTaskAssignmentPriority(priority: number | undefined): string | null {
+  if (priority === 3) return "High";
+  if (priority === 2) return "Medium";
+  if (priority === 1) return "Low";
+  return null;
+}
+
+function formatTaskAssignmentDue(task: SharedTaskPayload): string {
+  if (task.dueDateEnabled === false) return "No due date";
+  if (!task.dueISO) return "Not specified";
+  const parsed = new Date(task.dueISO);
+  if (Number.isNaN(parsed.getTime())) {
+    return task.dueISO;
+  }
+  try {
+    const options: Intl.DateTimeFormatOptions = task.dueTimeEnabled
+      ? { dateStyle: "medium", timeStyle: "short", ...(task.dueTimeZone ? { timeZone: task.dueTimeZone } : {}) }
+      : { dateStyle: "medium", ...(task.dueTimeZone ? { timeZone: task.dueTimeZone } : {}) };
+    const formatted = new Intl.DateTimeFormat(undefined, options).format(parsed);
+    return task.dueTimeZone ? `${formatted} (${task.dueTimeZone})` : formatted;
+  } catch {
+    return parsed.toISOString();
+  }
+}
+
+function serializeTaskAssignmentShareEnvelope(payload: ShareEnvelope): string {
+  const json = JSON.stringify(payload);
+  if (payload.item.type !== "task" || payload.item.assignment !== true) {
+    return json;
+  }
+  const task = payload.item;
+  const lines: string[] = [
+    "Task Assignment",
+    "",
+    `Title: ${task.title}`,
+  ];
+  const priority = formatTaskAssignmentPriority(task.priority);
+  if (priority) {
+    lines.push(`Priority: ${priority}`);
+  }
+  lines.push(`Due: ${formatTaskAssignmentDue(task)}`);
+  const note = task.note?.trim();
+  if (note) {
+    lines.push("", "Details:", note);
+  }
+  const subtasks = (task.subtasks || [])
+    .map((entry) => (typeof entry.title === "string" ? entry.title.trim().replace(/\s+/g, " ") : ""))
+    .filter((title) => !!title);
+  if (subtasks.length) {
+    lines.push("", "Checklist:");
+    subtasks.slice(0, 5).forEach((title) => {
+      lines.push(`- ${title}`);
+    });
+    if (subtasks.length > 5) {
+      lines.push(`- ...and ${subtasks.length - 5} more`);
+    }
+  }
+  lines.push(
+    "",
+    "Open this in Taskify to accept, decline, or maybe.",
+    "",
+    `${SHARE_ENVELOPE_EMBED_MARKER} ${encodeBase64UrlUtf8(json)}`,
+  );
+  return lines.join("\n");
+}
 
 function normalizeRelayList(list?: string[] | null): string[] | undefined {
   if (!Array.isArray(list)) return undefined;
@@ -142,6 +266,67 @@ function normalizeTaskRecurrence(value: unknown): SharedTaskPayload["recurrence"
   return { ...(value as any), type: rawType.trim() };
 }
 
+function normalizeTaskId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function normalizeTaskAssignmentStatus(
+  value: unknown,
+): "pending" | "accepted" | "declined" | "tentative" | undefined {
+  if (value === "pending" || value === "accepted" || value === "declined" || value === "tentative") {
+    return value;
+  }
+  if (value === "maybe") return "tentative";
+  return undefined;
+}
+
+function normalizeTaskAssignees(value: unknown): SharedTaskPayload["assignees"] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const assignees: NonNullable<SharedTaskPayload["assignees"]> = [];
+  const seen = new Set<string>();
+  value.forEach((entry) => {
+    if (!entry || typeof entry !== "object") return;
+    const pubkey = toRawHexPubkey(typeof (entry as any).pubkey === "string" ? (entry as any).pubkey : "");
+    if (!pubkey || seen.has(pubkey)) return;
+    seen.add(pubkey);
+    const relay = typeof (entry as any).relay === "string" ? (entry as any).relay.trim() : "";
+    const status = normalizeTaskAssignmentStatus((entry as any).status);
+    const respondedAtRaw = Number((entry as any).respondedAt);
+    const respondedAt = Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
+    assignees.push({
+      pubkey,
+      ...(relay ? { relay } : {}),
+      ...(status ? { status } : {}),
+      ...(respondedAt ? { respondedAt } : {}),
+    });
+  });
+  return assignees.length ? assignees : undefined;
+}
+
+function normalizeTaskAssignmentFlag(value: unknown): boolean | undefined {
+  if (typeof value !== "boolean") return undefined;
+  return value;
+}
+
+function normalizeTaskAssignmentResponseStatus(
+  value: unknown,
+): SharedTaskAssignmentResponsePayload["status"] | undefined {
+  if (value === "accepted" || value === "declined" || value === "tentative") return value;
+  if (value === "maybe") return "tentative";
+  return undefined;
+}
+
+function normalizeTaskAssignmentResponseTime(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  return parsed.toISOString();
+}
+
 export function buildBoardShareEnvelope(
   boardId: string,
   boardName?: string,
@@ -201,6 +386,35 @@ export function buildTaskShareEnvelope(
       reminders: normalizeTaskReminders(payload.reminders),
       subtasks: normalizeTaskSubtasks(payload.subtasks),
       recurrence: normalizeTaskRecurrence(payload.recurrence),
+      sourceTaskId: normalizeTaskId(payload.sourceTaskId),
+      assignment: normalizeTaskAssignmentFlag(payload.assignment),
+      assignees: normalizeTaskAssignees(payload.assignees),
+      relays: normalizeRelayList(payload.relays),
+    },
+  };
+}
+
+export function buildTaskAssignmentResponseEnvelope(
+  payload: Omit<SharedTaskAssignmentResponsePayload, "type">,
+  sender?: { npub?: string; name?: string },
+): ShareEnvelope {
+  const taskId = normalizeTaskId(payload.taskId);
+  if (!taskId) {
+    throw new Error("Missing task id for assignment response.");
+  }
+  const status = normalizeTaskAssignmentResponseStatus(payload.status);
+  if (!status) {
+    throw new Error("Invalid assignment response status.");
+  }
+  return {
+    v: 1,
+    kind: "taskify-share",
+    sender: sender?.npub || sender?.name ? sender : undefined,
+    item: {
+      type: "task-assignment-response",
+      taskId,
+      status,
+      respondedAt: normalizeTaskAssignmentResponseTime(payload.respondedAt),
     },
   };
 }
@@ -268,13 +482,22 @@ export function buildCalendarEventInviteEnvelope(
 export function parseShareEnvelope(raw: string): ShareEnvelope | null {
   const trimmed = (raw || "").trim();
   if (!trimmed) return null;
-  let parsed: any;
+  let parsed: any = null;
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    return null;
+    parsed = null;
   }
-  if (!parsed || typeof parsed !== "object") return null;
+  if (!parsed || typeof parsed !== "object") {
+    const embeddedMatch = trimmed.match(SHARE_ENVELOPE_EMBED_REGEX);
+    const embeddedJson = embeddedMatch?.[1] ? decodeBase64UrlUtf8(embeddedMatch[1]) : null;
+    if (!embeddedJson) return null;
+    try {
+      parsed = JSON.parse(embeddedJson);
+    } catch {
+      return null;
+    }
+  }
   if (parsed.v !== 1 || parsed.kind !== "taskify-share") return null;
   const item = parsed.item;
   if (!item || typeof item !== "object") return null;
@@ -342,6 +565,10 @@ export function parseShareEnvelope(raw: string): ShareEnvelope | null {
     const reminders = normalizeTaskReminders(item.reminders);
     const subtasks = normalizeTaskSubtasks(item.subtasks);
     const recurrence = normalizeTaskRecurrence(item.recurrence);
+    const sourceTaskId = normalizeTaskId(item.sourceTaskId);
+    const assignment = normalizeTaskAssignmentFlag(item.assignment);
+    const assignees = normalizeTaskAssignees(item.assignees);
+    const relays = normalizeRelayList(item.relays);
     return {
       v: 1,
       kind: "taskify-share",
@@ -357,6 +584,29 @@ export function parseShareEnvelope(raw: string): ShareEnvelope | null {
         reminders,
         subtasks,
         recurrence,
+        sourceTaskId,
+        assignment,
+        assignees,
+        relays,
+      },
+      sender: sanitizeSender(parsed.sender),
+    };
+  }
+
+  if (item.type === "task-assignment-response") {
+    const taskId = normalizeTaskId(item.taskId);
+    if (!taskId) return null;
+    const status = normalizeTaskAssignmentResponseStatus(item.status);
+    if (!status) return null;
+    const respondedAt = normalizeTaskAssignmentResponseTime(item.respondedAt);
+    return {
+      v: 1,
+      kind: "taskify-share",
+      item: {
+        type: "task-assignment-response",
+        taskId,
+        status,
+        respondedAt,
       },
       sender: sanitizeSender(parsed.sender),
     };
@@ -431,14 +681,15 @@ function toRawHexPubkey(value: string): string | null {
   try {
     const decoded = nip19.decode(lower);
     if (decoded.type === "npub" && decoded.data) {
-      if (typeof decoded.data === "string" && /^[0-9a-f]{64}$/.test(decoded.data)) {
-        return decoded.data.toLowerCase();
+      const decodedData: unknown = decoded.data;
+      if (typeof decodedData === "string" && /^[0-9a-f]{64}$/.test(decodedData)) {
+        return decodedData.toLowerCase();
       }
-      if (decoded.data instanceof Uint8Array) {
-        return bytesToHex(decoded.data).toLowerCase();
+      if (decodedData instanceof Uint8Array) {
+        return bytesToHex(decodedData).toLowerCase();
       }
-      if (Array.isArray(decoded.data)) {
-        return bytesToHex(new Uint8Array(decoded.data as number[])).toLowerCase();
+      if (Array.isArray(decodedData)) {
+        return bytesToHex(new Uint8Array(decodedData as number[])).toLowerCase();
       }
     }
   } catch {
@@ -533,7 +784,7 @@ export async function sendShareMessage(
   const publish = async (event: NostrEvent) => {
     await session.publishRaw(event, { relayUrls: publishRelays, returnEvent: false });
   };
-  const content = JSON.stringify(payload);
+  const content = serializeTaskAssignmentShareEnvelope(payload);
   if (!nip44?.v2) {
     throw new Error("NIP-44 support is required to send share messages.");
   }
@@ -552,7 +803,7 @@ export async function sendShareMessage(
   } satisfies Partial<NostrEvent>;
   const wrapRecipients = Array.from(new Set([normalizedRecipient, senderPubkey]));
   for (const wrapRecipient of wrapRecipients) {
-    const dmKey = nip44.v2.utils.getConversationKey(senderSecretHex, wrapRecipient);
+    const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(senderSecretHex), wrapRecipient);
     const sealedContent = await nip44.v2.encrypt(JSON.stringify(rumor), dmKey);
     const sealTemplate: EventTemplate = {
       kind: 13,
@@ -562,7 +813,7 @@ export async function sendShareMessage(
     };
     const sealEvent = finalizeEvent(sealTemplate, hexToBytes(senderSecretHex));
     const wrapKey = generatePrivateKey();
-    const wrapConversationKey = nip44.v2.utils.getConversationKey(wrapKey.hex, wrapRecipient);
+    const wrapConversationKey = nip44.v2.utils.getConversationKey(hexToBytes(wrapKey.hex), wrapRecipient);
     const wrapContent = await nip44.v2.encrypt(JSON.stringify(sealEvent), wrapConversationKey);
     const wrapTemplate: EventTemplate = {
       kind: 1059,

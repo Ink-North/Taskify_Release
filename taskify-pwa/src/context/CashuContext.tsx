@@ -1,59 +1,25 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { MeltProofsResponse, MeltQuoteResponse, MintQuoteResponse, Proof, ProofState } from "@cashu/cashu-ts";
 import { getDecodedToken, getEncodedToken } from "@cashu/cashu-ts";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
-import { finalizeEvent, getPublicKey, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import { MintSession, type MintConnection, type CreateSendTokenOptions, type SendTokenLockInfo } from "../mint/MintSession";
 import {
   addPendingToken,
   addMintToList,
   getActiveMint,
-  getMintList,
   listPendingTokens,
   loadStore,
   markPendingTokenAttempt,
   removePendingToken,
-  setPendingTokenSource,
   setActiveMint as persistActiveMint,
-  setProofs as persistProofsForMint,
-  replaceMintList,
   type PendingTokenEntry,
 } from "../wallet/storage";
 import { LS_NOSTR_SK } from "../nostrKeys";
 import { useP2PK } from "./P2PKContext";
 import { normalizeNostrPubkey, deriveCompressedPubkeyFromSecret } from "../lib/nostr";
 import { decodeBolt11Amount } from "../wallet/lightning";
-import {
-  createHistoryEventTemplate,
-  createTokenEventTemplate,
-  createWalletEventTemplate,
-  deriveWalletPrivkey,
-  extractDeletedIds,
-  hashHistoryPayload,
-  hashMints,
-  hashProofs,
-  NIP60_HISTORY_KIND,
-  NIP60_TOKEN_KIND,
-  NIP60_WALLET_KIND,
-  loadDefaultNostrRelays,
-  loadNip60Queue,
-  loadNip60SyncState,
-  parseHistoryEvent,
-  parseTokenEvent,
-  parseWalletEvent,
-  persistNip60Queue,
-  persistNip60SyncState,
-  selectLatestHistoryEvents,
-  selectLatestTokenEvents,
-  type Nip60QueuedEvent,
-  type Nip60WalletSnapshot,
-  type Nip60SyncState,
-  type ParsedHistoryEvent,
-} from "../wallet/nip60";
 import { getWalletSeedBytes } from "../wallet/seed";
-import { NostrSession } from "../nostr/NostrSession";
-import { createNutzapInfoEventTemplate, NIP61_NUTZAP_KIND, parseNutzapEvent } from "../wallet/nip61";
-import { proofIsLockedToPubkey } from "../wallet/p2pk";
 import { kvStorage } from "../storage/kvStorage";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
@@ -143,8 +109,6 @@ type CashuContextType = {
     secrets: string[],
   ) => Promise<{ token: string; proofs: Proof[]; mintUrl: string }>;
   redeemPendingToken: (id: string) => Promise<{ proofs: Proof[]; mintUrl: string }>;
-  walletSyncEnabled: boolean;
-  setWalletSyncEnabled: (enabled: boolean) => void;
 };
 
 const globalCtxKey = "__TASKIFY_CASHU_CONTEXT__";
@@ -188,7 +152,7 @@ function deriveTokenAmount(token: string): number {
       const proofs = Array.isArray(entry?.proofs) ? entry.proofs : [];
       return (
         outerTotal +
-        proofs.reduce((sum, proof) => {
+        proofs.reduce((sum: number, proof: Proof) => {
           const amt = typeof proof?.amount === "number" ? proof.amount : 0;
           return sum + (Number.isFinite(amt) ? amt : 0);
         }, 0)
@@ -251,117 +215,41 @@ function extractProofsForMint(token: string, mintUrl: string): Proof[] {
   }
 }
 
-type NostrKeypair = { sk: string; pk: string };
+const LEGACY_NIP60_STATE_KEY = "cashu_nip60_state_v1";
+const WALLET_P2PK_PRIVKEY_KEY = "cashu_wallet_p2pk_privkey_v1";
 
-type LocalHistoryEntry = {
-  id?: string;
-  summary?: string;
-  type?: string;
-  direction?: string;
-  amountSat?: number;
-  detailKind?: string;
-  detail?: string;
-  mintUrl?: string;
-  feeSat?: number;
-  entryKind?: string;
-  relatedTaskTitle?: string;
-  createdAt?: number;
-  revertToken?: string;
-  fiatValueUsd?: number;
-  stateLabel?: string;
-  pendingTokenId?: string;
-  pendingTokenAmount?: number;
-  pendingTokenMint?: string;
-  pendingStatus?: "pending" | "redeemed";
-  nutzapEventId?: string;
-  nutzapRelay?: string;
-  nutzapSenderPubkey?: string;
-  tokenState?: unknown;
-  mintQuote?: unknown;
-};
-
-const LS_WALLET_HISTORY = "cashuHistory";
-const LS_SETTINGS = "taskify_settings_v2";
-const HISTORY_SYNC_LIMIT = 200;
-const LS_NIP61_PROCESSED = "cashu_nip61_processed_v1";
-const LS_NIP61_SINCE = "cashu_nip61_since_v1";
-
-function loadStoredStringSet(key: string): Set<string> {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, key);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    const values = parsed.filter((id): id is string => typeof id === "string" && id.trim()).map((id) => id.trim());
-    return new Set(values);
-  } catch {
-    return new Set();
-  }
+function deriveWalletPrivkey(seed: Uint8Array): string {
+  const domainSeparator = new TextEncoder().encode("cashu-nip60-wallet");
+  const combined = new Uint8Array(seed.length + domainSeparator.length);
+  combined.set(seed);
+  combined.set(domainSeparator, seed.length);
+  return bytesToHex(sha256(combined));
 }
 
-function persistStoredStringSet(key: string, set: Set<string>, limit = 500) {
-  try {
-    const arr = Array.from(set).slice(-Math.max(1, limit));
-    idbKeyValue.setItem(TASKIFY_STORE_WALLET, key, JSON.stringify(arr));
-  } catch {
-    // ignore
-  }
+function normalizeStoredPrivkey(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(trimmed)) return null;
+  return trimmed;
 }
 
-function loadStoredSince(key: string): number {
+function loadLegacyWalletPrivkey(): string | null {
+  const direct = normalizeStoredPrivkey(idbKeyValue.getItem(TASKIFY_STORE_WALLET, WALLET_P2PK_PRIVKEY_KEY));
+  if (direct) return direct;
   try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, key);
-    const num = Number(raw);
-    return Number.isFinite(num) && num > 0 ? Math.floor(num) : 0;
-  } catch {
-    return 0;
-  }
-}
-
-function persistStoredSince(key: string, since: number) {
-  try {
-    const normalized = Number.isFinite(since) && since > 0 ? Math.floor(since) : 0;
-    idbKeyValue.setItem(TASKIFY_STORE_WALLET, key, String(normalized));
-  } catch {
-    // ignore
-  }
-}
-
-function loadNostrKeysFromStorage(): NostrKeypair | null {
-  try {
-    const raw = kvStorage.getItem(LS_NOSTR_SK) || "";
-    const trimmed = raw.trim();
-    if (!/^[0-9a-fA-F]{64}$/.test(trimmed)) return null;
-    const pk = getPublicKey(hexToBytes(trimmed));
-    if (typeof pk === "string" && pk) {
-      return { sk: trimmed.toLowerCase(), pk };
-    }
-    if (pk && typeof pk === "object" && "length" in pk) {
-      return { sk: trimmed.toLowerCase(), pk: bytesToHex(pk as ArrayLike<number>) };
-    }
-    return null;
+    const rawLegacy = idbKeyValue.getItem(TASKIFY_STORE_WALLET, LEGACY_NIP60_STATE_KEY);
+    if (!rawLegacy) return null;
+    const parsed = JSON.parse(rawLegacy);
+    const legacy = normalizeStoredPrivkey(
+      parsed && typeof parsed === "object" && parsed.wallet && typeof parsed.wallet === "object"
+        ? (parsed.wallet as Record<string, unknown>).privkey as string | undefined
+        : null,
+    );
+    if (!legacy) return null;
+    idbKeyValue.setItem(TASKIFY_STORE_WALLET, WALLET_P2PK_PRIVKEY_KEY, legacy);
+    return legacy;
   } catch {
     return null;
-  }
-}
-
-function readLocalHistory(): LocalHistoryEntry[] {
-  try {
-    const raw = idbKeyValue.getItem(TASKIFY_STORE_WALLET, LS_WALLET_HISTORY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as LocalHistoryEntry[];
-  } catch {
-    return [];
-  }
-}
-
-function persistLocalHistory(entries: LocalHistoryEntry[]) {
-  try {
-    idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_WALLET_HISTORY, JSON.stringify(entries));
-  } catch {
-    // ignore persistence failures
   }
 }
 
@@ -375,36 +263,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
   const pendingBalance = balanceSnapshot.pending;
   const [proofs, setProofs] = useState<Proof[]>([]);
   const [info, setInfo] = useState<MintInfo | null>(null);
-  const initialNip60State = loadNip60SyncState();
-  if (!initialNip60State.tokens) initialNip60State.tokens = {};
-  if (!initialNip60State.history) initialNip60State.history = {};
-  const nip60StateRef = useRef<Nip60SyncState>(initialNip60State);
-  const nip60QueueRef = useRef<Nip60QueuedEvent[]>(loadNip60Queue());
-  const nip60SyncInFlightRef = useRef(false);
-  const nip60SyncPendingRef = useRef(false);
-  const [nip60SyncNonce, setNip60SyncNonce] = useState(0);
-  const [walletSyncEnabled, setWalletSyncEnabledState] = useState<boolean>(() => {
-    try {
-      const parsed = JSON.parse(kvStorage.getItem(LS_SETTINGS) || "{}");
-      return parsed?.walletNostrSyncEnabled !== false;
-    } catch {
-      return true;
-    }
-  });
-  const walletSyncEnabledRef = useRef(walletSyncEnabled);
-  const setWalletSyncEnabled = useCallback((enabled: boolean) => {
-    const next = enabled !== false;
-    walletSyncEnabledRef.current = next;
-    setWalletSyncEnabledState(next);
-  }, []);
   const derivedWalletPrivkeyRef = useRef<string>(deriveWalletPrivkey(getWalletSeedBytes()));
-  const syncedWalletPrivkeyRef = useRef<string | null>(nip60StateRef.current.wallet?.privkey ?? null);
-  const nostrKeysCacheRef = useRef<NostrKeypair | null>(null);
+  const legacyWalletPrivkeyRef = useRef<string | null>(loadLegacyWalletPrivkey());
   const redeemingPendingRef = useRef(false);
-  const nip61ProcessedRef = useRef<Set<string>>(loadStoredStringSet(LS_NIP61_PROCESSED));
-  const nip61SinceRef = useRef<number>(loadStoredSince(LS_NIP61_SINCE));
-  const nip61SubscriptionReleaseRef = useRef<(() => void) | null>(null);
-  const nip61InFlightRef = useRef<Set<string>>(new Set());
   const mintBootPromisesRef = useRef<
     Map<
       string | null,
@@ -462,7 +323,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       if (stored) return stored;
       const walletPrivCandidates = [
         primaryKey?.privateKey,
-        syncedWalletPrivkeyRef.current ?? undefined,
+        legacyWalletPrivkeyRef.current ?? undefined,
         derivedWalletPrivkeyRef.current,
       ].filter(Boolean) as string[];
       for (const candidate of walletPrivCandidates) {
@@ -493,634 +354,6 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     syncActiveMintFromStorage();
   }, [syncActiveMintFromStorage]);
 
-  const loadNostrKeys = useCallback(() => {
-    const keys = loadNostrKeysFromStorage();
-    nostrKeysCacheRef.current = keys;
-    return keys;
-  }, []);
-
-  const updateNip60Queue = useCallback((queue: Nip60QueuedEvent[]) => {
-    nip60QueueRef.current = queue;
-    persistNip60Queue(queue);
-  }, []);
-
-  const updateNip60State = useCallback((state: Nip60SyncState) => {
-    nip60StateRef.current = state;
-    persistNip60SyncState(state);
-  }, []);
-
-  const requestNip60Sync = useCallback(() => {
-    if (!walletSyncEnabledRef.current) return;
-    setNip60SyncNonce((value) => value + 1);
-  }, []);
-
-  const getWalletPrivkeyForSync = useCallback(() => {
-    if (primaryKey?.privateKey) return primaryKey.privateKey;
-    if (syncedWalletPrivkeyRef.current) return syncedWalletPrivkeyRef.current;
-    return derivedWalletPrivkeyRef.current;
-  }, [primaryKey]);
-
-  const removeQueuedTokenEvents = useCallback(
-    (mintUrl: string) => {
-      const normalized = normalizeMintUrl(mintUrl);
-      if (!normalized) return;
-      const filtered = nip60QueueRef.current.filter(
-        (entry) =>
-          !(
-            (entry.type === "token" || entry.type === "delete") &&
-            normalizeMintUrl(entry.mint || "") === normalized
-          ),
-      );
-      if (filtered.length !== nip60QueueRef.current.length) {
-        updateNip60Queue(filtered);
-      }
-    },
-    [updateNip60Queue],
-  );
-
-  const enqueueNip60Event = useCallback(
-    (entry: Nip60QueuedEvent) => {
-      const filtered = nip60QueueRef.current.filter((existing) => {
-        if (existing.id === entry.id) return false;
-        if (entry.type === "token" && existing.type === "token") {
-          return normalizeMintUrl(existing.mint || "") !== normalizeMintUrl(entry.mint || "");
-        }
-        if (entry.type === "wallet" && existing.type === "wallet") {
-          return false;
-        }
-        if (entry.type === "history" && existing.type === "history" && entry.hash && existing.hash) {
-          return entry.hash !== existing.hash;
-        }
-        return true;
-      });
-      filtered.push(entry);
-      updateNip60Queue(filtered);
-    },
-    [updateNip60Queue],
-  );
-
-  const handleRemoteWalletEvent = useCallback(
-    (event: ParsedWalletEvent | null) => {
-      if (!event) return;
-      const current = nip60StateRef.current;
-      const existingCreated = current.wallet?.created_at || 0;
-      const incomingCreated = event.created_at || 0;
-      const incomingPrivkey = event.walletPrivkey || current.wallet?.privkey || null;
-      const incomingHash = hashMints(event.mints, incomingPrivkey);
-      const existingHash = current.wallet?.hash || "";
-      const shouldApply =
-        !current.wallet ||
-        incomingCreated > existingCreated ||
-        (incomingCreated === existingCreated && incomingHash !== existingHash);
-      if (!shouldApply) return;
-      const nextWallet: Nip60WalletSnapshot = {
-        id: event.id,
-        created_at: incomingCreated || Math.floor(Date.now() / 1000),
-        hash: incomingHash,
-        privkey: incomingPrivkey || undefined,
-      };
-      syncedWalletPrivkeyRef.current = incomingPrivkey || syncedWalletPrivkeyRef.current;
-      replaceMintList(event.mints);
-      updateNip60State({ ...current, wallet: nextWallet });
-    },
-    [updateNip60State],
-  );
-
-  const applyRemoteTokenEvents = useCallback(
-    (eventsByMint: Map<string, ParsedTokenEvent>, deletedIds: Set<string>) => {
-      if (!eventsByMint.size && !deletedIds.size) return;
-      const current = nip60StateRef.current;
-      const queueByMint = new Map<string, Nip60QueuedEvent>();
-      for (const entry of nip60QueueRef.current) {
-        if (entry.type === "token" && entry.mint) {
-          queueByMint.set(normalizeMintUrl(entry.mint), entry);
-        }
-      }
-      const activeNormalized = normalizeMintUrl(manager?.mintUrl || "");
-      let changed = false;
-
-      eventsByMint.forEach((ev, mintKey) => {
-        const normalizedMint = normalizeMintUrl(mintKey);
-        const proofHash = hashProofs(ev.proofs);
-        const queued = queueByMint.get(normalizedMint);
-        if (queued && queued.hash === proofHash) return;
-        const existing = current.tokens[normalizedMint];
-        const createdAt = ev.created_at || 0;
-        if (existing && existing.hash === proofHash && (existing.created_at || 0) >= createdAt) {
-          return;
-        }
-        if (existing && (existing.created_at || 0) > createdAt && existing.hash !== proofHash) {
-          // Local snapshot is newer; keep it.
-          return;
-        }
-        persistProofsForMint(normalizedMint, ev.proofs);
-        if (manager && normalizedMint === activeNormalized) {
-          manager.replaceProofsFromSync(ev.proofs);
-          setBalance(manager.balance);
-          setProofs(manager.proofs);
-        }
-        current.tokens[normalizedMint] = {
-          id: ev.id,
-          created_at: createdAt || Math.floor(Date.now() / 1000),
-          hash: proofHash,
-        };
-        changed = true;
-      });
-
-      Object.entries(current.tokens).forEach(([mintKey, snapshot]) => {
-        if (deletedIds.has(snapshot.id) && !eventsByMint.has(mintKey)) {
-          persistProofsForMint(mintKey, []);
-          if (manager && normalizeMintUrl(manager.mintUrl) === normalizeMintUrl(mintKey)) {
-            manager.replaceProofsFromSync([]);
-            setBalance(manager.balance);
-            setProofs(manager.proofs);
-          }
-          delete current.tokens[mintKey];
-          changed = true;
-        }
-      });
-
-      if (changed) {
-        updateNip60State({ ...current, tokens: { ...current.tokens } });
-        refreshTotalBalance();
-      }
-    },
-    [manager, refreshTotalBalance, setBalance, setProofs, updateNip60State],
-  );
-
-  const applyRemoteHistoryEvents = useCallback(
-    (eventsByEntry: Map<string, ParsedHistoryEvent>) => {
-      if (!eventsByEntry.size) return;
-      const current = nip60StateRef.current;
-      if (!current.history) current.history = {};
-      const local = readLocalHistory();
-      const byId = new Map<string, LocalHistoryEntry>();
-      local.forEach((entry) => {
-        const key = entry?.id || "";
-        if (key) byId.set(key, entry);
-      });
-      let changed = false;
-      eventsByEntry.forEach((ev, key) => {
-        const hash = hashHistoryPayload(ev);
-        const snap = current.history[key];
-        if (snap && snap.hash === hash) return;
-        const createdAtMs =
-          (typeof ev.created_at === "number" && Number.isFinite(ev.created_at) ? ev.created_at * 1000 : Date.now());
-        const entry: LocalHistoryEntry = {
-          id: key,
-          summary: ev.summary || "Wallet activity",
-          direction: ev.direction,
-          amountSat: ev.amount ?? 0,
-          mintUrl: ev.mint,
-          feeSat: ev.feeSat,
-          detail: ev.detail,
-          detailKind: ev.detailKind,
-          fiatValueUsd: ev.fiatValueUsd,
-          stateLabel: ev.stateLabel,
-          relatedTaskTitle: ev.relatedTaskTitle,
-          createdAt: createdAtMs,
-          entryKind: "nostr-sync",
-        };
-        // Preserve local-only fields if we already have them.
-        const existingLocal = byId.get(key);
-        if (existingLocal) {
-          entry.revertToken = existingLocal.revertToken;
-          entry.pendingTokenId = existingLocal.pendingTokenId;
-          entry.pendingTokenAmount = existingLocal.pendingTokenAmount;
-          entry.pendingTokenMint = existingLocal.pendingTokenMint;
-          entry.pendingStatus = existingLocal.pendingStatus;
-          entry.nutzapEventId = existingLocal.nutzapEventId;
-          entry.nutzapRelay = existingLocal.nutzapRelay;
-          entry.nutzapSenderPubkey = existingLocal.nutzapSenderPubkey;
-          entry.tokenState = existingLocal.tokenState;
-          entry.mintQuote = existingLocal.mintQuote;
-        }
-        if (!byId.has(key)) {
-          local.unshift(entry);
-          byId.set(key, entry);
-        } else {
-          byId.set(key, { ...byId.get(key), ...entry });
-        }
-        current.history[key] = {
-          id: ev.id,
-          created_at: ev.created_at || Math.floor(createdAtMs / 1000),
-          hash,
-          entryId: ev.entryId,
-        };
-        changed = true;
-      });
-      if (changed) {
-        persistLocalHistory(local.slice(0, HISTORY_SYNC_LIMIT));
-        updateNip60State({ ...current, history: { ...current.history } });
-      }
-    },
-    [updateNip60State],
-  );
-
-  const flushNip60Queue = useCallback(
-    async (relayUrls: string[]) => {
-      if (!nip60QueueRef.current.length) return;
-      const session = await NostrSession.init(relayUrls);
-      const remaining: Nip60QueuedEvent[] = [];
-      for (const entry of nip60QueueRef.current) {
-        try {
-          await session.publishRaw(entry.event as NostrEvent, { relayUrls, returnEvent: false });
-        } catch (error) {
-          remaining.push(entry);
-          if (isLikelyOfflineError(error)) {
-            break;
-          }
-        }
-      }
-      updateNip60Queue(remaining);
-    },
-    [updateNip60Queue],
-  );
-
-  const publishNip60State = useCallback(
-    async (keys: NostrKeypair, relays: string[]) => {
-      const nextState: Nip60SyncState = {
-        ...nip60StateRef.current,
-        tokens: { ...nip60StateRef.current.tokens },
-        history: { ...(nip60StateRef.current.history || {}) },
-      };
-
-      const session = await NostrSession.init(relays);
-      const signAndPublish = async (
-        template: EventTemplate,
-        queueMeta: Omit<Nip60QueuedEvent, "id" | "created_at" | "event">,
-      ): Promise<{ event: NostrEvent; createdAt: number; published: boolean; error?: unknown }> => {
-        const signed = finalizeEvent(template, hexToBytes(keys.sk));
-        const createdAt = signed.created_at || template.created_at || Math.floor(Date.now() / 1000);
-        const entry: Nip60QueuedEvent = {
-          ...queueMeta,
-          id: signed.id,
-          created_at: createdAt,
-          relays,
-          event: signed as unknown as NostrEvent,
-        };
-        try {
-          await session.publishRaw(signed as unknown as NostrEvent, { relayUrls: relays, returnEvent: false });
-          return { event: signed as unknown as NostrEvent, createdAt, published: true };
-        } catch (error) {
-          enqueueNip60Event(entry);
-          return { event: signed as unknown as NostrEvent, createdAt, published: false, error };
-        }
-      };
-
-      const walletPrivkey = getWalletPrivkeyForSync();
-      const mints = getMintList();
-      const walletHash = hashMints(mints, walletPrivkey);
-      const queuedWallet = nip60QueueRef.current.find((entry) => entry.type === "wallet");
-
-      if (queuedWallet && queuedWallet.hash && queuedWallet.hash !== walletHash && nextState.wallet?.hash === walletHash) {
-        updateNip60Queue(nip60QueueRef.current.filter((entry) => entry.type !== "wallet"));
-      }
-
-      if (queuedWallet && queuedWallet.hash === walletHash) {
-        nextState.wallet = {
-          id: queuedWallet.id,
-          created_at: queuedWallet.created_at,
-          hash: walletHash,
-          privkey: walletPrivkey || undefined,
-        };
-      } else if (!nextState.wallet || nextState.wallet.hash !== walletHash) {
-        if (queuedWallet) {
-          updateNip60Queue(nip60QueueRef.current.filter((entry) => entry.type !== "wallet"));
-        }
-        const createdAt = Math.max(
-          Math.floor(Date.now() / 1000),
-          (nextState.wallet?.created_at || 0) + 1,
-          queuedWallet?.created_at ? queuedWallet.created_at + 1 : 0,
-        );
-        const template = await createWalletEventTemplate(mints, walletPrivkey, keys, { createdAt });
-        const walletResult = await signAndPublish(template, { type: "wallet", hash: walletHash });
-        if (!walletResult.published && isLikelyOfflineError(walletResult.error)) {
-          nextState.wallet = {
-            id: walletResult.event.id,
-            created_at: walletResult.createdAt || createdAt,
-            hash: walletHash,
-            privkey: walletPrivkey || undefined,
-          };
-          updateNip60State(nextState);
-          return;
-        }
-        nextState.wallet = {
-          id: walletResult.event.id,
-          created_at: walletResult.createdAt || createdAt,
-          hash: walletHash,
-          privkey: walletPrivkey || undefined,
-        };
-      } else if (walletPrivkey && nextState.wallet && nextState.wallet.privkey !== walletPrivkey) {
-        nextState.wallet = { ...nextState.wallet, privkey: walletPrivkey };
-      }
-
-      if (nextState.wallet?.privkey) {
-        syncedWalletPrivkeyRef.current = nextState.wallet.privkey;
-      }
-
-      const store = loadStore();
-      const queuedByMint = new Map<string, Nip60QueuedEvent>();
-      for (const entry of nip60QueueRef.current) {
-        if (entry.type === "token" && entry.mint) {
-          queuedByMint.set(normalizeMintUrl(entry.mint), entry);
-        }
-      }
-      const queuedHistory = new Map<string, Nip60QueuedEvent>();
-      for (const entry of nip60QueueRef.current) {
-        if (entry.type === "history" && entry.hash) {
-          queuedHistory.set(entry.hash, entry);
-        }
-      }
-
-      const allMints = new Set<string>([
-        ...Object.keys(store).map((mint) => normalizeMintUrl(mint)),
-        ...Object.keys(nextState.tokens),
-      ]);
-
-      for (const mint of allMints) {
-        if (!mint) continue;
-        const proofs = Array.isArray((store as any)[mint]) ? ((store as any)[mint] as Proof[]) : [];
-        const proofHash = hashProofs(proofs);
-        const queued = queuedByMint.get(mint);
-        const existing = nextState.tokens[mint];
-        const hasProofs = proofs.length > 0;
-
-        if (queued && queued.hash === proofHash) {
-          if (!existing) {
-            nextState.tokens[mint] = {
-              id: queued.id,
-              created_at: queued.created_at,
-              hash: queued.hash || proofHash,
-            };
-          }
-          continue;
-        }
-
-        if (hasProofs && existing && existing.hash === proofHash) {
-          continue;
-        }
-
-        const previousId = existing?.id;
-        const createdAt = Math.max(
-          Math.floor(Date.now() / 1000),
-          (existing?.created_at || 0) + 1,
-          queued?.created_at ? queued.created_at + 1 : 0,
-        );
-
-        if (hasProofs) {
-          removeQueuedTokenEvents(mint);
-          const template = await createTokenEventTemplate(mint, proofs, keys, {
-            del: previousId ? [previousId] : undefined,
-            createdAt,
-          });
-          const tokenResult = await signAndPublish(template, { type: "token", mint, hash: proofHash });
-          if (!tokenResult.published && isLikelyOfflineError(tokenResult.error)) {
-            nextState.tokens[mint] = {
-              id: tokenResult.event.id,
-              created_at: tokenResult.createdAt || createdAt,
-              hash: proofHash,
-            };
-            updateNip60State(nextState);
-            return;
-          }
-          if (previousId && previousId !== tokenResult.event.id) {
-            const deleteTemplate: EventTemplate = {
-              kind: 5,
-              content: "",
-              tags: [
-                ["e", previousId, "", "delete"],
-                ["k", String(NIP60_TOKEN_KIND)],
-              ],
-              created_at: createdAt + 1,
-            };
-            const deleteResult = await signAndPublish(deleteTemplate, { type: "delete", mint });
-            if (!deleteResult.published && isLikelyOfflineError(deleteResult.error)) {
-              nextState.tokens[mint] = {
-                id: tokenResult.event.id,
-                created_at: tokenResult.createdAt || createdAt,
-                hash: proofHash,
-              };
-              updateNip60State(nextState);
-              return;
-            }
-          }
-          nextState.tokens[mint] = {
-            id: tokenResult.event.id,
-            created_at: tokenResult.createdAt || createdAt,
-            hash: proofHash,
-          };
-        } else if (existing) {
-          removeQueuedTokenEvents(mint);
-          const deleteTemplate: EventTemplate = {
-            kind: 5,
-            content: "",
-            tags: [
-              ["e", existing.id, "", "delete"],
-              ["k", String(NIP60_TOKEN_KIND)],
-            ],
-            created_at: createdAt,
-          };
-          const deleteResult = await signAndPublish(deleteTemplate, { type: "delete", mint });
-          if (!deleteResult.published && isLikelyOfflineError(deleteResult.error)) {
-            delete nextState.tokens[mint];
-            updateNip60State(nextState);
-            return;
-          }
-          delete nextState.tokens[mint];
-        }
-      }
-
-      // publish history entries
-      const localHistory = readLocalHistory();
-      const limitedHistory = localHistory.slice(0, HISTORY_SYNC_LIMIT);
-      const historyQueueSnapshots = new Map<string, Nip60QueuedEvent>();
-      nip60QueueRef.current
-        .filter((entry) => entry.type === "history" && entry.hash)
-        .forEach((entry) => {
-          if (entry.hash) historyQueueSnapshots.set(entry.hash, entry);
-        });
-
-      for (const entry of limitedHistory) {
-        const key = entry.id || "";
-        if (!key) continue;
-        const payload: ParsedHistoryEvent = {
-          id: "",
-          entryId: key,
-          direction: entry.direction,
-          amount: entry.amountSat,
-          unit: "sat",
-          summary: entry.summary,
-          mint: entry.mintUrl,
-          feeSat: entry.feeSat,
-          detail: entry.detail,
-          detailKind: entry.detailKind,
-          fiatValueUsd: entry.fiatValueUsd,
-          stateLabel: entry.stateLabel,
-          relatedTaskTitle: entry.relatedTaskTitle,
-        };
-        const hash = hashHistoryPayload(payload);
-        const queued = historyQueueSnapshots.get(hash) || queuedHistory.get(hash);
-        const snap = nextState.history[key];
-        const createdAtSec = Math.max(
-          Math.floor((entry.createdAt || Date.now()) / 1000),
-          snap?.created_at || 0,
-          queued?.created_at || 0,
-        );
-        const eTags: string[][] = [];
-        if (entry.mintUrl) {
-          const snapForMint = nextState.tokens[normalizeMintUrl(entry.mintUrl)];
-          if (snapForMint?.id) {
-            eTags.push(["e", snapForMint.id, "", "created"]);
-          }
-        }
-        if (entry.nutzapEventId) {
-          eTags.push(["e", entry.nutzapEventId, entry.nutzapRelay || "", "redeemed"]);
-        }
-        if (entry.nutzapSenderPubkey) {
-          eTags.push(["p", entry.nutzapSenderPubkey]);
-        }
-        if (queued && queued.hash === hash) {
-          if (!snap) {
-            nextState.history[key] = {
-              id: queued.id,
-              created_at: queued.created_at,
-              hash,
-              entryId: key,
-            };
-          }
-          continue;
-        }
-        if (snap && snap.hash === hash) continue;
-        const template = await createHistoryEventTemplate(payload, keys, { createdAt: createdAtSec, eTags });
-        const historyResult = await signAndPublish(template, { type: "history", hash, mint: entry.mintUrl });
-        if (!historyResult.published && isLikelyOfflineError(historyResult.error)) {
-          nextState.history[key] = {
-            id: historyResult.event.id,
-            created_at: historyResult.createdAt || createdAtSec,
-            hash,
-            entryId: key,
-          };
-          updateNip60State(nextState);
-          return;
-        }
-        nextState.history[key] = {
-          id: historyResult.event.id,
-          created_at: historyResult.createdAt || createdAtSec,
-          hash,
-          entryId: key,
-        };
-      }
-
-      try {
-        const walletPrivkey = getWalletPrivkeyForSync();
-        const p2pkPubkey = walletPrivkey ? deriveCompressedPubkeyFromSecret(walletPrivkey) : null;
-        const mints = getMintList();
-        if (p2pkPubkey && mints.length) {
-          const infoTemplate = createNutzapInfoEventTemplate({
-            relays,
-            mints,
-            p2pkPubkey,
-            unit: "sat",
-          });
-          const signedInfo = finalizeEvent(infoTemplate, hexToBytes(keys.sk));
-          await session.publishRaw(signedInfo as unknown as NostrEvent, { relayUrls: relays, returnEvent: false });
-        }
-      } catch (error) {
-        if (!isLikelyOfflineError(error)) {
-          console.warn("NIP-61: failed to publish kind:10019", error);
-        }
-      }
-
-      updateNip60State(nextState);
-    },
-    [
-      enqueueNip60Event,
-      getWalletPrivkeyForSync,
-      removeQueuedTokenEvents,
-      isLikelyOfflineError,
-      updateNip60Queue,
-      updateNip60State,
-    ],
-  );
-
-  const runNip60Sync = useCallback(async () => {
-    if (nip60SyncInFlightRef.current) return;
-    if (!walletSyncEnabledRef.current) return;
-    const keys = loadNostrKeys();
-    if (!keys) return;
-    const relays = loadDefaultNostrRelays().filter(Boolean);
-    if (!relays.length) return;
-    nip60SyncInFlightRef.current = true;
-    try {
-      const session = await NostrSession.init(relays);
-      await flushNip60Queue(relays);
-      let events: NostrEvent[] = [];
-      try {
-        events = await session.fetchEvents(
-          [{ kinds: [NIP60_WALLET_KIND, NIP60_TOKEN_KIND, NIP60_HISTORY_KIND, 5], authors: [keys.pk] }],
-          relays,
-        );
-      } catch (error) {
-        if (isLikelyOfflineError(error)) {
-          return;
-        }
-        console.warn("[wallet] Unable to fetch NIP-60 events", error);
-      }
-      if (events.length) {
-        const deduped = new Map<string, NostrEvent>();
-        for (const ev of events) {
-          if (ev?.id) deduped.set(ev.id, ev);
-        }
-        const allEvents = [...deduped.values()];
-        const walletEvents = allEvents.filter((ev) => ev.kind === NIP60_WALLET_KIND);
-        const tokenEvents = allEvents.filter((ev) => ev.kind === NIP60_TOKEN_KIND);
-        const historyEvents = allEvents.filter((ev) => ev.kind === NIP60_HISTORY_KIND);
-        const deletionEvents = allEvents.filter((ev) => ev.kind === 5);
-
-        if (walletEvents.length) {
-          const parsedWallets = await Promise.all(walletEvents.map((ev) => parseWalletEvent(ev, keys)));
-          const latestWallet =
-            parsedWallets
-              .filter((ev): ev is ParsedWalletEvent => !!ev)
-              .sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
-              .pop() || null;
-          if (latestWallet) {
-            handleRemoteWalletEvent(latestWallet);
-          }
-        }
-
-        if (tokenEvents.length || deletionEvents.length) {
-          const parsedTokens = (await Promise.all(tokenEvents.map((ev) => parseTokenEvent(ev, keys)))).filter(
-            (ev): ev is ParsedTokenEvent => !!ev,
-          );
-          const deletedIds = extractDeletedIds(deletionEvents as NostrEvent[]);
-          const latestTokens = selectLatestTokenEvents(parsedTokens, deletedIds);
-          applyRemoteTokenEvents(latestTokens, deletedIds);
-        }
-
-        if (historyEvents.length) {
-          const parsedHistory = (await Promise.all(historyEvents.map((ev) => parseHistoryEvent(ev, keys)))).filter(
-            (ev): ev is ParsedHistoryEvent => !!ev,
-          );
-          const latestHistory = selectLatestHistoryEvents(parsedHistory);
-          applyRemoteHistoryEvents(latestHistory);
-        }
-      }
-
-      await publishNip60State(keys, relays);
-    } finally {
-      nip60SyncInFlightRef.current = false;
-    }
-  }, [
-    applyRemoteTokenEvents,
-    applyRemoteHistoryEvents,
-    flushNip60Queue,
-    handleRemoteWalletEvent,
-    loadNostrKeys,
-    publishNip60State,
-  ]);
-
   const ensureManagerForMint = useCallback(
     async (mintUrl: string) => {
       const session = MintSession.init({
@@ -1130,46 +363,6 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       return session.getConnection(mintUrl);
     },
     [getLocalP2PKPrivkey, markKeyUsed],
-  );
-
-  const recordNutzapRedemption = useCallback(
-    (payload: {
-      eventId: string;
-      senderPubkey?: string;
-      relay?: string;
-      mintUrl: string;
-      amountSat: number;
-    }) => {
-      const eventId = payload.eventId.trim();
-      if (!eventId) return;
-      const amountSat = Number(payload.amountSat) || 0;
-      if (!Number.isFinite(amountSat) || amountSat <= 0) return;
-      const key = `nutzap-redeem:${eventId}`;
-      const local = readLocalHistory();
-      if (local.some((entry) => entry?.id === key)) return;
-      const nextEntry: LocalHistoryEntry = {
-        id: key,
-        summary: `Redeemed nutzap • ${amountSat} sats`,
-        type: "ecash",
-        direction: "in",
-        amountSat,
-        mintUrl: payload.mintUrl,
-        createdAt: Date.now(),
-        entryKind: "nutzap",
-        nutzapEventId: eventId,
-        nutzapRelay: payload.relay || "",
-        nutzapSenderPubkey: payload.senderPubkey,
-      };
-      local.unshift(nextEntry);
-      persistLocalHistory(local.slice(0, HISTORY_SYNC_LIMIT));
-      try {
-        window.dispatchEvent(new Event("taskify:wallet-history-updated"));
-      } catch {
-        // ignore
-      }
-      requestNip60Sync();
-    },
-    [requestNip60Sync],
   );
 
   const processPendingEntry = useCallback(
@@ -1196,16 +389,6 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
         });
       }
       if (tokenProofs.length && freshProofs.length === 0) {
-        if (entry.source?.type === "nutzap") {
-          const amountSat = tokenProofs.reduce((sum, proof) => sum + (proof?.amount || 0), 0);
-          recordNutzapRedemption({
-            eventId: entry.source.eventId,
-            senderPubkey: entry.source.senderPubkey,
-            relay: entry.source.relay,
-            mintUrl: targetManager.mintUrl,
-            amountSat,
-          });
-        }
         removePendingToken(entry.id);
         if (targetManager === manager) {
           setBalance(targetManager.balance);
@@ -1225,7 +408,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
           throw error;
         }
         const states = await MintSession.checkTokenStates(normalizeMintUrl(targetManager.mintUrl), proofsToCheck);
-        const spendableProofs = proofsToCheck.filter((proof, index) => {
+        const spendableProofs = proofsToCheck.filter((_proof, index) => {
           const stateLabel = typeof states[index]?.state === "string" ? states[index]!.state.toUpperCase() : "";
           return stateLabel !== "SPENT";
         });
@@ -1240,16 +423,6 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
         });
         return targetManager.receiveToken(partialToken);
       });
-      if (entry.source?.type === "nutzap") {
-        const amountSat = proofs.reduce((sum, proof) => sum + (proof?.amount || 0), 0);
-        recordNutzapRedemption({
-          eventId: entry.source.eventId,
-          senderPubkey: entry.source.senderPubkey,
-          relay: entry.source.relay,
-          mintUrl: targetManager.mintUrl,
-          amountSat,
-        });
-      }
       removePendingToken(entry.id);
       if (targetManager === manager) {
         setBalance(targetManager.balance);
@@ -1258,7 +431,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       refreshTotalBalance();
       return { proofs, mintUrl: targetManager.mintUrl };
     },
-    [ensureManagerForMint, manager, recordNutzapRedemption, refreshTotalBalance, setBalance, setProofs],
+    [ensureManagerForMint, manager, refreshTotalBalance, setBalance, setProofs],
   );
 
   const redeemPendingTokens = useCallback(async () => {
@@ -1286,9 +459,8 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     } finally {
       redeemingPendingRef.current = false;
       refreshTotalBalance();
-      requestNip60Sync();
     }
-  }, [processPendingEntry, refreshTotalBalance, requestNip60Sync]);
+  }, [processPendingEntry, refreshTotalBalance]);
 
   const savePendingTokenForRedemption = useCallback(
     async (rawToken: string): Promise<SavePendingTokenResult> => {
@@ -1316,7 +488,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
             const proofs = Array.isArray(entry?.proofs) ? entry.proofs : [];
             return (
               outer +
-              proofs.reduce((sum, proof) => {
+              proofs.reduce((sum: number, proof: Proof) => {
                 const amt = typeof proof?.amount === "number" ? proof.amount : 0;
                 return sum + (Number.isFinite(amt) ? amt : 0);
               }, 0)
@@ -1334,7 +506,6 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
 
       const normalizedTarget = normalizeMintUrl(targetMintUrl);
       addMintToList(normalizedTarget);
-      requestNip60Sync();
 
       const entry = addPendingToken(targetMintUrl, tokenInput, tokenAmount || undefined);
       refreshTotalBalance();
@@ -1348,7 +519,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
         crossMint,
       };
     },
-    [manager, refreshTotalBalance, requestNip60Sync],
+    [manager, refreshTotalBalance],
   );
 
   const redeemPendingToken = useCallback(
@@ -1369,7 +540,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       try {
         const res = await processPendingEntry(entry);
         setTimeout(() => {
-          redeemPendingTokens().catch(() => {});
+          redeemPendingTokens().catch((err) => {
+            if ((import.meta as any)?.env?.DEV) console.warn("[cashu] redeemPendingTokens failed", err);
+          });
         }, 0);
         return res;
       } catch (err: any) {
@@ -1444,66 +617,15 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
   }, [redeemPendingTokens, manager]);
 
   useEffect(() => {
-    if (!nip60SyncNonce) return;
-    if (nip60SyncInFlightRef.current) {
-      nip60SyncPendingRef.current = true;
-      return;
-    }
-    const execute = async () => {
-      await runNip60Sync();
-      if (nip60SyncPendingRef.current) {
-        nip60SyncPendingRef.current = false;
-        requestNip60Sync();
-      }
-    };
-    void execute();
-  }, [nip60SyncNonce, requestNip60Sync, runNip60Sync]);
-
-  useEffect(() => {
-    requestNip60Sync();
-  }, [requestNip60Sync]);
-
-  useEffect(() => {
-    requestNip60Sync();
-  }, [primaryKey?.privateKey, requestNip60Sync]);
-
-  useEffect(() => {
-    const handler = () => requestNip60Sync();
-    window.addEventListener("taskify:wallet-history-updated", handler);
-    return () => window.removeEventListener("taskify:wallet-history-updated", handler);
-  }, [requestNip60Sync]);
-
-  useEffect(() => {
-    // Detect freshly added Nostr keys (nsec/nsec hex) and trigger sync automatically.
-    let last = loadNostrKeys();
-    nostrKeysCacheRef.current = last;
-    const check = () => {
-      const next = loadNostrKeys();
-      const changed = (next?.sk || null) !== (last?.sk || null);
-      if (changed) {
-        last = next;
-        requestNip60Sync();
-      }
-    };
-    const interval = window.setInterval(check, 4000);
-    window.addEventListener("focus", check);
-    return () => {
-      window.removeEventListener("focus", check);
-      clearInterval(interval);
-    };
-  }, [loadNostrKeys, requestNip60Sync]);
-
-  useEffect(() => {
     if (typeof window === "undefined") return;
     const handler = () => {
       redeemPendingTokens();
-      requestNip60Sync();
     };
     window.addEventListener("online", handler);
     return () => {
       window.removeEventListener("online", handler);
     };
-  }, [redeemPendingTokens, requestNip60Sync]);
+  }, [redeemPendingTokens]);
 
   const setMintUrl = useCallback(async (url: string) => {
     const clean = url.trim().replace(/\/$/, "");
@@ -1512,8 +634,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     if (clean) {
       addMintToList(clean);
     }
-    requestNip60Sync();
-  }, [requestNip60Sync]);
+  }, []);
 
   const createMintInvoice = useCallback(
     async (amount: number, description?: string, options?: { mintUrl?: string }) => {
@@ -1598,10 +719,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
         setProofs(targetManager.proofs);
       }
       refreshTotalBalance();
-      requestNip60Sync();
       return proofs;
     },
-    [ensureManagerForMint, manager, refreshTotalBalance, requestNip60Sync, setBalance, setProofs],
+    [ensureManagerForMint, manager, refreshTotalBalance, setBalance, setProofs],
   );
 
   const receiveToken = useCallback(
@@ -1629,7 +749,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
             const proofs = Array.isArray(entry?.proofs) ? entry.proofs : [];
             return (
               outer +
-              proofs.reduce((sum, proof) => {
+              proofs.reduce((sum: number, proof: Proof) => {
                 const amt = typeof proof?.amount === "number" ? proof.amount : 0;
                 return sum + (Number.isFinite(amt) ? amt : 0);
               }, 0)
@@ -1681,8 +801,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
             setProofs(manager.proofs);
             refreshTotalBalance();
           }
-          requestNip60Sync();
-          redeemPendingTokens().catch(() => {});
+          redeemPendingTokens().catch((err) => {
+            if ((import.meta as any)?.env?.DEV) console.warn("[cashu] redeemPendingTokens failed", err);
+          });
           return {
             proofs: tokenProofs,
             usedMintUrl: target.mintUrl,
@@ -1699,8 +820,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
           setProofs(manager.proofs);
           refreshTotalBalance();
         }
-        requestNip60Sync();
-        redeemPendingTokens().catch(() => {});
+        redeemPendingTokens().catch((err) => {
+            if ((import.meta as any)?.env?.DEV) console.warn("[cashu] redeemPendingTokens failed", err);
+          });
         return {
           proofs,
           usedMintUrl: target.mintUrl,
@@ -1745,171 +867,8 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
         throw err;
       }
     },
-    [manager, ensureManagerForMint, refreshTotalBalance, requestNip60Sync, setBalance, setProofs, redeemPendingTokens],
+    [manager, ensureManagerForMint, refreshTotalBalance, setBalance, setProofs, redeemPendingTokens],
   );
-
-  const markNutzapProcessed = useCallback((eventId: string, createdAt?: number) => {
-    const id = eventId.trim();
-    if (!id) return;
-    nip61ProcessedRef.current.add(id);
-    persistStoredStringSet(LS_NIP61_PROCESSED, nip61ProcessedRef.current);
-    const ts = typeof createdAt === "number" ? createdAt : 0;
-    if (Number.isFinite(ts) && ts > (nip61SinceRef.current || 0)) {
-      nip61SinceRef.current = Math.floor(ts);
-      persistStoredSince(LS_NIP61_SINCE, nip61SinceRef.current);
-    }
-  }, []);
-
-  const handleNutzapEvent = useCallback(
-    async (event: NostrEvent, relayUrl?: string) => {
-      const keys = loadNostrKeys();
-      if (!keys) return;
-      const parsed = parseNutzapEvent(event);
-      if (!parsed) return;
-      const recipient = parsed.recipientPubkey?.toLowerCase();
-      if (recipient && recipient !== keys.pk.toLowerCase()) return;
-
-      if (nip61ProcessedRef.current.has(parsed.id) || nip61InFlightRef.current.has(parsed.id)) return;
-
-      const allowedMints = new Set(getMintList().map((mint) => normalizeMintUrl(mint)));
-      if (!allowedMints.has(parsed.mintUrl)) return;
-
-      const walletPrivkey = getWalletPrivkeyForSync();
-      const p2pkPubkey = walletPrivkey ? deriveCompressedPubkeyFromSecret(walletPrivkey) : null;
-      if (!p2pkPubkey) return;
-
-      if (parsed.proofs.some((proof) => !proofIsLockedToPubkey(proof, p2pkPubkey))) return;
-      if (parsed.proofs.some((proof) => !proof.dleq)) return;
-
-      const token = getEncodedToken({ mint: parsed.mintUrl, proofs: parsed.proofs, unit: parsed.unit });
-      nip61InFlightRef.current.add(parsed.id);
-      try {
-        try {
-          const conn = await ensureManagerForMint(parsed.mintUrl);
-          conn.validateProofsDleq(parsed.proofs);
-        } catch (error) {
-          if (isLikelyOfflineError(error)) {
-            const amountSat = parsed.proofs.reduce((sum, proof) => sum + (proof?.amount || 0), 0);
-            addPendingToken(parsed.mintUrl, token, amountSat || undefined, {
-              type: "nutzap",
-              eventId: parsed.id,
-              senderPubkey: parsed.senderPubkey,
-              relay: relayUrl,
-            });
-            refreshTotalBalance();
-            markNutzapProcessed(parsed.id, parsed.created_at);
-            return;
-          }
-          throw error;
-        }
-
-        const result = await receiveToken(token);
-        if (result.savedForLater && result.pendingTokenId) {
-          setPendingTokenSource(result.pendingTokenId, {
-            type: "nutzap",
-            eventId: parsed.id,
-            senderPubkey: parsed.senderPubkey,
-            relay: relayUrl,
-          });
-        }
-        if (!result.savedForLater) {
-          const amountSat = parsed.proofs.reduce((sum, proof) => sum + (proof?.amount || 0), 0);
-          recordNutzapRedemption({
-            eventId: parsed.id,
-            senderPubkey: parsed.senderPubkey,
-            relay: relayUrl,
-            mintUrl: parsed.mintUrl,
-            amountSat,
-          });
-        }
-        markNutzapProcessed(parsed.id, parsed.created_at);
-      } catch (error) {
-        if (!isLikelyOfflineError(error)) {
-          console.warn("NIP-61: failed to process nutzap", error);
-        }
-      } finally {
-        nip61InFlightRef.current.delete(parsed.id);
-      }
-    },
-    [
-      ensureManagerForMint,
-      getWalletPrivkeyForSync,
-      loadNostrKeys,
-      markNutzapProcessed,
-      recordNutzapRedemption,
-      receiveToken,
-      refreshTotalBalance,
-    ],
-  );
-
-  useEffect(() => {
-    if (!walletSyncEnabled) return;
-    const keys = loadNostrKeys();
-    if (!keys) return;
-    const relays = loadDefaultNostrRelays().filter(Boolean);
-    if (!relays.length) return;
-    const since = nip61SinceRef.current || loadStoredSince(LS_NIP61_SINCE);
-    const mints = getMintList().map((mint) => normalizeMintUrl(mint)).filter(Boolean);
-
-    const filter: Record<string, unknown> = {
-      kinds: [NIP61_NUTZAP_KIND],
-      "#p": [keys.pk],
-    };
-    if (mints.length) {
-      (filter as any)["#u"] = mints;
-    }
-    if (since) {
-      (filter as any).since = since;
-    }
-
-    let cancelled = false;
-    const stopExisting = nip61SubscriptionReleaseRef.current;
-    if (stopExisting) {
-      try {
-        stopExisting();
-      } catch {
-        // ignore
-      }
-      nip61SubscriptionReleaseRef.current = null;
-    }
-
-    (async () => {
-      try {
-        const session = await NostrSession.init(relays);
-        const sub = await session.subscribe([filter as any], {
-          relayUrls: relays,
-          onEvent: (ev, relayUrl) => {
-            handleNutzapEvent(ev as NostrEvent, relayUrl).catch((err) => {
-              console.warn("NIP-61: nutzap handler error", err);
-            });
-          },
-          opts: { closeOnEose: false },
-        });
-        if (cancelled) {
-          sub.release();
-          return;
-        }
-        nip61SubscriptionReleaseRef.current = sub.release;
-      } catch (error) {
-        if (!isLikelyOfflineError(error)) {
-          console.warn("NIP-61: failed to subscribe for nutzaps", error);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      const stop = nip61SubscriptionReleaseRef.current;
-      if (stop) {
-        try {
-          stop();
-        } catch {
-          // ignore
-        }
-      }
-      nip61SubscriptionReleaseRef.current = null;
-    };
-  }, [handleNutzapEvent, loadNostrKeys, walletSyncEnabled, mintUrl]);
 
   const createSendToken = useCallback(async (
     amount: number,
@@ -1946,10 +905,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       }
     }
     refreshTotalBalance();
-    requestNip60Sync();
 
     return { token: res.token, proofs: res.send, mintUrl: targetManager.mintUrl, lockInfo: res.lockInfo };
-  }, [ensureManagerForMint, manager, refreshTotalBalance, requestNip60Sync]);
+  }, [ensureManagerForMint, manager, refreshTotalBalance]);
 
   const createTokenFromProofSelection = useCallback(
     async (secrets: string[]) => {
@@ -1958,10 +916,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       setBalance(manager.balance);
       setProofs(manager.proofs);
       refreshTotalBalance();
-      requestNip60Sync();
       return { token: res.token, proofs: res.send, mintUrl: manager.mintUrl };
     },
-    [manager, refreshTotalBalance, requestNip60Sync],
+    [manager, refreshTotalBalance],
   );
 
   const payInvoice = useCallback(
@@ -2017,7 +974,6 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
           setProofs(manager.proofs);
         }
         refreshTotalBalance();
-        requestNip60Sync();
         return {
           state: (singleResult.quote as any)?.state ?? "",
           amountSat: invoiceAmountSat ?? baseAmount ?? null,
@@ -2152,7 +1108,6 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       setBalance(manager.balance);
       setProofs(manager.proofs);
       refreshTotalBalance();
-      requestNip60Sync();
 
       if (!finalResult) {
         throw new Error("Failed to complete multi-mint payment");
@@ -2171,7 +1126,6 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       manager,
       markKeyUsed,
       refreshTotalBalance,
-      requestNip60Sync,
       setBalance,
       setProofs,
     ],
@@ -2250,8 +1204,6 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     subscribeMintQuoteUpdates,
     createTokenFromProofSelection,
     redeemPendingToken,
-    walletSyncEnabled,
-    setWalletSyncEnabled,
   }), [
     ready,
     mintUrl,
@@ -2273,8 +1225,6 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     subscribeMintQuoteUpdates,
     createTokenFromProofSelection,
     redeemPendingToken,
-    walletSyncEnabled,
-    setWalletSyncEnabled,
   ]);
 
   return <CashuContext.Provider value={value}>{children}</CashuContext.Provider>;

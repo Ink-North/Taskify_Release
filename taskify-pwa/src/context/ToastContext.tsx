@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 type ToastContextValue = {
   show: (message?: string, durationMs?: number) => void;
@@ -30,8 +30,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Memoize context value so consumers don't re-render when toast visibility changes
+  const value = useMemo<ToastContextValue>(() => ({ show }), [show]);
+
   return (
-    <ToastContext.Provider value={{ show }}>
+    <ToastContext.Provider value={value}>
       {children}
       <div
         className="pointer-events-none fixed left-1/2 z-[10000] -translate-x-1/2"

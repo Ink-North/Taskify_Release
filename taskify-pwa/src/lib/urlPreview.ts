@@ -79,7 +79,7 @@ function clonePersistedPreviewData(raw: any): UrlPreviewData | null {
   return data;
 }
 
-function deserializePersistedEntry(url: string, raw: any): PreviewCacheEntry | null {
+function deserializePersistedEntry(_url: string, raw: any): PreviewCacheEntry | null {
   if (!raw || typeof raw !== "object") return null;
   const fetchedAt = typeof raw.fetchedAt === "number" ? raw.fetchedAt : 0;
   const status = typeof raw.status === "string" ? (raw.status as PreviewCacheStatus) : null;
@@ -394,7 +394,7 @@ function scheduleRetry(url: string, entry: PreviewCacheEntry): void {
     if (current && current.fetchedAt > scheduledAt && current.status === "image" && !current.fallback) {
       return;
     }
-    fetchPreview(url, { force: true, skipRetry: true }).catch(() => {});
+    fetchPreview(url, { force: true, skipRetry: true }).catch(() => { /* retry best-effort */ });
   }, PREVIEW_RETRY_DELAY_MS);
 }
 

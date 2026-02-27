@@ -61,7 +61,11 @@ function normalizeFilter(filter: NDKFilter): NDKFilter {
     if (value == null) return;
     if (key === "kinds" && Array.isArray(value)) normalized.kinds = uniqueSorted(value.filter((v): v is number => typeof v === "number"), (a, b) => a - b);
     else if (key === "authors" && Array.isArray(value)) normalized.authors = uniqueSorted(value.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean));
-    else if (key.startsWith("#") && Array.isArray(value)) normalized[key] = uniqueSorted(value.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean));
+    else if (key.startsWith("#") && Array.isArray(value)) {
+      (normalized as Record<string, unknown>)[key] = uniqueSorted(
+        value.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean),
+      );
+    }
     else if (key === "since" || key === "until" || key === "limit") {
       const num = Number(value);
       if (Number.isFinite(num)) (normalized as any)[key] = num;
@@ -172,17 +176,21 @@ export class SubscriptionManager {
       relaySet,
     };
 
-    const sub = this.ndk.subscribe(normalized, opts);
     const state: SubscriptionState = {
       key,
-      subscription: sub,
+      subscription: null!,
       filters: normalized,
       relayUrls,
       handlers: new Set(handler.onEvent || handler.onEose ? [handler] : []),
       refCount: 1,
       seenIds: new Set<string>(),
     };
+    // Store state and register handlers BEFORE creating the subscription
+    // to avoid a race where events arrive before handlers are attached
     this.subs.set(key, state);
+
+    const sub = this.ndk.subscribe(normalized, opts);
+    state.subscription = sub;
 
     sub.on("event", (evt: NDKEvent) => {
       const raw = evt.rawEvent() as NostrEvent;
@@ -195,8 +203,8 @@ export class SubscriptionManager {
       state.handlers.forEach((h) => h.onEvent?.(raw, evt.relay?.url));
     });
 
-    sub.on("eose", (relayUrl?: string) => {
-      state.handlers.forEach((h) => h.onEose?.(relayUrl));
+    sub.on("eose", () => {
+      state.handlers.forEach((h) => h.onEose?.());
     });
 
     return {

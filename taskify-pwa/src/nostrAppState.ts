@@ -1,3 +1,4 @@
+import { hexToBytes } from "@noble/hashes/utils";
 import { nip44 } from "nostr-tools";
 
 export const NOSTR_APP_STATE_KIND = 30078;
@@ -27,14 +28,13 @@ function ensureNip44v2() {
 
 export async function encryptNostrSyncPayload(payload: unknown, skHex: string, pkHex: string): Promise<string> {
   const nip44v2 = ensureNip44v2();
-  const conversationKey = nip44v2.utils.getConversationKey(skHex, pkHex);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(skHex), pkHex);
   return nip44v2.encrypt(JSON.stringify(payload), conversationKey);
 }
 
 export async function decryptNostrSyncPayload(content: string, skHex: string, pkHex: string): Promise<unknown> {
   const nip44v2 = ensureNip44v2();
-  const conversationKey = nip44v2.utils.getConversationKey(skHex, pkHex);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(skHex), pkHex);
   const plaintext = await nip44v2.decrypt(content, conversationKey);
   return JSON.parse(plaintext);
 }
-

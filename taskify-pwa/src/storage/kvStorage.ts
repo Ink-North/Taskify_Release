@@ -5,7 +5,6 @@
  *
  * Intended for small values such as:
  * - feature flags and toggles
- * - migration markers
  * - lightweight caches
  * - small configuration values / keys
  *
@@ -18,8 +17,6 @@
  * Callers should store small strings. JSON encoding/decoding (if needed) is the
  * caller's responsibility and should be used sparingly.
  */
-
-import { shouldBlockKvWrite } from "./storageWriteLock";
 
 export type KvStorage = {
   /**
@@ -83,7 +80,6 @@ export const kvStorage: KvStorage = {
   },
 
   setItem(key, value) {
-    if (shouldBlockKvWrite(key)) return;
     const storage = getLocalStorage();
     if (!storage) return;
     try {
@@ -94,7 +90,6 @@ export const kvStorage: KvStorage = {
   },
 
   removeItem(key) {
-    if (shouldBlockKvWrite(key)) return;
     const storage = getLocalStorage();
     if (!storage) return;
     try {

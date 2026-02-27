@@ -1,9 +1,5 @@
 import { idbStorage } from "./idbStorage";
 import { getTaskifyDb } from "./taskifyDb";
-import { legacyStorage } from "./legacyStorage";
-import { areStorageWritesBlocked } from "./storageWriteLock";
-import { kvStorage } from "./kvStorage";
-import { FORCE_LEGACY_MODE_KEY } from "./recoveryKeys";
 
 type StoreState = {
   loaded: Set<string>;
@@ -21,27 +17,16 @@ function getStoreState(storeName: string): StoreState {
   return created;
 }
 
-function shouldUseLegacyMode(): boolean {
-  try {
-    return kvStorage.getBoolean(FORCE_LEGACY_MODE_KEY, false);
-  } catch {
-    return false;
-  }
-}
-
 async function loadKeyFromIdb(storeName: string, key: string): Promise<string | null> {
-  if (shouldUseLegacyMode()) {
-    return legacyStorage.getItem(key);
-  }
   try {
     const db = await getTaskifyDb();
     const value = await idbStorage.get<string>(db, storeName, key);
     if (typeof value === "string") return value;
     if (value !== undefined) return null;
   } catch {
-    // fall through to legacy storage
+    return null;
   }
-  return legacyStorage.getItem(key);
+  return null;
 }
 
 function queueWrite(storeName: string, fn: () => Promise<void>): void {
@@ -85,16 +70,9 @@ export const idbKeyValue = {
   },
 
   setItem(storeName: string, key: string, value: string): void {
-    if (areStorageWritesBlocked()) return;
     const state = getStoreState(storeName);
     state.loaded.add(key);
     state.values.set(key, value);
-    if (shouldUseLegacyMode()) {
-      queueWrite(storeName, async () => {
-        kvStorage.setItem(key, value);
-      });
-      return;
-    }
     queueWrite(storeName, async () => {
       const db = await getTaskifyDb();
       await idbStorage.put<string>(db, storeName, value, key);
@@ -102,16 +80,9 @@ export const idbKeyValue = {
   },
 
   removeItem(storeName: string, key: string): void {
-    if (areStorageWritesBlocked()) return;
     const state = getStoreState(storeName);
     state.loaded.add(key);
     state.values.delete(key);
-    if (shouldUseLegacyMode()) {
-      queueWrite(storeName, async () => {
-        kvStorage.removeItem(key);
-      });
-      return;
-    }
     queueWrite(storeName, async () => {
       const db = await getTaskifyDb();
       await idbStorage.delete(db, storeName, key);

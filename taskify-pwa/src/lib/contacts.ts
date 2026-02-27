@@ -271,7 +271,7 @@ export function parseContactSyncEnvelope(raw: any): ContactSyncEnvelope | null {
   if (version !== 1) return null;
   const updatedAt = Number(raw.updatedAt) || Date.now();
   const entriesRaw = Array.isArray(raw.contacts) ? raw.contacts : [];
-  const contacts = entriesRaw.map((entry) => normalizeContactSyncEntry(entry)).filter(Boolean) as ContactSyncEntry[];
+  const contacts = entriesRaw.map((entry: unknown) => normalizeContactSyncEntry(entry)).filter(Boolean) as ContactSyncEntry[];
   return { version: 1, updatedAt, contacts };
 }
 

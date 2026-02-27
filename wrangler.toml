@@ -19,25 +19,25 @@ crons = ["*/1 * * * *"]
 [observability.logs]
 enabled = true
 
-[vars]
-VAPID_PUBLIC_KEY = "REPLACE_WITH_VAPID_PUBLIC_KEY"
-VAPID_SUBJECT = "mailto:your-email@example.com"
+# Configure these in Cloudflare Worker variables/secrets (or `.dev.vars` for local dev):
+# - VAPID_PUBLIC_KEY
+# - VAPID_SUBJECT
 
 [[kv_namespaces]]
 binding = "TASKIFY_DEVICES"
-id = "REPLACE_WITH_TASKIFY_DEVICES_KV_ID"
+id = "c22ac7468ada4612b14690ecfebef904"
 
 [[kv_namespaces]]
 binding = "TASKIFY_REMINDERS"
-id = "REPLACE_WITH_TASKIFY_REMINDERS_KV_ID"
+id = "03a8da2b890b4d33b7ddc9273ada7868"
 
 [[kv_namespaces]]
 binding = "TASKIFY_PENDING"
-id = "REPLACE_WITH_TASKIFY_PENDING_KV_ID"
+id = "448d7dc7170c4aff81c2a58c5e07e739"
 
 [[kv_namespaces]]
 binding = "VAPID_PRIVATE_KEY"
-id = "REPLACE_WITH_VAPID_PRIVATE_KEY_KV_ID"
+id = "45bbad6e354443ff9b101d61a27e5dd9"
 
 [[r2_buckets]]
 binding = "TASKIFY_BACKUPS"
@@ -48,5 +48,5 @@ preview_bucket_name = "taskify-backups-preview"
 binding = "TASKIFY_DB"
 database_name = "taskify-notifications"
 # TODO: replace with your D1 database ID after running `wrangler d1 create`
-database_id = "REPLACE_WITH_TASKIFY_DB_ID"
+database_id = "1f1f5293-4694-4319-b56b-320faa325bf1"
 migrations_dir = "worker/migrations"

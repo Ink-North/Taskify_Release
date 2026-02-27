@@ -17,8 +17,11 @@ function stableStringify(value: unknown): string {
 
 export class MintRequestCache {
   private cache = new Map<string, CacheEntry<unknown>>();
+  private readonly defaultTtlMs: number;
 
-  constructor(private readonly defaultTtlMs = 0) {}
+  constructor(defaultTtlMs = 0) {
+    this.defaultTtlMs = defaultTtlMs;
+  }
 
   buildKey(method: string, path: string, payload?: unknown): string {
     const normalizedMethod = method.trim().toUpperCase();

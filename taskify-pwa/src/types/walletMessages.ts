@@ -25,7 +25,7 @@ export type WalletMessageItem = {
   completed?: boolean;
   dmEventId?: string | null;
   type?: "board" | "contact" | "task";
-  status?: "pending" | "accepted" | "deleted" | "read";
+  status?: "pending" | "accepted" | "declined" | "tentative" | "deleted" | "read";
   boardId?: string | null;
   boardName?: string | null;
   contact?: WalletMessageContact | null;

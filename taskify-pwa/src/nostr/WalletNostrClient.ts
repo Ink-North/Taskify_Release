@@ -14,12 +14,22 @@ type SubscribeHandlers = {
 };
 
 export class WalletNostrClient {
+  private readonly ndk: NDK;
+  private readonly publisher: PublishCoordinator;
+  private readonly subscriptions: SubscriptionManager;
+  private readonly resolveRelaySet: RelayResolver;
+
   constructor(
-    private readonly ndk: NDK,
-    private readonly publisher: PublishCoordinator,
-    private readonly subscriptions: SubscriptionManager,
-    private readonly resolveRelaySet: RelayResolver,
-  ) {}
+    ndk: NDK,
+    publisher: PublishCoordinator,
+    subscriptions: SubscriptionManager,
+    resolveRelaySet: RelayResolver,
+  ) {
+    this.ndk = ndk;
+    this.publisher = publisher;
+    this.subscriptions = subscriptions;
+    this.resolveRelaySet = resolveRelaySet;
+  }
 
   async publishWalletState(event: EventTemplate, relays: string[], opts: { signer?: Uint8Array | string } = {}): Promise<PublishResult> {
     const replaceableKey = this.buildReplaceableKey(event, opts.signer);

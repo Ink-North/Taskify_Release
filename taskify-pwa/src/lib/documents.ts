@@ -565,3 +565,16 @@ export function loadDocumentPreview(doc: TaskDocument): Promise<TaskDocumentPrev
   previewPromiseCache.set(doc.id, promise);
   return promise;
 }
+
+export async function readDocumentsFromFiles(list: FileList | File[]): Promise<TaskDocument[]> {
+  const files = Array.from(list);
+  const attachments: TaskDocument[] = [];
+  for (const file of files) {
+    if (!isSupportedDocumentFile(file)) {
+      throw new Error("Unsupported file type");
+    }
+    const doc = await createDocumentAttachment(file);
+    attachments.push(ensureDocumentPreview(doc));
+  }
+  return attachments;
+}

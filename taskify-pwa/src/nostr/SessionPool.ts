@@ -64,7 +64,11 @@ export class SessionPool {
       .then((managed) => {
         release = managed.release;
       })
-      .catch(() => {});
+      .catch((err) => {
+        if ((import.meta as any)?.env?.DEV) {
+          console.warn("[SessionPool] subscribe failed", err);
+        }
+      });
     return () => {
       try {
         release?.();
@@ -89,7 +93,11 @@ export class SessionPool {
       .then((managed) => {
         release = managed.release;
       })
-      .catch(() => {});
+      .catch((err) => {
+        if ((import.meta as any)?.env?.DEV) {
+          console.warn("[SessionPool] subscribeMany failed", err);
+        }
+      });
 
     return {
       close: () => {

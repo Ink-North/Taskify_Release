@@ -158,7 +158,7 @@ export class RelayInfoCache {
       try {
         const info = await fetcher(nip11Url);
         if (info && typeof info === "object") {
-          const normalized = this.normalizeEntry(key, info);
+          const normalized = this.normalizeEntry(info);
           this.cache.set(key, normalized);
           this.persist();
           return normalized;
@@ -181,7 +181,7 @@ export class RelayInfoCache {
     return this.isExpired(cached);
   }
 
-  private normalizeEntry(key: string, info: RelayInfo): CachedRelayInfo {
+  private normalizeEntry(info: RelayInfo): CachedRelayInfo {
     const limitation = info.limitation || {};
     const normalizedLimit: RelayLimitation = {
       ...limitation,

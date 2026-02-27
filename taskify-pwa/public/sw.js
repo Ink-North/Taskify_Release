@@ -16,7 +16,7 @@ const CONFIG_CACHE = `${CACHE_PREFIX}config`;
 const DEFAULT_WORKER_BASE_URL = self.location.origin;
 let workerBaseUrl = DEFAULT_WORKER_BASE_URL;
 let workerBaseUrlReady = restoreWorkerBaseUrl();
-let updateNotified = false;
+const notifiedClients = new Set();
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
@@ -50,12 +50,22 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+function isCacheableResponse(response) {
+  if (!response || !response.ok) return false;
+  if (response.type === 'opaque') return false;
+  const cacheControl = response.headers.get('cache-control') || '';
+  if (cacheControl.includes('no-store')) return false;
+  const status = response.status;
+  if (status === 401 || status === 403 || status === 407) return false;
+  return true;
+}
+
 async function fetchAndUpdateCache(cache, request, cachedResponse) {
   try {
     const networkResponse = await fetch(request);
     if (networkResponse && networkResponse.ok) {
       let cacheUpdated = false;
-      if (networkResponse.type !== 'opaque') {
+      if (isCacheableResponse(networkResponse)) {
         let cacheError = null;
         try {
           await cache.put(request, networkResponse.clone());
@@ -90,7 +100,6 @@ async function fetchAndUpdateCache(cache, request, cachedResponse) {
 }
 
 async function shouldNotifyUpdate(request, cachedResponse, networkResponse) {
-  if (updateNotified) return false;
   if (!cachedResponse) return false;
 
   const destination = request.destination;
@@ -135,15 +144,15 @@ async function shouldNotifyUpdate(request, cachedResponse, networkResponse) {
 }
 
 async function notifyClientsAboutUpdate() {
-  if (updateNotified) return;
-  updateNotified = true;
   const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   await Promise.all(
-    clientList.map((client) =>
-      client.postMessage({
+    clientList.map((client) => {
+      if (notifiedClients.has(client.id)) return Promise.resolve();
+      notifiedClients.add(client.id);
+      return client.postMessage({
         type: 'UPDATE_AVAILABLE',
-      }),
-    ),
+      });
+    }),
   );
 }
 
@@ -186,7 +195,7 @@ async function handlePushEvent() {
   }));
 }
 
-async function fetchPendingRemindersWithRetry(maxAttempts = 3, delayMs = 500) {
+async function fetchPendingRemindersWithRetry(maxAttempts = 3, baseDelayMs = 500) {
   const apiBase = await getWorkerBaseUrl();
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
@@ -210,7 +219,8 @@ async function fetchPendingRemindersWithRetry(maxAttempts = 3, delayMs = 500) {
       console.warn('Failed to retrieve reminder payloads', err);
     }
     if (attempt < maxAttempts - 1) {
-      await wait(delayMs);
+      // Exponential backoff: 500ms, 1000ms, 2000ms, ...
+      await wait(baseDelayMs * Math.pow(2, attempt));
     }
   }
   return [];
@@ -270,6 +280,8 @@ self.addEventListener('message', (event) => {
   persistWorkerBaseUrl(normalized);
 });
 
+const relayHostCache = new Map();
+
 function shouldBypassRelayTraffic(request) {
   try {
     const acceptHeader = (request.headers.get('accept') || '').toLowerCase();
@@ -283,7 +295,12 @@ function shouldBypassRelayTraffic(request) {
 
     const isHttp = url.protocol === 'http:' || url.protocol === 'https:';
     const looksLikeRelayRoot = url.pathname === '/' || url.pathname === '';
-    const hostLooksLikeRelay = /relay|nostr/i.test(url.hostname);
+
+    let hostLooksLikeRelay = relayHostCache.get(url.hostname);
+    if (hostLooksLikeRelay === undefined) {
+      hostLooksLikeRelay = /relay|nostr/i.test(url.hostname);
+      relayHostCache.set(url.hostname, hostLooksLikeRelay);
+    }
 
     return isHttp && looksLikeRelayRoot && hostLooksLikeRelay;
   } catch {
@@ -308,28 +325,34 @@ function buildReminderBody(item) {
   }
   const timeString = due ? due.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
 
-  if (minutes <= 0) {
+  if (minutes === 0) {
     return timeString
       ? `is due now at ${timeString}`
       : 'is due now';
   }
 
   const offset = formatOffset(minutes);
+  if (minutes < 0) {
+    return timeString
+      ? `was due ${offset} ago at ${timeString}`
+      : `was due ${offset} ago`;
+  }
   return timeString
     ? `is due in ${offset} at ${timeString}`
     : `is due in ${offset}`;
 }
 
 function formatOffset(minutes) {
-  if (minutes % 1440 === 0) {
-    const days = minutes / 1440;
+  const absMinutes = Math.abs(minutes);
+  if (absMinutes % 1440 === 0) {
+    const days = absMinutes / 1440;
     return `${days} day${days === 1 ? '' : 's'}`;
   }
-  if (minutes % 60 === 0) {
-    const hours = minutes / 60;
+  if (absMinutes % 60 === 0) {
+    const hours = absMinutes / 60;
     return `${hours} hour${hours === 1 ? '' : 's'}`;
   }
-  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  return `${absMinutes} minute${absMinutes === 1 ? '' : 's'}`;
 }
 
 self.addEventListener('notificationclick', (event) => {

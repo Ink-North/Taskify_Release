@@ -1,3 +1,4 @@
+import { hexToBytes } from "@noble/hashes/utils";
 import { nip44 } from "nostr-tools";
 import type { WalletSeedBackupPayload } from "./wallet/seed";
 
@@ -43,7 +44,7 @@ export async function encryptNostrBackupPayload(
   pkHex: string,
 ): Promise<string> {
   const nip44v2 = ensureNip44v2();
-  const conversationKey = nip44v2.utils.getConversationKey(skHex, pkHex);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(skHex), pkHex);
   return nip44v2.encrypt(JSON.stringify(payload), conversationKey);
 }
 
@@ -53,7 +54,7 @@ export async function decryptNostrBackupPayload(
   pkHex: string,
 ): Promise<NostrAppBackupPayload> {
   const nip44v2 = ensureNip44v2();
-  const conversationKey = nip44v2.utils.getConversationKey(skHex, pkHex);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(skHex), pkHex);
   const plaintext = await nip44v2.decrypt(content, conversationKey);
   const parsed = JSON.parse(plaintext);
   if (!parsed || typeof parsed !== "object") {

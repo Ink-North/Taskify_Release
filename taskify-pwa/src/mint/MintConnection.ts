@@ -56,14 +56,7 @@ export class MintConnection {
   }
 
   updateHooks(options: { getP2PKPrivkey?: (pubkey: string) => string | null; onP2PKUsage?: (pubkey: string, count: number) => void }) {
-    // CashuManager currently accepts hooks only at construction; recreate if needed.
-    // To avoid disrupting existing state, prefer to update the underlying callbacks directly.
-    (this.manager as any).getP2PKPrivkey = options.getP2PKPrivkey ?? (this.manager as any).getP2PKPrivkey;
-    (this.manager as any).onP2PKUsage = options.onP2PKUsage ?? (this.manager as any).onP2PKUsage;
-  }
-
-  private normalizeUrl(url: string): string {
-    return url.trim().replace(/\/+$/, "");
+    this.manager.updateHooks(options);
   }
 
   async init() {
@@ -104,10 +97,6 @@ export class MintConnection {
 
   get proofs(): Proof[] {
     return this.manager.proofs;
-  }
-
-  replaceProofsFromSync(proofs: Proof[]) {
-    return this.manager.replaceProofsFromSync(proofs);
   }
 
   get wallet() {
@@ -213,9 +202,26 @@ export class MintConnection {
     });
   }
 
+  private buildMeltPaymentRequestId(quote: MeltQuoteResponse): string {
+    const request = typeof quote?.request === "string" ? quote.request.trim() : "";
+    if (request) return `melt-request:${request}`;
+
+    const quoteId = typeof quote?.quote === "string" ? quote.quote.trim() : "";
+    if (quoteId) return `melt-quote:${quoteId}`;
+
+    const amount = typeof quote?.amount === "number" ? quote.amount : 0;
+    const feeReserve = typeof quote?.fee_reserve === "number" ? quote.fee_reserve : 0;
+    const expiry = typeof quote?.expiry === "number" ? quote.expiry : 0;
+    return `melt-anon:${amount}:${feeReserve}:${expiry}`;
+  }
+
   async payMeltQuote(quote: MeltQuoteResponse): Promise<MeltProofsResponse> {
     await this.init();
-    const res = await this.manager.payMeltQuote(quote);
+    const requestId = this.buildMeltPaymentRequestId(quote);
+    const res = await this.paymentRequestManager.executeOnce(
+      requestId,
+      () => this.manager.payMeltQuote(quote),
+    );
     if (Array.isArray((res as any)?.change)) {
       (res as any).change = this.validateProofsDleq((res as any).change);
     }

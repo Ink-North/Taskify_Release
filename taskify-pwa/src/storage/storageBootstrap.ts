@@ -13,11 +13,11 @@ import {
   LS_RELAY_INFO_CACHE,
   LS_SPENT_NOSTR_PAYMENTS,
 } from "../localStorageKeys";
+import { LS_BACKGROUND_IMAGE } from "../domains/storageKeys";
 import { getTaskifyDb, TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./taskifyDb";
 import { idbKeyValue } from "./idbKeyValue";
 
 const TASKS_KEY = "taskify_tasks_v5";
-const TASKS_LEGACY_KEYS = ["taskify_tasks_v4"] as const;
 const BOARDS_KEY = "taskify_boards_v2";
 const EVENTS_KEY = "taskify_calendar_events_v1";
 const EXTERNAL_EVENTS_KEY = "taskify_calendar_external_events_v1";
@@ -40,17 +40,17 @@ export async function initializeStorageBoundaries(): Promise<void> {
   try {
     await getTaskifyDb();
   } catch {
-    // ignore; `idbKeyValue` can still hydrate from legacyStorage
+    // ignore; state hooks still run with in-memory values
   }
 
   // Preload keys needed during initial render.
   await Promise.all([
     idbKeyValue.initStore(TASKIFY_STORE_TASKS, [
       TASKS_KEY,
-      ...TASKS_LEGACY_KEYS,
       BOARDS_KEY,
       EVENTS_KEY,
       EXTERNAL_EVENTS_KEY,
+      LS_BACKGROUND_IMAGE,
     ]),
     idbKeyValue.initStore(TASKIFY_STORE_WALLET, [
       CASHU_PROOFS_KEY,

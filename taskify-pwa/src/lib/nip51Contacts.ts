@@ -92,7 +92,7 @@ function normalizePrivateItems(raw: unknown): string[][] {
 
 export async function encryptNip51PrivateItems(items: string[][], keys: Nip51ContactKeys): Promise<string> {
   const nip44v2 = ensureNip44V2();
-  const conversationKey = nip44v2.utils.getConversationKey(keys.privateKeyHex, keys.publicKeyHex);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(keys.privateKeyHex), keys.publicKeyHex);
   return nip44v2.encrypt(JSON.stringify(items), conversationKey);
 }
 
@@ -100,7 +100,7 @@ export async function decryptNip51PrivateItems(content: string, keys: Nip51Conta
   const nip44v2 = ensureNip44V2();
   const trimmed = (content || "").trim();
   if (!trimmed) return [];
-  const conversationKey = nip44v2.utils.getConversationKey(keys.privateKeyHex, keys.publicKeyHex);
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(keys.privateKeyHex), keys.publicKeyHex);
   const plaintext = await nip44v2.decrypt(trimmed, conversationKey);
   return normalizePrivateItems(JSON.parse(plaintext));
 }

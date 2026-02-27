@@ -1,21 +1,10 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
-import RecoveryScreen from './recovery/RecoveryScreen'
-import { isRecoveryUrl } from './recovery/recoveryRouting'
-import { kvStorage } from './storage/kvStorage'
-import {
-  BOOT_ATTEMPTS_KEY,
-  FORCE_RECOVERY_PROMPT_KEY,
-  LAST_BOOT_OK_TS_KEY,
-  LAST_BOOT_TS_KEY,
-} from './storage/recoveryKeys'
-import { MIGRATION_STATE_KEY } from './storage/storageWriteLock'
 
 const root = createRoot(document.getElementById('root')!);
-const CRASH_WINDOW_MS = 2 * 60 * 1000;
 
-async function bootstrapApp(): Promise<boolean> {
+async function bootstrapApp(): Promise<void> {
   const [{ default: process }, { Buffer }] = await Promise.all([
     import('process'),
     import('buffer'),
@@ -33,21 +22,14 @@ async function bootstrapApp(): Promise<boolean> {
   }
 
   await import('./storage/localStorageGuardrails');
-  const [{ initializeStorageBoundaries }, { resumeMigrationSafely }] = await Promise.all([
+  const [{ initializeStorageBoundaries }] = await Promise.all([
     import('./storage/storageBootstrap'),
-    import('./recovery/recoveryMigration'),
   ]);
 
   try {
     await initializeStorageBoundaries();
   } catch {
     // ignore; app can still run with in-memory fallbacks
-  }
-
-  const recoveryNeeded = await resumeMigrationSafely();
-  if (recoveryNeeded) {
-    root.render(<RecoveryScreen />);
-    return false;
   }
 
   const [
@@ -79,38 +61,8 @@ async function bootstrapApp(): Promise<boolean> {
   );
 
   setupServiceWorkers();
-  return true;
 }
-
-const manualRecovery = isRecoveryUrl();
-if (manualRecovery) {
-  root.render(<RecoveryScreen />);
-} else {
-  const now = Date.now();
-  const bootAttempts = kvStorage.getNumber(BOOT_ATTEMPTS_KEY, 0);
-  const lastBootTs = kvStorage.getNumber(LAST_BOOT_TS_KEY, 0);
-  kvStorage.getNumber(LAST_BOOT_OK_TS_KEY, 0);
-  kvStorage.getItem(MIGRATION_STATE_KEY);
-
-  const forceRecoveryPrompt = kvStorage.getBoolean(FORCE_RECOVERY_PROMPT_KEY, false);
-  const withinWindow = lastBootTs > 0 && now - lastBootTs <= CRASH_WINDOW_MS;
-  let nextAttempts = withinWindow ? bootAttempts : 0;
-  nextAttempts += 1;
-  kvStorage.setNumber(BOOT_ATTEMPTS_KEY, nextAttempts);
-  kvStorage.setNumber(LAST_BOOT_TS_KEY, now);
-
-  const crashLoopDetected = withinWindow && nextAttempts >= 3;
-  if (crashLoopDetected) {
-    kvStorage.setBoolean(FORCE_RECOVERY_PROMPT_KEY, true);
-  }
-
-  const shouldShowRecovery = forceRecoveryPrompt || crashLoopDetected;
-  if (shouldShowRecovery) {
-    root.render(<RecoveryScreen />);
-  } else {
-    void bootstrapApp().catch(() => undefined);
-  }
-}
+void bootstrapApp().catch(() => undefined);
 
 async function cleanupDevServiceWorkers() {
   try {

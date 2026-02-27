@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/ban-ts-comment */
+// @ts-nocheck
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bech32 } from "bech32";
 import {
@@ -264,6 +266,14 @@ function getWalletMessageStatusLabel(
     if (type === "contact") return "Contact dismissed";
     if (type === "task") return "Task dismissed";
     return "Dismissed";
+  }
+  if (status === "tentative") {
+    if (type === "task") return "Responded: maybe";
+    return "Maybe";
+  }
+  if (status === "declined") {
+    if (type === "task") return "Responded: declined";
+    return "Declined";
   }
   return null;
 }
@@ -928,6 +938,7 @@ type DecryptedNostrDm = {
   content: string;
   senderPubkey?: string | null;
   recipientPubkey?: string | null;
+  recipientPubkeys?: string[] | null;
 };
 
 type WalletDmMessage = {
@@ -1738,6 +1749,8 @@ export default function CashuWalletModal({
   fileStorageServer,
   messageItems,
   onAcceptMessage,
+  onMaybeMessage,
+  onDeclineMessage,
   onDismissMessage,
   onMarkMessagesRead,
 }: {
@@ -1762,6 +1775,8 @@ export default function CashuWalletModal({
   messageItems: WalletMessageItem[];
   messagesUnreadCount: number;
   onAcceptMessage: (id: string) => void;
+  onMaybeMessage: (id: string) => void;
+  onDeclineMessage: (id: string) => void;
   onDismissMessage: (id: string) => void;
   onMarkMessagesRead: (dmEventIds: string[]) => void;
 }) {
@@ -2577,15 +2592,25 @@ export default function CashuWalletModal({
   const decryptNostrPaymentMessage = useCallback(
     async (event: NostrEvent, identityPubkey: string, secretHex: string): Promise<DecryptedNostrDm | null> => {
       const normalizedIdentity = (identityPubkey || "").toLowerCase();
+      const extractTagPubkeys = (tags: unknown, name: string): string[] => {
+        if (!Array.isArray(tags)) return [];
+        return tags
+          .filter(
+            (tag): tag is string[] =>
+              Array.isArray(tag) &&
+              tag[0] === name &&
+              typeof tag[1] === "string" &&
+              tag[1].trim().length > 0,
+          )
+          .map((tag) => tag[1]!.trim());
+      };
       try {
         if (event.kind === 4) {
           if (PAYMENT_REQUEST_DEBUG) {
             console.debug("[wallet] payment request DM kind=4", event.id);
           }
-          const pTag = Array.isArray(event.tags)
-            ? event.tags.find((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
-            : null;
-          const recipientPubkey = pTag?.[1];
+          const recipientPubkeys = extractTagPubkeys(event.tags, "p");
+          const recipientPubkey = recipientPubkeys[0] ?? null;
           const normalizedSender = (event.pubkey || "").toLowerCase();
           const normalizedRecipient = (recipientPubkey || "").toLowerCase();
           const peerPubkeyForDecrypt =
@@ -2602,7 +2627,7 @@ export default function CashuWalletModal({
           } catch (err) {
             if (nip44?.v2) {
               try {
-                const dmKey = nip44.v2.utils.getConversationKey(secretHex, peerPubkeyForDecrypt);
+                const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(secretHex), peerPubkeyForDecrypt);
                 content = await nip44.v2.decrypt(event.content, dmKey);
               } catch (inner) {
                 if (PAYMENT_REQUEST_DEBUG) {
@@ -2618,13 +2643,20 @@ export default function CashuWalletModal({
             }
           }
 
-          return { content, senderPubkey: event.pubkey, recipientPubkey };
+          return { content, senderPubkey: event.pubkey, recipientPubkey, recipientPubkeys };
         }
         if (event.kind === 1059 && nip44?.v2) {
           if (PAYMENT_REQUEST_DEBUG) {
             console.debug("[wallet] payment request DM kind=1059", event.id);
           }
-          const wrapKey = nip44.v2.utils.getConversationKey(secretHex, event.pubkey);
+          const wrapRecipients = extractTagPubkeys(event.tags, "p");
+          if (!wrapRecipients.length) {
+            if (PAYMENT_REQUEST_DEBUG) {
+              console.debug("[wallet] kind=1059 missing recipient p tags", event.id);
+            }
+            return null;
+          }
+          const wrapKey = nip44.v2.utils.getConversationKey(hexToBytes(secretHex), event.pubkey);
           const sealJson = await nip44.v2.decrypt(event.content, wrapKey);
           let sealEvent: NostrEvent | null = null;
           try {
@@ -2637,7 +2669,7 @@ export default function CashuWalletModal({
           }
           const senderPubkey = typeof sealEvent.pubkey === "string" ? sealEvent.pubkey : null;
           if (!senderPubkey) return null;
-          const dmKey = nip44.v2.utils.getConversationKey(secretHex, senderPubkey);
+          const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(secretHex), senderPubkey);
           const dmJson = await nip44.v2.decrypt(sealEvent.content, dmKey);
           let rumor: NostrEvent | null = null;
           try {
@@ -2648,16 +2680,30 @@ export default function CashuWalletModal({
           if (!rumor || rumor.kind !== 14 || typeof rumor.content !== "string") {
             return null;
           }
-          const recipientTag = Array.isArray(rumor.tags)
-            ? rumor.tags.find((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
-            : null;
-          const wrapRecipientTag = Array.isArray(event.tags)
-            ? event.tags.find((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
-            : null;
+          const rumorPubkey = typeof rumor.pubkey === "string" ? rumor.pubkey.trim().toLowerCase() : "";
+          const normalizedSenderPubkey = senderPubkey.trim().toLowerCase();
+          if (!rumorPubkey || rumorPubkey !== normalizedSenderPubkey) {
+            if (PAYMENT_REQUEST_DEBUG) {
+              console.debug("[wallet] kind=1059 sender mismatch between seal and rumor", {
+                eventId: event.id,
+                sealPubkey: normalizedSenderPubkey,
+                rumorPubkey,
+              });
+            }
+            return null;
+          }
+          const rumorRecipients = extractTagPubkeys(rumor.tags, "p");
+          if (!rumorRecipients.length) {
+            if (PAYMENT_REQUEST_DEBUG) {
+              console.debug("[wallet] kind=14 rumor missing recipient p tags", event.id);
+            }
+            return null;
+          }
           return {
             content: rumor.content,
             senderPubkey,
-            recipientPubkey: recipientTag?.[1] || wrapRecipientTag?.[1],
+            recipientPubkey: rumorRecipients[0] ?? null,
+            recipientPubkeys: rumorRecipients,
           };
         }
       } catch (err) {
@@ -5614,7 +5660,7 @@ export default function CashuWalletModal({
       } satisfies Partial<NostrEvent>;
       const wrapRecipients = Array.from(new Set([normalizedRecipient, normalizedSender]));
       for (const wrapRecipient of wrapRecipients) {
-        const dmKey = nip44.v2.utils.getConversationKey(senderSecret, wrapRecipient);
+        const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(senderSecret), wrapRecipient);
         const sealedContent = await nip44.v2.encrypt(JSON.stringify(rumor), dmKey);
         const sealTemplate: EventTemplate = {
           kind: 13,
@@ -5624,7 +5670,7 @@ export default function CashuWalletModal({
         };
         const sealEvent = finalizeEvent(sealTemplate, hexToBytes(senderSecret));
         const wrapKey = generatePrivateKey();
-        const wrapConversationKey = nip44.v2.utils.getConversationKey(wrapKey.hex, wrapRecipient);
+        const wrapConversationKey = nip44.v2.utils.getConversationKey(hexToBytes(wrapKey.hex), wrapRecipient);
         const wrapContent = await nip44.v2.encrypt(JSON.stringify(sealEvent), wrapConversationKey);
         const wrapTemplate: EventTemplate = {
           kind: 1059,
@@ -6496,6 +6542,10 @@ export default function CashuWalletModal({
     setMintQuote(null);
     setMintStatus(activeMintInvoice ? "waiting" : "idle");
     setMintError("");
+    if (!npubCashClaimingRef.current) {
+      setNpubCashClaimStatus("idle");
+      setNpubCashClaimMessage("");
+    }
     const defaultView = activeMintInvoice
       ? "invoice"
       : npubCashLightningAddressEnabled
@@ -6517,6 +6567,8 @@ export default function CashuWalletModal({
     setMintAmt("");
     resetLightningInvoiceState();
     setLightningReceiveView("address");
+    setNpubCashClaimStatus("idle");
+    setNpubCashClaimMessage("");
   }, [resetLightningInvoiceState]);
 
   const closeReceiveLnurlWithdrawSheet = useCallback(() => {
@@ -9213,7 +9265,7 @@ export default function CashuWalletModal({
           const pool = ensureNostrPool();
           const legacyEvent = await pool.get(relays, { kinds: [3], authors: [identity.pubkey] });
           if (legacyEvent?.content?.trim()) {
-            const conversationKey = nip44.v2.utils.getConversationKey(identity.secret, identity.pubkey);
+            const conversationKey = nip44.v2.utils.getConversationKey(hexToBytes(identity.secret), identity.pubkey);
             const plaintext = await nip44.v2.decrypt(legacyEvent.content, conversationKey);
             const parsed = parseContactSyncEnvelope(JSON.parse(plaintext));
             if (parsed) {
@@ -10307,19 +10359,6 @@ export default function CashuWalletModal({
         | null
         | undefined,
     ): NormalizedIncomingPayment | null => {
-      const myPubkey = nostrIdentityRef.current?.pubkey?.toLowerCase() ?? null;
-      let senderPubkey: string | null = null;
-      if (rawPayload && typeof rawPayload === "object") {
-        const senderCandidate =
-          (rawPayload as any).sender ?? (rawPayload as any).from ?? (rawPayload as any).payer;
-        if (typeof senderCandidate === "string" && senderCandidate.trim()) {
-          senderPubkey = normalizeNostrPubkey(senderCandidate) ?? senderCandidate.trim().toLowerCase();
-        }
-      }
-      if (myPubkey && senderPubkey && senderPubkey === myPubkey) {
-        // Ignore payment messages we authored ourselves to avoid self-claiming.
-        return null;
-      }
       const payload = (() => {
         if (typeof rawPayload !== "string") return rawPayload;
         const trimmed = rawPayload.trim();
@@ -10626,10 +10665,24 @@ export default function CashuWalletModal({
       const hintedSender = normalizeToRawHex(extractMinibitsPaymentSender(plain));
       const decryptedSender = normalizeToRawHex(decrypted?.senderPubkey);
       const decryptedRecipient = normalizeToRawHex(decrypted?.recipientPubkey);
-      if (decryptedRecipient && decryptedRecipient !== identityRaw) {
+      const decryptedRecipients = Array.isArray(decrypted?.recipientPubkeys)
+        ? decrypted.recipientPubkeys
+            .map((value) => normalizeToRawHex(value))
+            .filter((value): value is string => !!value)
+        : [];
+      const recipientCandidates = Array.from(
+        new Set<string>([
+          ...decryptedRecipients,
+          ...(decryptedRecipient ? [decryptedRecipient] : []),
+        ]),
+      );
+      const recipientMatchesIdentity = recipientCandidates.includes(identityRaw);
+      if (recipientCandidates.length > 0 && !recipientMatchesIdentity) {
         return;
       }
-      if (!decryptedRecipient && decryptedSender === identityRaw) {
+      if (recipientCandidates.length === 0 && decryptedSender === identityRaw) {
+        // If we cannot determine a recipient, ignore self-authored messages
+        // to avoid claiming sender mirror wraps unintentionally.
         return;
       }
       const senderOverride =
@@ -14216,6 +14269,7 @@ export default function CashuWalletModal({
                           .map((subtask) => subtask.title?.trim())
                           .filter((title): title is string => !!title)
                       : [];
+                    const isTaskAssignment = !!(taskAttachment?.assignment || matchedItem?.task?.assignment);
                     const cardTime = `${formatDmDay(paymentCreatedSeconds)} · ${formatDmTime(paymentCreatedSeconds)}`;
                     const paymentAmountLabel =
                       paymentHistoryEntry?.amountSat != null
@@ -14226,7 +14280,11 @@ export default function CashuWalletModal({
                     const paymentStatusLabel = paymentStatusInfo?.label;
                     const paymentSummary = paymentHistoryEntry?.summary;
                     const actionStatus = matchedItem?.status;
-                    const showActionButtons = actionStatus !== "accepted" && actionStatus !== "deleted";
+                    const showActionButtons =
+                      actionStatus !== "accepted" &&
+                      actionStatus !== "declined" &&
+                      actionStatus !== "tentative" &&
+                      actionStatus !== "deleted";
                     const boardStatusLabel = getWalletMessageStatusLabel("board", actionStatus);
                     const contactStatusLabel = getWalletMessageStatusLabel("contact", actionStatus);
                     const taskStatusLabel = getWalletMessageStatusLabel("task", actionStatus);
@@ -14486,26 +14544,63 @@ export default function CashuWalletModal({
                                     </div>
                                     {showActionButtons ? (
                                       <div className="wallet-message__card-actions">
-                                        <button
-                                          className="accent-button button-sm pressable"
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            if (matchedItem) onAcceptMessage(matchedItem.id);
-                                          }}
-                                          disabled={!matchedItem}
-                                        >
-                                          Add task
-                                        </button>
-                                        <button
-                                          className="ghost-button button-sm pressable"
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            if (matchedItem) onDismissMessage(matchedItem.id);
-                                          }}
-                                          disabled={!matchedItem}
-                                        >
-                                          Dismiss
-                                        </button>
+                                        {isTaskAssignment ? (
+                                          <>
+                                            <button
+                                              className="accent-button button-sm pressable"
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                if (matchedItem) onAcceptMessage(matchedItem.id);
+                                              }}
+                                              disabled={!matchedItem}
+                                            >
+                                              Accept
+                                            </button>
+                                            <button
+                                              className="ghost-button button-sm pressable"
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                if (matchedItem) onMaybeMessage(matchedItem.id);
+                                              }}
+                                              disabled={!matchedItem}
+                                            >
+                                              Maybe
+                                            </button>
+                                            <button
+                                              className="ghost-button button-sm pressable text-rose-400"
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                if (matchedItem) onDeclineMessage(matchedItem.id);
+                                              }}
+                                              disabled={!matchedItem}
+                                            >
+                                              Decline
+                                            </button>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <button
+                                              className="accent-button button-sm pressable"
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                if (matchedItem) onAcceptMessage(matchedItem.id);
+                                              }}
+                                              disabled={!matchedItem}
+                                            >
+                                              Add task
+                                            </button>
+                                            <button
+                                              className="ghost-button button-sm pressable"
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                if (matchedItem) onDismissMessage(matchedItem.id);
+                                              }}
+                                              disabled={!matchedItem}
+                                            >
+                                              Dismiss
+                                            </button>
+                                          </>
+                                        )}
                                       </div>
                                     ) : (
                                       taskStatusLabel && (

@@ -31,20 +31,31 @@ export function normalizeNostrPubkey(input: string | null | undefined): string |
   try {
     const decoded = nip19.decode(lowerValue);
     if (decoded.type !== "npub" || !decoded.data) return null;
-    if (typeof decoded.data === "string") {
-      if (/^[0-9a-f]{64}$/.test(decoded.data)) return `02${decoded.data.toLowerCase()}`;
+    const decodedData: unknown = decoded.data;
+    if (typeof decodedData === "string") {
+      if (/^[0-9a-f]{64}$/.test(decodedData)) return `02${decodedData.toLowerCase()}`;
       return null;
     }
-    if (decoded.data instanceof Uint8Array) {
-      return `02${bytesToHex(decoded.data).toLowerCase()}`;
+    if (decodedData instanceof Uint8Array) {
+      return `02${bytesToHex(decodedData).toLowerCase()}`;
     }
-    if (Array.isArray(decoded.data)) {
-      return `02${arrayLikeToHex(decoded.data).toLowerCase()}`;
+    if (Array.isArray(decodedData)) {
+      return `02${arrayLikeToHex(decodedData).toLowerCase()}`;
     }
   } catch {
     // fall through to null
   }
   return null;
+}
+
+export function toNpub(input: string | null | undefined): string | null {
+  const normalized = normalizeNostrPubkey(input);
+  if (!normalized) return null;
+  try {
+    return nip19.npubEncode(normalized.slice(-64));
+  } catch {
+    return null;
+  }
 }
 
 export function isValidNostrPubkeyHex(value: string | null | undefined): value is string {

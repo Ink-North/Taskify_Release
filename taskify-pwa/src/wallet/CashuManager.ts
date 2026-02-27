@@ -51,8 +51,9 @@ export class CashuManager {
   readonly mintUrl: string;
   wallet!: Wallet;
   unit = "sat";
-  private readonly getP2PKPrivkey?: (pubkey: string) => string | null;
-  private readonly onP2PKUsage?: (pubkey: string, count: number) => void;
+  private static readonly REFRESH_RETRY_CODES = new Set<number>([11005, 12001, 12002]);
+  private getP2PKPrivkey?: (pubkey: string) => string | null;
+  private onP2PKUsage?: (pubkey: string, count: number) => void;
   private proofCache: Proof[] = [];
   private pendingMeltBlanks = new Map<string, MeltBlanks>();
 
@@ -60,6 +61,11 @@ export class CashuManager {
     this.mintUrl = mintUrl.replace(/\/$/, "");
     this.getP2PKPrivkey = options?.getP2PKPrivkey;
     this.onP2PKUsage = options?.onP2PKUsage;
+  }
+
+  updateHooks(options: { getP2PKPrivkey?: (pubkey: string) => string | null; onP2PKUsage?: (pubkey: string, count: number) => void }) {
+    if (options.getP2PKPrivkey !== undefined) this.getP2PKPrivkey = options.getP2PKPrivkey;
+    if (options.onP2PKUsage !== undefined) this.onP2PKUsage = options.onP2PKUsage;
   }
 
   private resolveMintPubkeyForProof(proof: Proof): string | null {
@@ -144,7 +150,6 @@ export class CashuManager {
       }
       const signedChange = this.autoSignProofs(change);
       this.validateDleqProofs(signedChange);
-      this.mergeProofs(signedChange);
       this.clearMeltBlanksByQuote(target);
       return signedChange;
     } catch (error) {
@@ -183,6 +188,23 @@ export class CashuManager {
 
   private static proofKey(proof: Proof): string {
     return `${proof.secret ?? ""}|${proof.C ?? ""}|${proof.id ?? ""}|${proof.amount ?? 0}`;
+  }
+
+  private static proofStorageKey(proof: Proof): string {
+    return proof.secret ? `secret:${proof.secret}` : `key:${CashuManager.proofKey(proof)}`;
+  }
+
+  private static dedupeProofs(proofs: Proof[]): Proof[] {
+    const seen = new Set<string>();
+    const deduped: Proof[] = [];
+    for (const proof of proofs) {
+      if (!proof || typeof proof !== "object") continue;
+      const key = CashuManager.proofStorageKey(proof);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(proof);
+    }
+    return deduped;
   }
 
   private extractProofPubkeys(proof: Proof): string[] {
@@ -319,6 +341,89 @@ export class CashuManager {
     return null;
   }
 
+  private static toErrorMessage(error: unknown): string {
+    if (typeof error === "string") return error.toLowerCase();
+    if (error && typeof error === "object") {
+      const message = typeof (error as any).message === "string" ? (error as any).message : "";
+      const detail = typeof (error as any).detail === "string" ? (error as any).detail : "";
+      const responseDetail =
+        typeof (error as any)?.response?.data?.detail === "string"
+          ? (error as any).response.data.detail
+          : "";
+      return `${message} ${detail} ${responseDetail}`.toLowerCase();
+    }
+    return "";
+  }
+
+  private static readErrorCode(error: unknown): number | null {
+    if (!error || typeof error !== "object") return null;
+    const codeCandidates = [
+      (error as any).code,
+      (error as any)?.response?.data?.code,
+    ];
+    for (const value of codeCandidates) {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return Math.floor(value);
+      }
+      if (typeof value === "string") {
+        const parsed = Number.parseInt(value, 10);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+    }
+    return null;
+  }
+
+  private static shouldRefreshMintState(error: unknown): boolean {
+    const code = CashuManager.readErrorCode(error);
+    if (code !== null && CashuManager.REFRESH_RETRY_CODES.has(code)) {
+      return true;
+    }
+    const message = CashuManager.toErrorMessage(error);
+    if (!message) return false;
+    return (
+      message.includes("no keyset found") ||
+      message.includes("keyset") ||
+      message.includes("input_fee_ppk") ||
+      message.includes("transaction is not balanced") ||
+      message.includes("wallet keyset has no keys")
+    );
+  }
+
+  private static shouldRebuildWallet(error: unknown): boolean {
+    const message = CashuManager.toErrorMessage(error);
+    return (
+      message.includes("wallet keyset has no keys after refresh") ||
+      message.includes("keyset has no keys loaded") ||
+      message.includes("keyset '") ||
+      message.includes("no active keyset found")
+    );
+  }
+
+  private async refreshMintState() {
+    try {
+      await this.wallet.loadMint(true);
+      return;
+    } catch (error) {
+      if (!CashuManager.shouldRebuildWallet(error)) {
+        throw error;
+      }
+      console.warn("CashuManager: rebuilding wallet after mint keyset change", error);
+      await this.init();
+    }
+  }
+
+  private async withMintRefreshRetry<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!CashuManager.shouldRefreshMintState(error)) {
+        throw error;
+      }
+      await this.refreshMintState();
+      return operation();
+    }
+  }
+
   async init() {
     const mint = new MintCtor(this.mintUrl);
     const seed = getWalletSeedBytes();
@@ -365,91 +470,41 @@ export class CashuManager {
     setProofs(this.mintUrl, sanitized);
   }
 
-  replaceProofsFromSync(proofs: Proof[]) {
-    // Overwrite cache and storage with proofs from an external sync source (e.g., NIP-60).
-    this.persistProofs(proofs);
-  }
-
-  private removeProofsBySecrets(secrets: Set<string>) {
-    if (!secrets.size) return;
-    const filtered = this.proofCache.filter((proof) => !secrets.has(proof?.secret ?? ""));
-    if (filtered.length === this.proofCache.length) return;
-    this.persistProofs(filtered);
-  }
-
   private mergeProofs(proofs: Proof[]) {
     if (!Array.isArray(proofs) || proofs.length === 0) return;
-    const merged = [...this.proofCache, ...proofs];
-    const seen = new Set<string>();
-    const deduped: Proof[] = [];
-    for (const proof of merged) {
-      if (!proof || typeof proof !== "object") continue;
-      const key = proof.secret ? `secret:${proof.secret}` : `key:${CashuManager.proofKey(proof)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      deduped.push(proof);
-    }
-    this.persistProofs(deduped);
+    const merged = CashuManager.dedupeProofs([...this.proofCache, ...proofs]);
+    this.persistProofs(merged);
   }
 
-  private selectProofsForAmount(amount: number, includeFees = false): Proof[] {
-    if (!Number.isFinite(amount) || amount <= 0) {
-      throw new Error("Amount must be greater than zero");
-    }
-    const target = Math.floor(amount);
-    if (this.balance < target) {
-      throw new Error("Insufficient balance");
-    }
-    const walletAny = this.wallet as Wallet & {
-      selectProofsToSend?: (
-        proofs: Proof[],
-        amountToSend: number,
-        includeFees?: boolean,
-        exactMatch?: boolean,
-      ) => { send?: Proof[] };
-    };
-    if (typeof walletAny?.selectProofsToSend === "function") {
-      try {
-        const selection = walletAny.selectProofsToSend([...this.proofCache], target, includeFees, true);
-        if (selection?.send?.length) {
-          return selection.send;
-        }
-      } catch (error) {
-        console.warn("CashuManager: proof pre-selection failed, falling back to greedy selection", error);
-      }
-    }
-    const sorted = [...this.proofCache].sort((a, b) => (b?.amount || 0) - (a?.amount || 0));
-    const picked: Proof[] = [];
-    let runningTotal = 0;
-    for (const proof of sorted) {
-      if (!proof || typeof proof.amount !== "number" || proof.amount <= 0) continue;
-      picked.push(proof);
-      runningTotal += proof.amount;
-      if (runningTotal >= target) break;
-    }
-    if (runningTotal < target) {
-      throw new Error("Insufficient balance");
-    }
-    return picked;
+  private mergeProofSets(...sets: Proof[][]): Proof[] {
+    return CashuManager.dedupeProofs(
+      sets.flatMap((entry) => (Array.isArray(entry) ? entry : [])),
+    );
   }
 
-  private persistAfterSpend(consumed: Proof[], kept: Proof[]) {
-    if (!Array.isArray(consumed) || !consumed.length) {
-      this.persistProofs([...this.proofCache, ...kept]);
-      return;
+  private isMeltQuotePaid(quote: MeltQuoteResponse | null | undefined): boolean {
+    const state = typeof quote?.state === "string" ? quote.state.toUpperCase() : "";
+    return state === "PAID";
+  }
+
+  private async checkMeltQuoteSafe(quote: MeltQuoteResponse): Promise<MeltQuoteResponse | null> {
+    const quoteId = CashuManager.extractQuoteKey(quote);
+    if (!quoteId) return null;
+    try {
+      const walletAny = this.wallet as Wallet & {
+        checkMeltQuote?: (quoteOrId: string | MeltQuoteResponse) => Promise<MeltQuoteResponse>;
+      };
+      if (typeof walletAny.checkMeltQuote !== "function") return null;
+      const status = await walletAny.checkMeltQuote(quoteId);
+      return {
+        ...status,
+        request: status.request ?? quote.request,
+        unit: status.unit ?? quote.unit,
+      } as MeltQuoteResponse;
+    } catch (error) {
+      console.warn("CashuManager: failed to check melt quote after error", error);
+      return null;
     }
-    const consumedKeys = new Set<string>();
-    for (const proof of consumed) {
-      if (!proof) continue;
-      const key = proof.secret ? `secret:${proof.secret}` : `key:${CashuManager.proofKey(proof)}`;
-      consumedKeys.add(key);
-    }
-    const survivors = this.proofCache.filter((proof) => {
-      if (!proof) return false;
-      const key = proof.secret ? `secret:${proof.secret}` : `key:${CashuManager.proofKey(proof)}`;
-      return !consumedKeys.has(key);
-    });
-    this.persistProofs([...survivors, ...kept]);
   }
 
   get balance(): number {
@@ -506,8 +561,10 @@ export class CashuManager {
   }
 
   async claimMint(quoteId: string, amount: number) {
-    const config: Record<string, any> = { proofsWeHave: [...this.proofCache] };
-    const proofs = await this.wallet.mintProofs(amount, quoteId, config);
+    const proofs = await this.withMintRefreshRetry(async () => {
+      const config: Record<string, any> = { proofsWeHave: [...this.proofCache] };
+      return this.wallet.mintProofs(amount, quoteId, config);
+    });
     const signed = this.autoSignProofs(proofs);
     this.validateDleqProofs(signed);
     this.mergeProofs(signed);
@@ -517,13 +574,15 @@ export class CashuManager {
   async receiveToken(encoded: string) {
     const privkeyMap = this.resolvePrivkeysForToken(encoded);
     const privkeyValues = [...privkeyMap.values()].map((entry) => entry.privkey);
-    const receiveConfig: Record<string, any> = { proofsWeHave: [...this.proofCache] };
-    if (privkeyValues.length === 1) {
-      receiveConfig.privkey = privkeyValues[0];
-    } else if (privkeyValues.length > 1) {
-      receiveConfig.privkey = privkeyValues;
-    }
-    const newProofs = await this.wallet.receive(encoded, receiveConfig);
+    const newProofs = await this.withMintRefreshRetry(async () => {
+      const receiveConfig: Record<string, any> = { proofsWeHave: [...this.proofCache] };
+      if (privkeyValues.length === 1) {
+        receiveConfig.privkey = privkeyValues[0];
+      } else if (privkeyValues.length > 1) {
+        receiveConfig.privkey = privkeyValues;
+      }
+      return this.wallet.receive(encoded, receiveConfig);
+    });
     const signed = this.autoSignProofs(newProofs);
     this.validateDleqProofs(signed);
     this.mergeProofs(signed);
@@ -577,15 +636,6 @@ export class CashuManager {
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new Error("Amount must be greater than zero");
     }
-    if (!options?.p2pk) {
-      const exactSubset = this.findExactProofSubset(amount);
-      if (exactSubset) {
-        const token = getEncodedToken({ mint: this.mintUrl, proofs: exactSubset, unit: this.unit });
-        this.persistAfterSpend(exactSubset, []);
-        return { token, send: exactSubset, keep: [], lockInfo: undefined };
-      }
-    }
-    const selected = this.selectProofsForAmount(amount, !!options?.p2pk);
     let outputConfig: OutputConfig | undefined;
     if (options?.p2pk) {
       const pubkey = options.p2pk.pubkey;
@@ -599,46 +649,20 @@ export class CashuManager {
         },
       } satisfies OutputConfig;
     }
-    const { keep, send } = await this.wallet.send(amount, selected, { proofsWeHave: [...this.proofCache] }, outputConfig);
+    const { keep, send } = await this.withMintRefreshRetry(async () => {
+      const response = await this.wallet.send(
+        amount,
+        [...this.proofCache],
+        { proofsWeHave: [...this.proofCache] },
+        outputConfig,
+      );
+      return { keep: response.keep, send: response.send };
+    });
     this.validateDleqProofs([...keep, ...send]);
-    this.persistAfterSpend(selected, keep);
+    this.persistProofs(this.mergeProofSets(keep));
     const token = getEncodedToken({ mint: this.mintUrl, proofs: send, unit: this.unit });
     const lockInfo: SendTokenLockInfo = options?.p2pk ? { type: "p2pk", options: options.p2pk } : undefined;
     return { token, send, keep, lockInfo };
-  }
-
-  private findExactProofSubset(amount: number): Proof[] | null {
-    if (!Number.isFinite(amount) || amount <= 0) return null;
-    const target = Math.floor(amount);
-    if (target <= 0) return null;
-    const pathMap = new Map<number, { prevSum: number; proofIndex: number } | null>();
-    pathMap.set(0, null);
-    this.proofCache.forEach((proof, proofIndex) => {
-      const normalizedAmount = Math.floor(proof?.amount ?? 0);
-      if (!proof || normalizedAmount <= 0) return;
-      const existingSums = Array.from(pathMap.keys()).sort((a, b) => b - a);
-      for (const sum of existingSums) {
-        const nextSum = sum + normalizedAmount;
-        if (nextSum > target || pathMap.has(nextSum)) continue;
-        pathMap.set(nextSum, { prevSum: sum, proofIndex });
-      }
-    });
-    if (!pathMap.has(target)) return null;
-    const selection: Proof[] = [];
-    const used = new Set<number>();
-    let current = target;
-    while (current > 0) {
-      const entry = pathMap.get(current);
-      if (!entry) return null;
-      if (used.has(entry.proofIndex)) return null;
-      const proof = this.proofCache[entry.proofIndex];
-      if (!proof) return null;
-      selection.push(proof);
-      used.add(entry.proofIndex);
-      current = entry.prevSum;
-    }
-    selection.reverse();
-    return selection.length ? selection : null;
   }
 
   async checkProofStates(proofs: Proof[]): Promise<ProofState[]> {
@@ -720,7 +744,7 @@ export class CashuManager {
   }
 
   async createMeltQuote(invoice: string): Promise<MeltQuoteResponse> {
-    const quote = await this.wallet.createMeltQuote(invoice);
+    const quote = await this.withMintRefreshRetry(() => this.wallet.createMeltQuote(invoice));
     return quote as MeltQuoteResponse; // {quote, amount, fee_reserve, request, state, expiry, unit}
   }
 
@@ -733,39 +757,71 @@ export class CashuManager {
   private async executeMeltQuote(quote: MeltQuoteResponse): Promise<MeltProofsResponse> {
     const required = this.requiredForQuote(quote);
     if (this.balance < required) throw new Error("Insufficient balance for invoice + fees");
-    const selected = this.selectProofsForAmount(required, true);
-    const { keep, send } = await this.wallet.send(required, selected, { proofsWeHave: [...this.proofCache] });
-    this.persistAfterSpend(selected, keep);
+    const { keep, send } = await this.withMintRefreshRetry(async () => {
+      const swapped = await this.wallet.send(
+        required,
+        [...this.proofCache],
+        { proofsWeHave: [...this.proofCache] },
+      );
+      this.validateDleqProofs([...swapped.keep, ...swapped.send]);
+      return { keep: swapped.keep, send: swapped.send };
+    });
+    const proofsIfMeltUnpaid = this.mergeProofSets(keep, send);
 
     let storedKey: string | null = null;
-    const res = await this.wallet.meltProofs(quote as MeltQuoteResponse, send, {
-      onChangeOutputsCreated: (blanks) => {
-        storedKey = this.rememberMeltBlanks(blanks);
-      },
-    });
+    let res: MeltProofsResponse;
+    try {
+      res = await this.wallet.meltProofs(quote as MeltQuoteResponse, send, {
+        onChangeOutputsCreated: (blanks) => {
+          storedKey = this.rememberMeltBlanks(blanks);
+        },
+      });
+    } catch (error) {
+      this.persistProofs(proofsIfMeltUnpaid);
+      const status = await this.checkMeltQuoteSafe(quote);
+      if (!status || !this.isMeltQuotePaid(status)) {
+        throw error;
+      }
+      const recoveredChange = await this.finalizeStoredMeltChange(status);
+      const paidProofs = this.mergeProofSets(keep, Array.isArray(recoveredChange) ? recoveredChange : []);
+      this.persistProofs(paidProofs);
+      return {
+        quote: status,
+        change: Array.isArray(recoveredChange) ? recoveredChange : [],
+      };
+    }
 
     const responseKey =
       CashuManager.extractQuoteKey(res?.quote) ?? storedKey ?? CashuManager.extractQuoteKey(quote);
 
-    if (res?.change?.length) {
-      const signedChange = this.autoSignProofs(res.change);
+    let resolvedChange: Proof[] = Array.isArray(res?.change) ? res.change : [];
+    if (resolvedChange.length) {
+      const signedChange = this.autoSignProofs(resolvedChange);
       this.validateDleqProofs(signedChange);
-      this.mergeProofs(signedChange);
       res.change = signedChange;
+      resolvedChange = signedChange;
       if (responseKey) this.clearMeltBlanksByQuote(responseKey);
-      return res;
     }
 
-    if (responseKey) {
+    if (responseKey && !resolvedChange.length) {
       const blanks = this.getStoredMeltBlanks(responseKey);
-      if (blanks && res?.quote?.state === "PAID") {
+      if (blanks && this.isMeltQuotePaid(res?.quote as MeltQuoteResponse)) {
         const finalized = await this.finalizeStoredMeltChange(responseKey);
         if (Array.isArray(finalized)) {
           res.change = finalized;
+          resolvedChange = finalized;
         }
       } else if (!blanks) {
         this.clearMeltBlanksByQuote(responseKey);
       }
+    }
+
+    if (this.isMeltQuotePaid(res?.quote as MeltQuoteResponse)) {
+      const paidProofs = this.mergeProofSets(keep, resolvedChange);
+      this.persistProofs(paidProofs);
+      if (responseKey) this.clearMeltBlanksByQuote(responseKey);
+    } else {
+      this.persistProofs(proofsIfMeltUnpaid);
     }
 
     return res;
@@ -796,7 +852,7 @@ export class CashuManager {
     let attempt = Math.min(Math.floor(targetAmount), Math.floor(balance));
     if (!Number.isFinite(attempt) || attempt <= 0) return null;
     while (attempt > 0) {
-      const quote = await this.wallet.createMultiPathMeltQuote(invoice, attempt);
+      const quote = await this.withMintRefreshRetry(() => this.wallet.createMultiPathMeltQuote(invoice, attempt));
       const required = this.requiredForQuote(quote as MeltQuoteResponse);
       if (required <= balance) {
         return { quote: quote as MeltQuoteResponse, amount: quote.amount ?? attempt, required };
@@ -819,7 +875,7 @@ export class CashuManager {
   }
 
   async payInvoice(invoice: string): Promise<MeltProofsResponse> {
-    const meltQuote = await this.wallet.createMeltQuote(invoice);
+    const meltQuote = await this.createMeltQuote(invoice);
     return this.executeMeltQuote(meltQuote as MeltQuoteResponse);
   }
 }

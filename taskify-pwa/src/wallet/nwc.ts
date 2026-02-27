@@ -22,6 +22,12 @@ export type NwcResponse<T> = {
 const NWC_EVENT_KIND_REQUEST = 23194;
 const NWC_EVENT_KIND_RESPONSE = 23195;
 
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 function hexToBytes(hex: string): Uint8Array {
   const clean = hex.trim().toLowerCase().replace(/^0x/, "");
   if (clean.length % 2 !== 0) throw new Error("Invalid hex");
@@ -62,15 +68,34 @@ function decodePubkey(raw: string): { hex: string; npub: string; relays?: string
   try {
     const decoded = nip19.decode(cleaned);
     if (decoded.type === "npub") {
-      return { hex: decoded.data as string, npub: cleaned };
+      const decodedData: unknown = decoded.data;
+      let hex = "";
+      if (typeof decodedData === "string") {
+        hex = decodedData;
+      } else if (decodedData instanceof Uint8Array) {
+        hex = bytesToHex(decodedData);
+      } else if (Array.isArray(decodedData)) {
+        hex = bytesToHex(Uint8Array.from(decodedData as number[]));
+      }
+      if (/^[0-9a-fA-F]{64}$/.test(hex)) {
+        const normalized = hex.toLowerCase();
+        return { hex: normalized, npub: nip19.npubEncode(normalized) };
+      }
+      throw new Error("Unsupported npub payload");
     }
     if (decoded.type === "nprofile") {
-      const data = decoded.data as { pubkey: string; relays?: string[] };
-      return { hex: data.pubkey, npub: nip19.npubEncode(data.pubkey), relays: data.relays };
-    }
-    if (decoded.type === "pubkey") {
-      const hex = decoded.data as string;
-      return { hex, npub: nip19.npubEncode(hex) };
+      const data = decoded.data as { pubkey: string | Uint8Array; relays?: string[] };
+      const pubkey =
+        typeof data.pubkey === "string"
+          ? data.pubkey
+          : data.pubkey instanceof Uint8Array
+            ? bytesToHex(data.pubkey)
+            : "";
+      if (/^[0-9a-fA-F]{64}$/.test(pubkey)) {
+        const normalized = pubkey.toLowerCase();
+        return { hex: normalized, npub: nip19.npubEncode(normalized), relays: data.relays };
+      }
+      throw new Error("Unsupported nprofile payload");
     }
   } catch {}
   const hexMatch = cleaned.match(/^[0-9a-fA-F]{64}$/);
@@ -88,7 +113,16 @@ function decodeSecret(raw: string | null): { hex: string } {
   try {
     const decoded = nip19.decode(cleaned);
     if (decoded.type === "nsec") {
-      return { hex: decoded.data as string };
+      const decodedData: unknown = decoded.data;
+      if (typeof decodedData === "string" && /^[0-9a-fA-F]{64}$/.test(decodedData)) {
+        return { hex: decodedData.toLowerCase() };
+      }
+      if (decodedData instanceof Uint8Array) {
+        return { hex: bytesToHex(decodedData) };
+      }
+      if (Array.isArray(decodedData)) {
+        return { hex: bytesToHex(Uint8Array.from(decodedData as number[])) };
+      }
     }
   } catch {}
   if (/^[0-9a-fA-F]{64}$/.test(cleaned)) {
@@ -138,7 +172,11 @@ export function parseNwcUri(input: string): ParsedNwcUri {
 }
 
 export class NwcClient {
-  constructor(private readonly connection: ParsedNwcUri) {}
+  private readonly connection: ParsedNwcUri;
+
+  constructor(connection: ParsedNwcUri) {
+    this.connection = connection;
+  }
 
   async request<T = unknown>(method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }): Promise<T> {
     const { relayUrls } = this.connection;
@@ -178,7 +216,6 @@ export class NwcClient {
             created_at: Math.floor(Date.now() / 1000),
             content: encrypted,
             tags: [["p", this.connection.walletPubkey], ["t", "nwc"]],
-            pubkey: this.connection.clientPubkey,
           };
           const subscription = await session.subscribe(
             [{ kinds: [NWC_EVENT_KIND_RESPONSE], "#p": [this.connection.clientPubkey] }],

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getBibleChapterVerseCount } from "../data/bibleVerseCounts";
 import { BIBLE_BOOKS } from "./BibleTracker";
@@ -325,6 +325,44 @@ function ScripturePickerOverlay({
   selectionLabel,
   verseCount,
 }: ScripturePickerOverlayProps) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  // Store previously focused element and restore on close
+  useEffect(() => {
+    if (picker.open) {
+      previousFocusRef.current = document.activeElement as HTMLElement | null;
+      // Focus the dialog on open
+      requestAnimationFrame(() => overlayRef.current?.focus());
+    } else if (previousFocusRef.current) {
+      previousFocusRef.current.focus();
+      previousFocusRef.current = null;
+    }
+  }, [picker.open]);
+
+  // Focus trap: keep Tab within the overlay
+  useEffect(() => {
+    if (!picker.open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || !overlayRef.current) return;
+      const focusable = overlayRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [picker.open]);
+
   if (!picker.open) return null;
   if (typeof document === "undefined") return null;
 
@@ -345,7 +383,7 @@ function ScripturePickerOverlay({
   const showBackButton = picker.step !== "book";
 
   return createPortal(
-    <div className="verse-dialog-backdrop" role="dialog" aria-modal="true">
+    <div ref={overlayRef} className="verse-dialog-backdrop" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
       <div className="scripture-picker glass-panel" onClick={(event) => event.stopPropagation()}>
         <div className="scripture-picker__header">
           {showBackButton ? (
@@ -365,13 +403,13 @@ function ScripturePickerOverlay({
         </div>
 
         {picker.step === "book" ? (
-          <div className="scripture-picker__body">
+          <div className="scripture-picker__body" role="list" aria-label="Bible book groups">
             {BOOK_GROUPS.map((group) => {
               const books = BIBLE_BOOKS.slice(group.start, group.end);
               return (
-                <div key={group.id} className="space-y-2">
-                  <div className="scripture-picker__section-label">{group.label}</div>
-                  <div className="scripture-picker__list">
+                <div key={group.id} className="space-y-2" role="listitem">
+                  <div className="scripture-picker__section-label" id={`group-${group.id}`}>{group.label}</div>
+                  <div className="scripture-picker__list" role="group" aria-labelledby={`group-${group.id}`}>
                     {books.map((item) => (
                       <button
                         key={item.id}

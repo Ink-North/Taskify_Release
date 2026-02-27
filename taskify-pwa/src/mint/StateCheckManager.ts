@@ -58,7 +58,11 @@ export class StateCheckManager {
         stateMap.set(proofKey(proof), states[idx]);
       });
       batch.forEach((req) => {
-        const mapped = req.proofs.map((proof) => stateMap.get(proofKey(proof)) ?? { state: "UNKNOWN" as ProofState["state"] });
+        const mapped = req.proofs.map(
+          (proof) =>
+            stateMap.get(proofKey(proof)) ??
+            ({ state: "UNKNOWN" as ProofState["state"] } as unknown as ProofState),
+        );
         req.resolve(mapped);
       });
     } catch (err) {

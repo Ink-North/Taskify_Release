@@ -150,7 +150,6 @@ const JSON_HEADERS = {
 };
 
 const MINUTE_MS = 60_000;
-const MAX_LEAD_MS = 30 * 24 * 60 * MINUTE_MS; // 30 days
 const PREVIEW_TIMEOUT_MS = 8_000;
 const PREVIEW_MAX_BYTES = 600_000;
 const PREVIEW_USER_AGENT =
@@ -2356,10 +2355,9 @@ async function handleSaveReminders(request: Request, env: Env): Promise<Response
     const dueTime = Date.parse(item.dueISO);
     if (Number.isNaN(dueTime)) continue;
     for (const minutes of item.minutesBefore) {
-      if (typeof minutes !== "number" || minutes < 0) continue;
+      if (!Number.isFinite(minutes)) continue;
       const sendAt = dueTime - minutes * MINUTE_MS;
       if (sendAt <= now - MINUTE_MS) continue; // skip very old reminders
-      if (sendAt - now > MAX_LEAD_MS) continue; // skip too far in future
       const reminderKey = `${item.taskId}:${minutes}`;
       entries.push({
         reminderKey,
