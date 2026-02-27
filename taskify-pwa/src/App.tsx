@@ -171,6 +171,7 @@ import { BoardKeyManager } from "./nostr/BoardKeyManager";
 import { publishFileServerPreference } from "./nostr/ProfilePublisher";
 import { EcashGlyph } from "./components/EcashGlyph";
 import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
+import { AgentModeOnboarding } from "./onboarding/AgentModeOnboarding";
 import {
   buildBoardShareEnvelope,
   buildCalendarEventInviteEnvelope,
@@ -1726,6 +1727,7 @@ const LS_UPCOMING_SORT = "taskify_upcoming_sort_v1";
 const LS_UPCOMING_BOARD_GROUPING = "taskify_upcoming_board_grouping_v1";
 const LS_UPCOMING_FILTER_PRESETS = "taskify_upcoming_filter_presets_v1";
 const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
+const LS_AGENT_MODE_ONBOARDING_DONE = "taskify_agent_onboarding_done_v1";
 const LS_BIBLE_TRACKER = "taskify_bible_tracker_v1";
 const LS_BIBLE_PRINT_PAPER = "taskify_bible_print_paper_v1";
 const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
@@ -7509,11 +7511,26 @@ export default function App() {
       return false;
     }
   });
+  const [showAgentModeOnboarding, setShowAgentModeOnboarding] = useState<boolean>(() => {
+    if (!agentSessionEnabled) return false;
+    try {
+      return kvStorage.getItem(LS_AGENT_MODE_ONBOARDING_DONE) !== "done";
+    } catch {
+      return true;
+    }
+  });
 
   useEffect(() => {
     if (!agentSessionEnabled) return;
     setShowAgentPanel(true);
   }, [agentSessionEnabled]);
+
+  const completeAgentModeOnboarding = useCallback(() => {
+    try {
+      kvStorage.setItem(LS_AGENT_MODE_ONBOARDING_DONE, "done");
+    } catch {}
+    setShowAgentModeOnboarding(false);
+  }, []);
 
   const nostrBackupPublishedSnapshotRef = useRef<string | null>(null);
   const nostrBackupDebounceTimerRef = useRef<number | null>(null);
@@ -7965,6 +7982,17 @@ export default function App() {
     () => commitAgentSecurityConfig(clearTrustedNpubs(agentSecurityConfigRef.current)),
     [commitAgentSecurityConfig],
   );
+  const setStrictWithTrustedAgentNpub = useCallback(
+    (npub: string) => {
+      const seeded = addTrustedNpubToConfig(agentSecurityConfigRef.current, npub);
+      return commitAgentSecurityConfig({
+        ...seeded,
+        enabled: true,
+        mode: "strict",
+      });
+    },
+    [commitAgentSecurityConfig],
+  );
   const openShareBoard = useCallback(() => {
     if (shouldReloadForNavigation()) return;
     if (!currentBoard) return;
@@ -8099,6 +8127,7 @@ export default function App() {
     }
   }, []);
   const [showFirstRunOnboarding, setShowFirstRunOnboarding] = useState(() => {
+    if (agentSessionEnabled) return false;
     if (!onboardingNeedsKeySelection) return false;
     try {
       return kvStorage.getItem(LS_FIRST_RUN_ONBOARDING_DONE) !== "done";
@@ -19614,7 +19643,7 @@ export default function App() {
         </Modal>
       )}
 
-      {showFirstRunOnboarding && (
+      {!agentSessionEnabled && showFirstRunOnboarding && (
         <Modal onClose={() => {}} title="Welcome to Taskify" showClose={false}>
           <FirstRunOnboarding
             pushSupported={onboardingPushSupported}
@@ -19626,6 +19655,16 @@ export default function App() {
             onRestoreFromCloud={handleOnboardingRestoreFromCloud}
             onEnableNotifications={handleOnboardingEnableNotifications}
             onComplete={completeFirstRunOnboarding}
+          />
+        </Modal>
+      )}
+
+      {agentSessionEnabled && showAgentModeOnboarding && (
+        <Modal onClose={() => {}} title="Agent Mode Setup" showClose={false}>
+          <AgentModeOnboarding
+            onUseExistingKey={handleOnboardingUseExistingKey}
+            onGenerateNewKey={handleOnboardingGenerateNewKey}
+            onComplete={completeAgentModeOnboarding}
           />
         </Modal>
       )}
@@ -19893,6 +19932,7 @@ export default function App() {
           securityConfig={agentSecurityConfig}
           onUpdateSecurityConfig={updateAgentSecurityConfig}
           onAddTrustedNpub={addTrustedAgentNpub}
+          onSetStrictWithTrustedNpub={setStrictWithTrustedAgentNpub}
           onRemoveTrustedNpub={removeTrustedAgentNpub}
           onClearTrustedNpubs={clearTrustedAgentNpubs}
           onClose={() => setShowAgentPanel(false)}

@@ -39,7 +39,7 @@ function nowISO(): string {
 
 export function defaultAgentSecurityConfig(): AgentSecurityConfig {
   return {
-    enabled: false,
+    enabled: true,
     mode: "moderate",
     trustedNpubs: [],
     updatedISO: nowISO(),
