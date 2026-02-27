@@ -449,7 +449,7 @@ export function SettingsModal({
             </div>
             <div className="text-xs text-secondary">
               Paste this into an AI agent that can open the Taskify URL and execute JavaScript in the page. It describes
-              the strict v1 JSON command envelope, the Allow Agent Commands permission gate, and the trusted-npub security modes.
+              the strict JSON command envelope and the trusted-npub security modes.
             </div>
             <textarea
               readOnly

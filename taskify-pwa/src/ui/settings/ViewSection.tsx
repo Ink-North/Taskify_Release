@@ -336,20 +336,6 @@ export function ViewSection({
               </div>
             </div>
             <div>
-              <div className="text-sm font-medium mb-1">Allow Agent Commands</div>
-              <div className="text-xs text-secondary mb-2">
-                Enabled by default for browser agents after opening Taskify with <code>?agent=1</code>. Turn it off to block everything except <code>meta.help</code>.
-              </div>
-              <div className="flex gap-2">
-                <button
-                  className={pillButtonClass(settings.allowAgentCommands)}
-                  onClick={() => setSettings({ allowAgentCommands: !settings.allowAgentCommands })}
-                >
-                  {settings.allowAgentCommands ? "On" : "Off"}
-                </button>
-              </div>
-            </div>
-            <div>
               <div className="text-sm font-medium mb-2">Board on app start</div>
               <div className="space-y-2">
                 {WD_FULL.map((label, idx) => (

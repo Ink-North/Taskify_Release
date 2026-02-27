@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useState } from "react";
 import { dispatchAgentCommand, type AgentResponseV1 } from "../../agent/agentDispatcher";
 import {
   isLooselyValidTrustedNpub,
@@ -32,7 +32,6 @@ function formatResponse(response: AgentResponseV1 | null): string {
 }
 
 export function AgentModePanel({
-  allowAgentCommands,
   securityConfig,
   onUpdateSecurityConfig,
   onAddTrustedNpub,
@@ -40,7 +39,6 @@ export function AgentModePanel({
   onClearTrustedNpubs,
   onClose,
 }: {
-  allowAgentCommands: boolean;
   securityConfig: AgentSecurityConfig;
   onUpdateSecurityConfig: (
     updates: Partial<Pick<AgentSecurityConfig, "enabled" | "mode">>,
@@ -55,11 +53,6 @@ export function AgentModePanel({
   const [status, setStatus] = useState<"idle" | "running">("idle");
   const [lastResponse, setLastResponse] = useState<AgentResponseV1 | null>(null);
   const [trustInput, setTrustInput] = useState("");
-
-  const gateNote = useMemo(() => {
-    if (allowAgentCommands) return null;
-    return 'Permission gate: "Allow Agent Commands" is off in Settings. Only {"v":1,"id":"...","op":"meta.help","params":{}} will succeed.';
-  }, [allowAgentCommands]);
 
   const handleExecute = useCallback(async () => {
     setStatus("running");
@@ -143,7 +136,6 @@ export function AgentModePanel({
           <div className="text-xs text-secondary">
             Use a single JSON object with `v`, `id`, `op`, and `params`. Positive integer versions are accepted. Start with `meta.help` to learn supported operations.
           </div>
-          {gateNote && <div className="agent-panel__gate">{gateNote}</div>}
           <textarea
             className="agent-panel__surface agent-panel__input"
             data-agent="command-input"

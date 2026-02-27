@@ -2,7 +2,7 @@
 
 Taskify Agent Mode is enabled by opening the app with `?agent=1`. Browser agents should send one strict JSON command object at a time through the Agent Mode panel or through `window.taskifyAgent.exec(...)`.
 
-`Allow Agent Commands` is enabled by default for new installs. If a user turns it off in Settings, only `meta.help` succeeds. Agent security can also be enabled with trusted `npub`s and modes `off`, `moderate`, or `strict`.
+Once Taskify is opened with `?agent=1`, agent commands are fully available. Agent security can also be enabled with trusted `npub`s and modes `off`, `moderate`, or `strict`.
 
 The dispatcher accepts any positive integer protocol version in `v`, and also accepts `version` as an alias. Compatible commands are still routed through the same operation set.
 

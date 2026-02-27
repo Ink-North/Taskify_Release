@@ -36,7 +36,6 @@ export type AgentTaskPatchInput = {
 };
 
 export type AgentRuntime = {
-  getAllowAgentCommands(): boolean;
   getDefaultBoardId(): string | null;
   getTask(taskId: string): Promise<AgentTaskRecord | null> | AgentTaskRecord | null;
   listTasks(

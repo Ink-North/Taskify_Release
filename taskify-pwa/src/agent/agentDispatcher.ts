@@ -722,7 +722,7 @@ function buildHelpResult(): Record<string, unknown> {
       "The dispatcher accepts any positive integer in v, and also accepts version as an alias.",
       "All times are ISO 8601 strings.",
       "Responses always use the envelope: { v, id, ok, result, error }.",
-      "If Allow Agent Commands is off, only meta.help is permitted.",
+      "Commands are available whenever Taskify is opened with ?agent=1.",
       "Security mode off returns all items with provenance fields.",
       "Security mode moderate returns all items and marks trusted items with agentSafe=true.",
       "Security mode strict returns only trusted items in list results.",
@@ -751,17 +751,6 @@ function buildHelpResult(): Record<string, unknown> {
 
 async function getSecurityConfig(runtime: NonNullable<ReturnType<typeof getAgentRuntime>>): Promise<AgentSecurityConfig> {
   return await runtime.getAgentSecurityConfig();
-}
-
-function requireAllowed(
-  op: string,
-  allowAgentCommands: boolean,
-  id: string,
-  version: AgentProtocolVersion,
-): AgentResponseV1 | null {
-  if (op === "meta.help") return null;
-  if (allowAgentCommands) return null;
-  return failure(id, "FORBIDDEN", "Allow Agent Commands is off", undefined, version);
 }
 
 function summarizeTaskWithTrust(task: AgentTaskRecord, securityConfig: AgentSecurityConfig): AgentTaskSummary {
@@ -810,9 +799,6 @@ export async function dispatchAgentCommand(raw: string): Promise<AgentResponseV1
   }
 
   try {
-    const gateError = requireAllowed(command.op, runtime.getAllowAgentCommands(), command.id, command.v);
-    if (gateError) return gateError;
-
     switch (command.op) {
       case "meta.help":
         return success(command.id, buildHelpResult(), command.v);

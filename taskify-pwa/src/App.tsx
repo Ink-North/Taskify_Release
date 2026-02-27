@@ -15048,7 +15048,6 @@ export default function App() {
     };
 
     setAgentRuntime({
-      getAllowAgentCommands: () => settings.allowAgentCommands === true,
       getDefaultBoardId: () => resolveAgentBoard()?.id ?? null,
       async getTask(taskId: string) {
         return tasksRef.current.find((task) => task.id === taskId) ?? null;
@@ -15188,7 +15187,6 @@ export default function App() {
     currentBoardId,
     nostrPK,
     saveEdit,
-    settings.allowAgentCommands,
   ]);
 
   function restoreTask(id: string) {
@@ -19892,7 +19890,6 @@ export default function App() {
       {/* Agent Mode Panel */}
       {agentSessionEnabled && showAgentPanel && (
         <AgentModePanel
-          allowAgentCommands={settings.allowAgentCommands}
           securityConfig={agentSecurityConfig}
           onUpdateSecurityConfig={updateAgentSecurityConfig}
           onAddTrustedNpub={addTrustedAgentNpub}

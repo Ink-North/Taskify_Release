@@ -66,7 +66,7 @@ export type Settings = {
   pushNotifications: PushPreferences;
   // Legacy Agent Mode toggle; panel access is now controlled by ?agent=1.
   agentModeEnabled: boolean;
-  // When false, agent command execution is blocked except for meta.help.
+  // Legacy no-op permission flag kept only for backwards compatibility with stored settings.
   allowAgentCommands: boolean;
 };
 

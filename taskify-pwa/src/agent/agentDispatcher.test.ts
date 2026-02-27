@@ -36,8 +36,7 @@ function makeTask(overrides: Partial<AgentTaskRecord> = {}): AgentTaskRecord {
 }
 
 function createRuntime(options?: {
-  allowAgentCommands?: boolean;
-  tasks?: Task[];
+  tasks?: AgentTaskRecord[];
   securityConfig?: Partial<AgentSecurityConfig>;
 }) {
   let createCount = 0;
@@ -47,12 +46,8 @@ function createRuntime(options?: {
     ...defaultAgentSecurityConfig(),
     ...(options?.securityConfig ?? {}),
   });
-  const allowAgentCommands = options?.allowAgentCommands ?? true;
 
   const runtime: AgentRuntime = {
-    getAllowAgentCommands() {
-      return allowAgentCommands;
-    },
     getDefaultBoardId() {
       return "board-1";
     },
