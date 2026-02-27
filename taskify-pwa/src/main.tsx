@@ -4,6 +4,21 @@ import './index.css'
 
 const root = createRoot(document.getElementById('root')!);
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
+    promise
+      .then((value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
 async function bootstrapApp(): Promise<void> {
   const [{ default: process }, { Buffer }] = await Promise.all([
     import('process'),
@@ -27,9 +42,10 @@ async function bootstrapApp(): Promise<void> {
   ]);
 
   try {
-    await initializeStorageBoundaries();
-  } catch {
-    // ignore; app can still run with in-memory fallbacks
+    // Guard against occasional startup hangs in storage bootstrap.
+    await withTimeout(initializeStorageBoundaries(), 1500);
+  } catch (err) {
+    console.warn('Storage bootstrap fallback (continuing with in-memory behavior)', err);
   }
 
   const [
@@ -62,7 +78,9 @@ async function bootstrapApp(): Promise<void> {
 
   setupServiceWorkers();
 }
-void bootstrapApp().catch(() => undefined);
+void bootstrapApp().catch((err) => {
+  console.error('Taskify bootstrap failed', err);
+});
 
 async function cleanupDevServiceWorkers() {
   try {

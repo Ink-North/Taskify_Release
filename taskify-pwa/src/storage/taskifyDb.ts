@@ -1,4 +1,4 @@
-import { idbStorage } from "./idbStorage";
+import { idbStorage } from "./idbStorage.ts";
 
 export const TASKIFY_DB_NAME = "taskify";
 export const TASKIFY_DB_VERSION = 1;
@@ -29,4 +29,3 @@ export async function getTaskifyDb(): Promise<IDBDatabase> {
   }
   return await dbPromise;
 }
-

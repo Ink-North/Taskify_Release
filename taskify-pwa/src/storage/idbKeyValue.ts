@@ -1,5 +1,5 @@
-import { idbStorage } from "./idbStorage";
-import { getTaskifyDb } from "./taskifyDb";
+import { idbStorage } from "./idbStorage.ts";
+import { getTaskifyDb } from "./taskifyDb.ts";
 
 type StoreState = {
   loaded: Set<string>;
