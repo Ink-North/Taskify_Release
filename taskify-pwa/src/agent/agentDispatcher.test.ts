@@ -79,7 +79,7 @@ function createRuntime(options?: {
     async updateTask(taskId, patch) {
       const existing = tasks.find((task) => task.id === taskId);
       if (!existing) return null;
-      const updated: Task = {
+      const updated: AgentTaskRecord = {
         ...existing,
         ...(patch.title !== undefined ? { title: patch.title } : {}),
         ...(patch.note !== undefined ? { note: patch.note } : {}),
@@ -101,7 +101,7 @@ function createRuntime(options?: {
     async setTaskStatus(taskId, status) {
       const existing = tasks.find((task) => task.id === taskId);
       if (!existing) return null;
-      const updated: Task = {
+      const updated: AgentTaskRecord = {
         ...existing,
         completed: status === "done",
         completedAt: status === "done" ? "2026-03-02T11:00:00.000Z" : undefined,
@@ -347,10 +347,11 @@ test("strict mode filters out untrusted and unknown tasks", async () => {
     (response.result?.items as Array<{ id: string }>).map((item) => item.id),
     ["trusted-task"],
   );
+  // In strict mode, counts reflect only the accessible (trusted) items
   assert.deepEqual(response.result?.counts, {
     trusted: 1,
-    untrusted: 1,
-    unknown: 1,
+    untrusted: 0,
+    unknown: 0,
     returned: 1,
   });
 });

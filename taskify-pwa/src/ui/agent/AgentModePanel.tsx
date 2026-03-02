@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { dispatchAgentCommand, type AgentResponseV1 } from "../../agent/agentDispatcher";
 import {
   isLooselyValidTrustedNpub,
@@ -106,6 +106,8 @@ export function AgentModePanel({
   const [prettyResult, setPrettyResult] = useState(true);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const historyRef = useRef(history);
+  historyRef.current = history;
 
   const resultText = useMemo(() => formatResponse(lastResponse, prettyResult), [lastResponse, prettyResult]);
   const visibleResultText = status === "running" ? "Running command…" : resultText;
@@ -215,16 +217,19 @@ export function AgentModePanel({
     setCommandInput(JSON.stringify(template.command, null, 2));
   }, []);
 
+  const runCommandRef = useRef(runCommand);
+  runCommandRef.current = runCommand;
+
   useEffect(() => {
     const onRunHelp = () => {
       setCommandInput(DEFAULT_COMMAND);
       window.setTimeout(() => {
-        void runCommand();
+        void runCommandRef.current();
       }, 0);
     };
     window.addEventListener("taskify:agent-run-help", onRunHelp);
     return () => window.removeEventListener("taskify:agent-run-help", onRunHelp);
-  }, [runCommand]);
+  }, []);
 
   return (
     <Modal
@@ -280,21 +285,23 @@ export function AgentModePanel({
                 return;
               }
               if (event.key === "ArrowUp" && !event.shiftKey) {
-                if (!history.length) return;
+                const h = historyRef.current;
+                if (!h.length) return;
                 event.preventDefault();
                 setHistoryIndex((prev) => {
-                  const next = Math.min(prev + 1, history.length - 1);
-                  setCommandInput(history[next]);
+                  const next = Math.min(prev + 1, h.length - 1);
+                  setCommandInput(h[next]);
                   return next;
                 });
                 return;
               }
               if (event.key === "ArrowDown" && !event.shiftKey) {
-                if (!history.length) return;
+                const h = historyRef.current;
+                if (!h.length) return;
                 event.preventDefault();
                 setHistoryIndex((prev) => {
                   const next = Math.max(prev - 1, -1);
-                  setCommandInput(next === -1 ? DEFAULT_COMMAND : history[next]);
+                  setCommandInput(next === -1 ? DEFAULT_COMMAND : h[next]);
                   return next;
                 });
               }

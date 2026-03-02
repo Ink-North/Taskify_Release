@@ -892,7 +892,7 @@ export async function dispatchAgentCommand(raw: string): Promise<AgentResponseV1
         });
 
         const annotatedAll = sorted.map((task) => summarizeTaskWithTrust(task, securityConfig));
-        const query = command.params.query?.trim().toLowerCase();
+        const query = command.params.query?.toLowerCase();
         const queryFiltered = query
           ? annotatedAll.filter((item) => {
             const haystack = `${item.title}\n${item.note}`.toLowerCase();
@@ -910,7 +910,7 @@ export async function dispatchAgentCommand(raw: string): Promise<AgentResponseV1
         return success(command.id, {
           items,
           nextCursor,
-          counts: summarizeTrustCounts(queryFiltered, items.length),
+          counts: summarizeTrustCounts(filtered, items.length),
         }, command.v);
       }
 

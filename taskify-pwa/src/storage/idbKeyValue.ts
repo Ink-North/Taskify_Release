@@ -35,7 +35,9 @@ function queueWrite(storeName: string, fn: () => Promise<void>): void {
     .then(async () => {
       await fn();
     })
-    .catch(() => undefined);
+    .catch((err) => {
+      console.warn(`[idbKeyValue] Write failed for store "${storeName}":`, err);
+    });
 }
 
 export const idbKeyValue = {

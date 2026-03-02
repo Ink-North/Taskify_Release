@@ -41,11 +41,14 @@ async function bootstrapApp(): Promise<void> {
     import('./storage/storageBootstrap'),
   ]);
 
+  const storagePromise = initializeStorageBoundaries();
+  let storageTimedOut = false;
   try {
     // Guard against occasional startup hangs in storage bootstrap.
-    await withTimeout(initializeStorageBoundaries(), 1500);
+    await withTimeout(storagePromise, 1500);
   } catch (err) {
     console.warn('Storage bootstrap fallback (continuing with in-memory behavior)', err);
+    storageTimedOut = true;
   }
 
   const [
@@ -77,6 +80,23 @@ async function bootstrapApp(): Promise<void> {
   );
 
   setupServiceWorkers();
+
+  // If IDB timed out but eventually succeeds, reload once so components pick up
+  // the real data instead of showing empty state for the entire session.
+  if (storageTimedOut) {
+    storagePromise
+      .then(() => {
+        const RELOAD_KEY = 'taskify_storage_late_reload';
+        try {
+          const last = Number(sessionStorage.getItem(RELOAD_KEY) || '0');
+          if (Date.now() - last > 10_000) {
+            sessionStorage.setItem(RELOAD_KEY, String(Date.now()));
+            window.location.reload();
+          }
+        } catch {}
+      })
+      .catch(() => {});
+  }
 }
 void bootstrapApp().catch((err) => {
   console.error('Taskify bootstrap failed', err);

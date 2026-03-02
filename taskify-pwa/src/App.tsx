@@ -171,7 +171,7 @@ import { BoardKeyManager } from "./nostr/BoardKeyManager";
 import { publishFileServerPreference } from "./nostr/ProfilePublisher";
 import { EcashGlyph } from "./components/EcashGlyph";
 import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
-import { AgentModeOnboarding } from "./onboarding/AgentModeOnboarding";
+const AgentModeOnboarding = lazy(() => import("./onboarding/AgentModeOnboarding").then(m => ({ default: m.AgentModeOnboarding })));
 import {
   buildBoardShareEnvelope,
   buildCalendarEventInviteEnvelope,
@@ -197,7 +197,7 @@ import { EditModal } from "./ui/task/EditModal";
 import EventEditModal from "./ui/calendar/EventEditModal";
 import { AddBoardModal } from "./ui/board/AddBoardModal";
 import { SettingsModal } from "./ui/board/SettingsModal";
-import { AgentModePanel } from "./ui/agent/AgentModePanel";
+const AgentModePanel = lazy(() => import("./ui/agent/AgentModePanel").then(m => ({ default: m.AgentModePanel })));
 import { Modal } from "./ui/Modal";
 import { CustomReminderSheet } from "./ui/reminders/CustomReminderSheet";
 import { RecurrencePicker, RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "./ui/recurrence/RecurrencePicker";
@@ -205,10 +205,11 @@ import { BoardQrScanner } from "./ui/board/BoardQrScanner";
 import { BountyAttachSheet, normalizeMintUrlLite, formatMintLabel, sumMintProofs } from "./ui/bounty/BountyAttachSheet";
 import { LockToNpubSheet } from "./ui/bounty/LockToNpubSheet";
 import { TimeZoneSheet } from "./ui/reminders/TimeZoneSheet";
-import { dispatchAgentCommand } from "./agent/agentDispatcher";
+// agentDispatcher is loaded dynamically inside the agent runtime effect to keep it out of the main bundle
 import {
   addTrustedNpub as addTrustedNpubToConfig,
   clearTrustedNpubs,
+  defaultAgentSecurityConfig,
   loadAgentSecurityConfig,
   normalizeAgentSecurityConfig,
   removeTrustedNpub as removeTrustedNpubFromConfig,
@@ -4213,7 +4214,9 @@ function useSettings() {
       return next;
     });
   }, []);
+  const settingsFirstRun = useRef(true);
   useEffect(() => {
+    if (settingsFirstRun.current) { settingsFirstRun.current = false; return; }
     kvStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
   }, [settings]);
   return [settings, setSettings] as const;
@@ -4350,7 +4353,9 @@ function useBoards() {
     // default: one Week board
     return [{ id: "week-default", name: "Week", kind: "week", archived: false, hidden: false, clearCompletedDisabled: false }];
   });
+  const boardsFirstRun = useRef(true);
   useEffect(() => {
+    if (boardsFirstRun.current) { boardsFirstRun.current = false; return; }
     idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARDS, JSON.stringify(boards));
   }, [boards]);
   return [boards, setBoards] as const;
@@ -4471,7 +4476,9 @@ function useTasks() {
       .filter((t): t is Task => !!t);
     return dedupeRecurringInstances(normalized);
   });
+  const tasksFirstRun = useRef(true);
   useEffect(() => {
+    if (tasksFirstRun.current) { tasksFirstRun.current = false; return; }
     try {
       idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(tasks));
     } catch (err) {
@@ -4743,7 +4750,9 @@ function useCalendarEvents() {
     return [...boardEvents, ...Array.from(mergedExternalMap.values())];
   });
 
+  const eventsFirstRun = useRef(true);
   useEffect(() => {
+    if (eventsFirstRun.current) { eventsFirstRun.current = false; return; }
     try {
       const boardEvents = events.filter((event) => !event.external);
       const externalEvents = events.filter((event) => event.external);
@@ -5054,9 +5063,14 @@ export default function App() {
   });
   const [boards, setBoards] = useBoards();
   const [settings, setSettings] = useSettings();
-  const [agentSecurityConfig, setAgentSecurityConfigState] = useState<AgentSecurityConfig>(() =>
-    loadAgentSecurityConfig(),
-  );
+  const [agentSecurityConfig, setAgentSecurityConfigState] = useState<AgentSecurityConfig>(() => {
+    try {
+      if (new URLSearchParams(window.location.search).get("agent") === "1") {
+        return loadAgentSecurityConfig();
+      }
+    } catch {}
+    return defaultAgentSecurityConfig();
+  });
   const agentSecurityConfigRef = useRef(agentSecurityConfig);
   useEffect(() => {
     agentSecurityConfigRef.current = agentSecurityConfig;
@@ -5244,8 +5258,10 @@ export default function App() {
     }
   });
   const calendarInvitesRef = useRef<CalendarInvite[]>(calendarInvites);
+  const calendarInvitesFirstRun = useRef(true);
   useEffect(() => {
     calendarInvitesRef.current = calendarInvites;
+    if (calendarInvitesFirstRun.current) { calendarInvitesFirstRun.current = false; return; }
     try {
       kvStorage.setItem(LS_CALENDAR_INVITES, JSON.stringify(calendarInvites));
     } catch {}
@@ -15178,6 +15194,7 @@ export default function App() {
     });
 
     const executeAgentCommand = async (input: unknown) => {
+      const { dispatchAgentCommand } = await import("./agent/agentDispatcher");
       if (typeof input === "string") {
         return await dispatchAgentCommand(input);
       }
@@ -19659,15 +19676,17 @@ export default function App() {
         </Modal>
       )}
 
-      {agentSessionEnabled && showAgentModeOnboarding && (
-        <Modal onClose={() => {}} title="Agent Mode Setup" showClose={false}>
-          <AgentModeOnboarding
-            onUseExistingKey={handleOnboardingUseExistingKey}
-            onGenerateNewKey={handleOnboardingGenerateNewKey}
-            onComplete={completeAgentModeOnboarding}
-          />
-        </Modal>
-      )}
+      <Suspense fallback={null}>
+        {agentSessionEnabled && showAgentModeOnboarding && (
+          <Modal onClose={() => {}} title="Agent Mode Setup" showClose={false}>
+            <AgentModeOnboarding
+              onUseExistingKey={handleOnboardingUseExistingKey}
+              onGenerateNewKey={handleOnboardingGenerateNewKey}
+              onComplete={completeAgentModeOnboarding}
+            />
+          </Modal>
+        )}
+      </Suspense>
 
       {addBoardOpen && (
         <AddBoardModal
@@ -19927,17 +19946,19 @@ export default function App() {
       </Suspense>
 
       {/* Agent Mode Panel */}
-      {agentSessionEnabled && showAgentPanel && (
-        <AgentModePanel
-          securityConfig={agentSecurityConfig}
-          onUpdateSecurityConfig={updateAgentSecurityConfig}
-          onAddTrustedNpub={addTrustedAgentNpub}
-          onSetStrictWithTrustedNpub={setStrictWithTrustedAgentNpub}
-          onRemoveTrustedNpub={removeTrustedAgentNpub}
-          onClearTrustedNpubs={clearTrustedAgentNpubs}
-          onClose={() => setShowAgentPanel(false)}
-        />
-      )}
+      <Suspense fallback={null}>
+        {agentSessionEnabled && showAgentPanel && (
+          <AgentModePanel
+            securityConfig={agentSecurityConfig}
+            onUpdateSecurityConfig={updateAgentSecurityConfig}
+            onAddTrustedNpub={addTrustedAgentNpub}
+            onSetStrictWithTrustedNpub={setStrictWithTrustedAgentNpub}
+            onRemoveTrustedNpub={removeTrustedAgentNpub}
+            onClearTrustedNpubs={clearTrustedAgentNpubs}
+            onClose={() => setShowAgentPanel(false)}
+          />
+        )}
+      </Suspense>
 
       </div>
     </div>

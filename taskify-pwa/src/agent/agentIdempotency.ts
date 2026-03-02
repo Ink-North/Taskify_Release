@@ -3,6 +3,7 @@ import { TASKIFY_STORE_TASKS } from "../storage/taskifyDb.ts";
 
 export const AGENT_IDEMPOTENCY_STORAGE_KEY = "taskify.agent.idempotency.v1";
 const MAX_AGENT_IDEMPOTENCY_ENTRIES = 100;
+const AGENT_IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 type AgentIdempotencyEntry = {
   key: string;
@@ -25,6 +26,7 @@ function readEntries(): AgentIdempotencyEntry[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
+    const now = Date.now();
     return parsed
       .filter((entry) => entry && typeof entry === "object")
       .map((entry) => ({
@@ -36,6 +38,7 @@ function readEntries(): AgentIdempotencyEntry[] {
             : 0,
       }))
       .filter((entry) => entry.key && entry.taskId)
+      .filter((entry) => now - entry.createdAt < AGENT_IDEMPOTENCY_TTL_MS)
       .sort((left, right) => left.createdAt - right.createdAt)
       .slice(-MAX_AGENT_IDEMPOTENCY_ENTRIES);
   } catch {
