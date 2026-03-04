@@ -17423,7 +17423,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen text-primary">
-      <div className="app-shell mx-auto max-w-7xl px-4 sm:px-6 lg:px-8" inert={isOnboardingActive}>
+      <div className="app-shell mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         {(activePage === "boards" || activePage === "upcoming" || activePage === "wallet-bounties" || activePage === "settings") && (
           <header className="app-header">
             {activePage === "boards" && (
@@ -18733,7 +18733,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="app-tab-switcher" inert={isOnboardingActive}>
+      <div className="app-tab-switcher">
         <div className="app-tab-switcher__pill">
           <div className="relative flex-1 min-w-0">
             <button
