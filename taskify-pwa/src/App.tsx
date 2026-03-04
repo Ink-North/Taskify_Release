@@ -7509,6 +7509,9 @@ export default function App() {
   const [activePage, setActivePage] = useState<
     "boards" | "upcoming" | "wallet" | "wallet-bounties" | "contacts" | "settings"
   >("boards");
+  // Ref updated every render so navigation callbacks can read the gate without
+  // stale-closure issues (isOnboardingActive is derived further down).
+  const isOnboardingActiveRef = useRef(false);
   const [walletBountiesTab, setWalletBountiesTab] = useState<"open" | "funded" | "pinned">("pinned");
   useEffect(() => {
     if (currentBoard?.kind === "bible") {
@@ -7911,6 +7914,7 @@ export default function App() {
   );
 
   const openSettings = useCallback(() => {
+    if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     startTransition(() => setActivePage("settings"));
   }, [shouldReloadForNavigation]);
@@ -7926,11 +7930,13 @@ export default function App() {
   }, []);
 
   const openWallet = useCallback(() => {
+    if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     prefetchWalletModal();
     startTransition(() => setActivePage("wallet"));
   }, [prefetchWalletModal, shouldReloadForNavigation]);
   const openWalletBounties = useCallback(() => {
+    if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     startTransition(() => setActivePage("wallet-bounties"));
   }, [shouldReloadForNavigation]);
@@ -7939,10 +7945,12 @@ export default function App() {
   }, []);
 
   const openUpcoming = useCallback(() => {
+    if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     startTransition(() => setActivePage("upcoming"));
   }, [shouldReloadForNavigation]);
   const openBoardsPage = useCallback(() => {
+    if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     if (activePage === "boards") {
       const selector = boardSelectorBottomRef.current ?? boardSelectorRef.current;
@@ -7959,6 +7967,7 @@ export default function App() {
     startTransition(() => setActivePage("boards"));
   }, [activePage, shouldReloadForNavigation]);
   const openContactsPage = useCallback(() => {
+    if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     prefetchWalletModal();
     startTransition(() => setActivePage("contacts"));
@@ -8128,6 +8137,8 @@ export default function App() {
   useEffect(() => {
     if (startupViewHandledRef.current) return;
     startupViewHandledRef.current = true;
+    // Do not redirect on startup while onboarding is blocking the app.
+    if (isOnboardingActiveRef.current) return;
     if (settings.startupView === "wallet") {
       startTransition(() => setActivePage("wallet"));
     }
@@ -8197,6 +8208,18 @@ export default function App() {
     && "PushManager" in window
     && window.isSecureContext;
   const onboardingPushConfigured = !!workerBaseUrl && !!vapidPublicKey;
+  // True while any onboarding/welcome overlay is blocking the app. Used to gate
+  // background interaction via the HTML `inert` attribute.
+  const isOnboardingActive = showFirstRunOnboarding || showAgentModeOnboarding;
+  // Keep the ref in sync every render so nav callbacks can read it safely.
+  isOnboardingActiveRef.current = isOnboardingActive;
+  // Hard state-level gate: if onboarding is active, force activePage to the
+  // neutral "boards" base view so no background section is ever visible/active.
+  useEffect(() => {
+    if (isOnboardingActive && activePage !== "boards") {
+      startTransition(() => setActivePage("boards"));
+    }
+  }, [isOnboardingActive, activePage]);
 
   useEffect(() => {
     if (!settings.completedTab) setView("board");
@@ -17400,7 +17423,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen text-primary">
-      <div className="app-shell mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+      <div className="app-shell mx-auto max-w-7xl px-4 sm:px-6 lg:px-8" inert={isOnboardingActive}>
         {(activePage === "boards" || activePage === "upcoming" || activePage === "wallet-bounties" || activePage === "settings") && (
           <header className="app-header">
             {activePage === "boards" && (
@@ -18710,7 +18733,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="app-tab-switcher">
+      <div className="app-tab-switcher" inert={isOnboardingActive}>
         <div className="app-tab-switcher__pill">
           <div className="relative flex-1 min-w-0">
             <button
