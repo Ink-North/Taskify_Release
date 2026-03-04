@@ -31,6 +31,8 @@ export type ManagedSubscription = {
 
 type Handler = { onEvent?: (event: NostrEvent, relay?: string) => void; onEose?: (relay?: string) => void };
 
+type PendingEvent = { raw: NostrEvent; relayUrl?: string };
+
 type SubscriptionState = {
   key: string;
   subscription: NDKSubscription;
@@ -39,7 +41,32 @@ type SubscriptionState = {
   handlers: Set<Handler>;
   refCount: number;
   seenIds: Set<string>;
+  /** Events buffered for frame-budgeted dispatch. */
+  pendingEvents: PendingEvent[];
+  /** Whether a flush has already been scheduled. */
+  flushScheduled: boolean;
 };
+
+/**
+ * Maximum seenIds per subscription before FIFO eviction kicks in.
+ * Prevents unbounded memory growth under heavy relay floods.
+ */
+const MAX_SEEN_IDS = 4096;
+
+/**
+ * Maximum events dispatched to handlers per flush frame.
+ * Keeps each flush ≤ ~8 ms to avoid janking the main thread.
+ */
+const FLUSH_BATCH_SIZE = 64;
+
+/** Schedule fn on the next animation frame, or a setTimeout(0) fallback. */
+function scheduleFrame(fn: () => void): void {
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(fn);
+  } else {
+    setTimeout(fn, 0);
+  }
+}
 
 function normalizeRelayList(relays?: string[]): string[] {
   const set = new Set(
@@ -150,6 +177,37 @@ export class SubscriptionManager {
     return { normalized, key: `${relayKey}|${signature}` };
   }
 
+  /**
+   * Schedule a frame-budgeted flush of pendingEvents for a subscription.
+   * Events are dispatched to handlers in batches of FLUSH_BATCH_SIZE per frame
+   * so long startup relay bursts do not stall the main thread.
+   */
+  private scheduleFlush(state: SubscriptionState): void {
+    if (state.flushScheduled) return;
+    state.flushScheduled = true;
+    scheduleFrame(() => {
+      this.flushPending(state);
+    });
+  }
+
+  private flushPending(state: SubscriptionState): void {
+    state.flushScheduled = false;
+    const batch = state.pendingEvents.splice(0, FLUSH_BATCH_SIZE);
+    for (const { raw, relayUrl } of batch) {
+      state.handlers.forEach((h) => {
+        try {
+          h.onEvent?.(raw, relayUrl);
+        } catch {
+          // Isolate handler errors so one bad handler can't kill the rest
+        }
+      });
+    }
+    // If more events queued during flush, schedule another frame
+    if (state.pendingEvents.length > 0) {
+      this.scheduleFlush(state);
+    }
+  }
+
   async subscribe(filtersInput: NDKFilter | NDKFilter[], options?: SubscribeOptions): Promise<ManagedSubscription> {
     const filters = Array.isArray(filtersInput) ? filtersInput : [filtersInput];
     const relayUrls = normalizeRelayList(options?.relayUrls);
@@ -184,6 +242,8 @@ export class SubscriptionManager {
       handlers: new Set(handler.onEvent || handler.onEose ? [handler] : []),
       refCount: 1,
       seenIds: new Set<string>(),
+      pendingEvents: [],
+      flushScheduled: false,
     };
     // Store state and register handlers BEFORE creating the subscription
     // to avoid a race where events arrive before handlers are attached
@@ -193,18 +253,41 @@ export class SubscriptionManager {
     state.subscription = sub;
 
     sub.on("event", (evt: NDKEvent) => {
-      const raw = evt.rawEvent() as NostrEvent;
-      if (!raw?.id || state.seenIds.has(raw.id)) return;
+      // Safety: malformed events from relays must not crash the subscription
+      let raw: NostrEvent;
+      try {
+        raw = evt.rawEvent() as NostrEvent;
+      } catch {
+        return;
+      }
+      if (!raw?.id || typeof raw.id !== "string") return;
+      if (state.seenIds.has(raw.id)) return;
+
       state.seenIds.add(raw.id);
+      // Bounded seenIds: FIFO eviction prevents unbounded memory growth under relay floods
+      if (state.seenIds.size > MAX_SEEN_IDS) {
+        const [oldest] = state.seenIds;
+        if (oldest) state.seenIds.delete(oldest);
+      }
+
       this.eventCache?.add(raw);
-      if (raw.created_at) {
+      if (raw.created_at && Number.isFinite(raw.created_at)) {
         this.cursorStore.updateMany(state.filters, raw.created_at);
       }
-      state.handlers.forEach((h) => h.onEvent?.(raw, evt.relay?.url));
+
+      // Buffer for frame-budgeted dispatch to avoid main-thread stalls on startup bursts
+      state.pendingEvents.push({ raw, relayUrl: evt.relay?.url });
+      this.scheduleFlush(state);
     });
 
     sub.on("eose", () => {
-      state.handlers.forEach((h) => h.onEose?.());
+      state.handlers.forEach((h) => {
+        try {
+          h.onEose?.();
+        } catch {
+          // Isolate handler errors
+        }
+      });
     });
 
     return {

@@ -51,6 +51,8 @@ export class SessionPool {
     closeOnEose?: boolean,
   ): () => void {
     let release: (() => void) | null = null;
+    // Track cleanup requests that arrive before the subscription promise resolves
+    let cleanupRequested = false;
     const relayList = normalizeRelays(relays);
     NostrSession.init(relayList)
       .then((session) =>
@@ -62,7 +64,12 @@ export class SessionPool {
         }),
       )
       .then((managed) => {
-        release = managed.release;
+        if (cleanupRequested) {
+          // Cleanup was requested before we resolved — release immediately
+          try { managed.release(); } catch { /* ignore */ }
+        } else {
+          release = managed.release;
+        }
       })
       .catch((err) => {
         if ((import.meta as any)?.env?.DEV) {
@@ -70,6 +77,7 @@ export class SessionPool {
         }
       });
     return () => {
+      cleanupRequested = true;
       try {
         release?.();
       } catch {
@@ -81,6 +89,8 @@ export class SessionPool {
   subscribeMany(relays: string[], filter: NDKFilter | NDKFilter[], opts?: SubscribeManyOptions) {
     const relayList = normalizeRelays(relays);
     let release: (() => void) | null = null;
+    // Track cleanup requests that arrive before the subscription promise resolves
+    let cleanupRequested = false;
     NostrSession.init(relayList)
       .then((session) =>
         session.subscribe(Array.isArray(filter) ? filter : [filter], {
@@ -91,7 +101,12 @@ export class SessionPool {
         }),
       )
       .then((managed) => {
-        release = managed.release;
+        if (cleanupRequested) {
+          // Cleanup was requested before we resolved — release immediately
+          try { managed.release(); } catch { /* ignore */ }
+        } else {
+          release = managed.release;
+        }
       })
       .catch((err) => {
         if ((import.meta as any)?.env?.DEV) {
@@ -101,6 +116,7 @@ export class SessionPool {
 
     return {
       close: () => {
+        cleanupRequested = true;
         try {
           release?.();
         } catch {
