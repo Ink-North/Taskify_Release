@@ -306,7 +306,48 @@ Anchors:
 
 Operational implication: endpoint expiry is treated as terminal device invalidation, not temporary backoff.
 
-## 13) Known limitations (current state)
+## 13) D1↔KV migration fallback matrix (agent verification chunk)
+
+This is the concrete fallback behavior while legacy KV bindings still exist.
+Use it before touching device lookup, poll, or migration code.
+
+### 13.1 Read path decision tree
+
+| Entry point | D1-first behavior | KV fallback trigger | Migration side effects | Anchors |
+|---|---|---|---|---|
+| `getDeviceRecord(env, deviceId)` | `SELECT ... FROM devices WHERE device_id = ?` | No D1 row found | Calls `migrateDeviceFromKv`; can migrate device + reminders + pending into D1 and delete KV keys | `worker/src/index.ts:2557–2569`, `:2609–2653` |
+| `findDeviceIdByEndpoint(env, endpoint)` | hash endpoint then `SELECT device_id FROM devices WHERE endpoint_hash = ?` | No D1 row and `TASKIFY_DEVICES` bound | Reads `endpoint:{hash}` KV index, migrates mapped device id to D1, returns migrated id | `worker/src/index.ts:2584–2607` |
+| `/api/reminders/poll` endpoint lookup | resolves `deviceId` from explicit `deviceId` or endpoint lookup | same as `findDeviceIdByEndpoint` | Poll then drains `pending_notifications` by selected row ids | `worker/src/index.ts:2404–2431`, `:2584–2607` |
+
+### 13.2 Migration contract details
+
+`migrateDeviceFromKv` is not a plain read-through; it performs a one-time import pipeline:
+
+1. Parse + validate legacy device payload from `TASKIFY_DEVICES` (`device:{id}`)
+2. Backfill `endpointHash` if missing (derived from endpoint)
+3. Upsert device row into D1
+4. Migrate reminders (`TASKIFY_REMINDERS`) into `reminders`
+5. Migrate pending payload (`TASKIFY_PENDING`) into `pending_notifications`
+6. Delete legacy KV keys (`device:{id}`, `endpoint:{hash}`, `reminders:{id}`, `pending:{id}`)
+
+Anchors:
+- Device migration core: `worker/src/index.ts:2609–2653`
+- Reminder migration: `worker/src/index.ts:2655–2711`
+- Pending migration: `worker/src/index.ts:2713–2749`
+
+### 13.3 Invariants to preserve when editing
+
+- A successful KV migration must leave D1 authoritative and remove migrated KV keys.
+- Endpoint-hash lookup must remain consistent across register (`upsertDevice`) and poll (`findDeviceIdByEndpoint`).
+- Poll drain behavior must continue deleting exactly fetched `pending_notifications` row ids.
+- Device deletion must continue clearing D1 + best-effort KV mirrors to avoid zombie registrations.
+
+Quick re-check anchors:
+- Upsert with endpoint hash: `worker/src/index.ts:2530–2555`
+- Poll read+delete ids: `worker/src/index.ts:2415–2431`
+- Delete fan-out: `worker/src/index.ts:2305–2333`
+
+## 14) Known limitations (current state)
 
 - Worker implementation is monolithic (`worker/src/index.ts`), so cross-cutting edits are easy to miss in review.
 - Legacy KV migration paths increase branch complexity and testing surface.
