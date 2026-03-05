@@ -117,7 +117,7 @@ Use this table when verifying docs against code. Anchors are function-level and 
 ### Quick verification recipe (agents)
 
 1. Confirm every outward wallet mutation re-checks DLEQ (`claimMint`, `receiveToken`, `createSendToken`, `payMeltQuote`).
-2. Confirm every networked mint call enters through `MintConnection.runWithRateLimit(...)` unless explicitly local-only.
+2. Confirm quote/status/checkstate network paths enter through `MintConnection.runWithRateLimit(...)`; note that wallet mutation paths (`claimMint`, `receiveToken`, `createSendToken`, `payMeltQuote`) call manager methods directly and rely on retry/idempotency guards instead of the rate-limiter wrapper.
 3. Confirm persistence writes happen after proof normalization (`setProofs`) rather than raw mint response storage.
 4. Confirm melt-recovery path still uses `pendingMeltBlanks` + `completeMelt` before final proof commit.
 
