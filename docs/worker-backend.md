@@ -399,7 +399,53 @@ If you touch cleanup logic, preserve these invariants:
 - Keep cursor pagination (do not assume all keys fit one list call).
 - Keep cleanup state throttling to avoid weekly full scans on every schedule tick.
 
-## 15) Known limitations (current state)
+## 15) Scheduled execution ordering + failure isolation (agent verification chunk)
+
+This section documents the exact scheduler sequencing contract. Preserve it unless you intentionally change cron semantics.
+
+### 15.1 Execution order per cron tick
+
+Within `scheduled()`, the runner currently executes in strict sequence:
+
+1. `ensureSchema(env)`
+2. `processDueReminders(env)`
+3. `cleanupExpiredBackups(env)`
+
+Anchor: `worker/src/index.ts:317–323`
+
+Implication: backup cleanup is skipped if reminder processing throws before step 3.
+
+### 15.2 waitUntil compatibility behavior
+
+Scheduler dispatch supports multiple runtime shapes:
+
+- Preferred: `ctx.waitUntil(runner())`
+- Fallback: `event.waitUntil(runner())` when present
+- Final fallback: direct `await runner()`
+
+Anchors:
+- `ctx.waitUntil` branch: `worker/src/index.ts:328–329`
+- `event.waitUntil` branch: `worker/src/index.ts:330–331`
+- direct await branch: `worker/src/index.ts:332`
+
+This preserves compatibility across Cloudflare scheduler contexts and local/test harnesses.
+
+### 15.3 Error propagation contract
+
+- Any thrown error inside the runner is logged with cron metadata and rethrown.
+- Re-throw means scheduler sees the execution as failed (not silently swallowed).
+
+Anchor: `worker/src/index.ts:323–326`
+
+### 15.4 Safe-edit guardrails
+
+If you modify scheduled flow:
+
+- Keep `ensureSchema` before D1-dependent jobs.
+- Preserve explicit ordering decisions (or document intentional reordering in this file).
+- Do not convert failures into silent success without adding equivalent observability.
+
+## 16) Known limitations (current state)
 
 - Worker implementation is monolithic (`worker/src/index.ts`), so cross-cutting edits are easy to miss in review.
 - Legacy KV migration paths increase branch complexity and testing surface.
