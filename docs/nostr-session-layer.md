@@ -269,6 +269,74 @@ If modifying `SessionPool`, preserve:
 
 ---
 
+## SubscriptionManager dedupe + cursor contract (agent verification chunk)
+
+This section captures the exact subscription-key and dedupe behavior that downstream callers implicitly rely on.
+
+### 1) Subscription keys include injected `since`
+
+`normalizeFilters(...)` computes the dedupe key **after** optional cursor injection, so two otherwise-identical filters can map to different keys when `CursorStore` has advanced.
+
+Anchors:
+- `taskify-pwa/src/nostr/SubscriptionManager.ts:132–151` (`normalizeFilters`)
+- Cursor injection line: `:140–143`
+- Key materialization line: `:148–150`
+
+Implication: if you need key-stable dedupe across re-subscribes regardless of cursor progress, caller must set `skipSince: true`.
+
+### 2) Relay-limit clamping applies only when resolver + relays exist
+
+`clampFilters(...)` is a conditional transform:
+- no-op when `relayLimitResolver` is missing,
+- no-op when relay list is empty,
+- clamps only `f.limit > safeLimit` (default fallback `5000`).
+
+Anchors:
+- `taskify-pwa/src/nostr/SubscriptionManager.ts:116–129`
+
+Operational note: subscriptions without explicit relay URLs can bypass relay-specific limit clamping in this layer.
+
+### 3) Handler race prevention is deliberate
+
+State is inserted into `subs` before `ndk.subscribe(...)` to prevent early event delivery from racing handler registration.
+
+Anchors:
+- pre-store comment and map set: `taskify-pwa/src/nostr/SubscriptionManager.ts:188–190`
+- actual subscribe call: `:192`
+
+Do not reorder this without adding equivalent race protection.
+
+### 4) Dedupe scope is per-subscription-state lifetime
+
+`seenIds` is held on each `SubscriptionState` and is reset when refcount reaches zero and state is deleted.
+
+Anchors:
+- `seenIds` initialization: `taskify-pwa/src/nostr/SubscriptionManager.ts:186`
+- duplicate gate: `:197–199`
+- teardown path: `:219–231`
+
+Implication: dedupe survives handler churn while at least one subscriber remains, but not across full unsubscribe/re-subscribe cycles.
+
+### 5) EOSE callback does not include relay metadata
+
+`sub.on("eose")` invokes handlers with no relay argument (`h.onEose?.()`).
+
+Anchor:
+- `taskify-pwa/src/nostr/SubscriptionManager.ts:206–208`
+
+Boundary: callers expecting per-relay EOSE context must derive it elsewhere (or update this contract intentionally).
+
+### Safe-edit guardrails
+
+When changing subscription internals, preserve:
+- deterministic keying over normalized filters + normalized relay list,
+- explicit `skipSince` escape hatch,
+- pre-subscribe state registration race guard,
+- ref-count semantics where final release stops the underlying NDK subscription,
+- cursor updates happening only after a non-duplicate event passes the `seenIds` gate.
+
+---
+
 ## Agent Jump-Start Checklist
 
 When debugging or extending Nostr behavior, read in this order:
