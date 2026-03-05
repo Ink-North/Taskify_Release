@@ -193,6 +193,64 @@ Anchors:
 - Reconnect attempts are timer-driven and do not force immediate reconnect on every disconnect.
 - Auth failures and transport failures are intentionally non-fatal to the session singleton; degraded relay sets are expected behavior.
 
+## SessionPool compatibility contract (agent verification chunk)
+
+`SessionPool` intentionally preserves legacy call signatures while delegating to `NostrSession`. Its subscribe APIs are **async-initialized but sync-returning**, which creates subtle close/release behavior that callers depend on.
+
+### 1) Relay normalization is deterministic
+
+All public methods normalize relays with:
+- trim
+- drop empty values
+- dedupe via `Set`
+- lexicographic sort
+
+Anchor: `taskify-pwa/src/nostr/SessionPool.ts:11–19`
+
+Implication: relay order differences from callers should not create duplicate session bootstrap paths.
+
+### 2) Subscribe returns a close handle before init completes
+
+`subscribe(...)` and `subscribeMany(...)`:
+1. return a close/teardown function immediately,
+2. then asynchronously call `NostrSession.init(...)` and `session.subscribe(...)`,
+3. then capture `managed.release` when ready.
+
+Anchors:
+- `subscribe`: `taskify-pwa/src/nostr/SessionPool.ts:46–79`
+- `subscribeMany`: `taskify-pwa/src/nostr/SessionPool.ts:81–111`
+
+If caller closes before `managed.release` exists, close is a no-op (safe). Once `managed.release` is assigned, close forwards to it.
+
+### 3) Failure handling is intentionally non-throwing
+
+Subscribe init failures are swallowed (DEV log only), so legacy callers do not crash synchronously.
+
+Anchors:
+- `subscribe` catch: `taskify-pwa/src/nostr/SessionPool.ts:67–71`
+- `subscribeMany` catch: `taskify-pwa/src/nostr/SessionPool.ts:96–100`
+
+Operational consequence: failed async subscribe can look like a silent subscription stall unless DEV logs are visible.
+
+### 4) Query/list/get/publish route through singleton session
+
+- `list` and `querySync` both call `NostrSession.init(relays)` then `fetchEvents(...)`
+- `get` reduces fetched results to latest `created_at`
+- `publish` calls `publishRaw(..., { returnEvent: false })`
+
+Anchors:
+- list/query: `taskify-pwa/src/nostr/SessionPool.ts:22–44`
+- get: `taskify-pwa/src/nostr/SessionPool.ts:113–120`
+- publish: `taskify-pwa/src/nostr/SessionPool.ts:122–131`
+
+### 5) Safe-edit guardrails
+
+If modifying `SessionPool`, preserve:
+- immediate close-handle return for subscribe APIs,
+- non-throwing async failure behavior (or document/roll out breaking changes),
+- deterministic relay normalization before session init,
+- compatibility alias `publishEvent(...) -> publish(...)`.
+
 ## Security & Reliability Notes (current code)
 
 - Relay auth challenges are handled via NDK auth policy hook and `RelayAuthManager`.
