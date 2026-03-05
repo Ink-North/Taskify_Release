@@ -73,47 +73,58 @@ This file is intentionally monolithic — it avoids prop-drilling by keeping all
 
 ### Nostr Session Layer: `taskify-pwa/src/nostr/`
 
-| File | Responsibility |
-|------|---------------|
-| `NostrSession.ts` | Singleton NDK session: connects to relays, signs events, owns the NDK instance |
-| `SessionPool.ts` | Manages multiple concurrent sessions (e.g. for shared board keys) |
-| `SubscriptionManager.ts` | NDK subscription lifecycle with reference counting; deduplicates filters |
-| `PublishCoordinator.ts` | Batched, debounced event publishing with retry; handles replaceable events |
-| `RelayHealth.ts` | Tracks relay failure counts; applies exponential backoff (5s base, 2× multiplier, 5min cap) |
-| `RelayAuth.ts` | NIP-42 relay authentication — responds to AUTH challenges per-connection |
-| `RelayInfoCache.ts` | NIP-11 relay metadata caching (capabilities, supported NIPs) |
-| `EventCache.ts` | In-memory event deduplication (FIFO eviction at 2048 IDs) |
-| `BoardKeyManager.ts` | Derives deterministic board keypairs from `SHA256(boardId)` for per-board signing |
-| `CursorStore.ts` | Persists `since` cursors per subscription filter to avoid re-fetching old events |
-| `startupStability.ts` | Guards against relay event floods stalling the main thread at startup (frame budgeting) — on `fix/startup-relay-stability`, pending merge |
-| `WalletNostrClient.ts` | Nostr client scoped to wallet operations (NWC, NIP-47) |
-| `ProfilePublisher.ts` | Publishes and caches Nostr kind-0 profile metadata |
-| `Nip96Client.ts` | NIP-96 file/backup upload over Nostr HTTP |
+All files in `taskify-pwa/src/nostr/` unless noted:
+
+| File | Status | Responsibility |
+|------|-----|--|
+| `NostrSession.ts` | ✅ Current | Singleton NDK session: connects to relays, signs events, owns the NDK instance |
+| `SessionPool.ts` | ✅ Current | Manages multiple concurrent sessions (e.g. for shared board keys) |
+| `SubscriptionManager.ts` | ✅ Current | NDK subscription lifecycle with reference counting; deduplicates filters |
+| `PublishCoordinator.ts` | ✅ Current | Batched, debounced event publishing for replaceable events; no internal retry loop |
+| `RelayHealth.ts` | ✅ Current | Tracks relay failure counts; applies exponential backoff (5s base, 2× multiplier, 5min cap) |
+| `RelayAuth.ts` | ✅ Current | NIP-42 relay authentication — responds to AUTH challenges per-connection |
+| `RelayInfoCache.ts` | ✅ Current | NIP-11 relay metadata caching (capabilities, supported NIPs) |
+| `EventCache.ts` | ✅ Current | In-memory event deduplication (FIFO eviction at 2048 IDs) |
+| `BoardKeyManager.ts` | ✅ Current | Derives deterministic board keypairs from `SHA256(boardId)` for per-board signing |
+| `CursorStore.ts` | ✅ Current | Persists `since` cursors per subscription filter to avoid re-fetching old events |
+| `startupStability.ts` | ⏳ Pending | Guards against relay event floods stalling the main thread at startup (frame budgeting). **Status**: On branch `fix/startup-relay-stability`, pending merge to main. |
+| `WalletNostrClient.ts` | ✅ Current | Nostr client scoped to wallet operations (NWC, NIP-47) |
+| `ProfilePublisher.ts` | ✅ Current | Publishes and caches Nostr kind-0 profile metadata |
+| `Nip96Client.ts` | ✅ Current | NIP-96 file/backup upload over Nostr HTTP |
+| `index.ts` | ✅ Current | Module exports |
 
 ### Cashu / Wallet Layer: `taskify-pwa/src/wallet/` and `src/mint/`
 
-| File | Responsibility |
-|------|---------------|
-| `wallet/CashuManager.ts` | Core wallet operations: init, send, receive, melt; manages proof lifecycle |
-| `wallet/storage.ts` | Proof persistence (`getProofs` / `setProofs` per mint URL) |
-| `wallet/seed.ts` | BIP39 seed phrase generation and derivation; `persistWalletCounter` for replay prevention |
-| `wallet/p2pk.ts` | Pay-to-Public-Key locking for Cashu tokens |
-| `wallet/nut16.ts` | Cashu NUT-16 deterministic/offline token support |
-| `wallet/nwc.ts` | Nostr Wallet Connect (NIP-47) integration |
-| `wallet/lightning.ts` | Lightning invoice utilities |
-| `wallet/dleq.ts` | DLEQ blind signature proof validation |
-| `wallet/npubCash.ts` | NPub-addressed cash sends |
-| `wallet/mintBackup.ts` | Encrypted mint state backup/restore |
-| `mint/MintConnection.ts` | Per-mint HTTP connection abstraction |
-| `mint/MintSession.ts` | Session-level mint state (keyset cache, info) |
-| `mint/MintQuoteManager.ts` | Quote lifecycle: create, poll, expire |
-| `mint/SwapManager.ts` | Atomic token swap (split + merge) |
-| `mint/StateCheckManager.ts` | Proof state queries (NUT-17) |
-| `mint/LockedTokenManager.ts` | Bookkeeping for P2PK/HTLC locked tokens |
-| `mint/MintRateLimiter.ts` | Per-mint request throttling |
-| `mint/PaymentRequestManager.ts` | Cashu payment request handling |
-| `mint/MintCapabilityStore.ts` | Stores mint info (supported NUTs) |
-| `mint/MintRequestCache.ts` | Response caching to avoid redundant mint calls |
+#### Wallet Modules (`taskify-pwa/src/wallet/`)
+
+| File | Status | Responsibility |
+|------|-----|--|
+| `CashuManager.ts` | ✅ Current | Core wallet operations: init, send, receive, melt; manages proof lifecycle |
+| `storage.ts` | ✅ Current | Proof persistence (`getProofs` / `setProofs` per mint URL) |
+| `seed.ts` | ✅ Current | BIP39 seed phrase generation and derivation; `persistWalletCounter` for replay prevention |
+| `p2pk.ts` | ✅ Current | Pay-to-Public-Key locking for Cashu tokens |
+| `nut16.ts` | ✅ Current | Cashu NUT-16 deterministic/offline token support |
+| `nwc.ts` | ✅ Current | Nostr Wallet Connect (NIP-47) integration |
+| `lightning.ts` | ✅ Current | Lightning invoice utilities |
+| `dleq.ts` | ✅ Current | DLEQ blind signature proof validation |
+| `npubCash.ts` | ✅ Current | NPub-addressed cash sends |
+| `mintBackup.ts` | ✅ Current | Encrypted mint state backup/restore |
+| `peanut.ts` | ✅ Current | Peanut network utility functions (lightning node discovery) |
+
+#### Mint Modules (`taskify-pwa/src/mint/`)
+
+| File | Status | Responsibility |
+|------|-----|--|
+| `MintConnection.ts` | ✅ Current | Per-mint HTTP connection abstraction |
+| `MintSession.ts` | ✅ Current | Session-level mint state (keyset cache, info) |
+| `MintQuoteManager.ts` | ✅ Current | Quote lifecycle: create, poll, expire |
+| `SwapManager.ts` | ✅ Current | Atomic token swap (split + merge) |
+| `StateCheckManager.ts` | ✅ Current | Proof state queries (NUT-17) |
+| `LockedTokenManager.ts` | ✅ Current | Bookkeeping for P2PK/HTLC locked tokens |
+| `MintRateLimiter.ts` | ✅ Current | Per-mint request throttling |
+| `PaymentRequestManager.ts` | ✅ Current | Cashu payment request handling |
+| `MintCapabilityStore.ts` | ✅ Current | Stores mint info (supported NUTs) |
+| `MintRequestCache.ts` | ✅ Current | Response caching to avoid redundant mint calls |
 
 **React bindings:** `src/context/CashuContext.tsx` (main wallet state), `NwcContext.tsx` (NWC), `P2PKContext.tsx` (P2PK locked tokens).
 
@@ -233,10 +244,7 @@ main.tsx
        ├─ NostrSession.init(relays)
        │    ├─ Creates NDK instance
        │    ├─ Connects to relays (with health tracking)
-       │    └─ Begins startup event ingest
-       │         └─ startupStability.ts: frame-budget dispatch,
-       │              caps events per frame (FLUSH_BATCH_SIZE=64),
-       │              prevents main-thread stall
+       │    └─ Begins subscription setup
        │
        ├─ CashuManager.init() per configured mint
        │    ├─ Loads proofs from IndexedDB
@@ -479,17 +487,16 @@ NostrSession.subscribe(filters, options)
        ├─ Normalize filters (add cursor `since` from CursorStore)
        ├─ Deduplicate: same filter + relay combo → refCount++
        ├─ NDK.subscribe(filters, relaySet)
-       └─ Returns ManagedSubscription { onEvent, onEose, close }
+       └─ Returns ManagedSubscription { key, subscription, release, filters, relayUrls }
 
 Events arrive
-  → EventCache.seen(eventId)? → drop (duplicate)
-  → startupStability frame-budget dispatcher (src/nostr/startupStability.ts — pending merge from fix/startup-relay-stability)
-       └─ Batch ≤64 events per requestAnimationFrame
-            → User onEvent handlers process each batch
+  → SubscriptionManager state.seenIds has eventId? → drop (duplicate)
+  → EventCache.add(event)
+  → CursorStore.updateMany(filters, latestEventTimestamp)
+  → User onEvent handlers
 
 Subscription closed (component unmount or explicit)
-  → refCount-- → if 0: NDK.subscription.stop()
-  → CursorStore.update(filter, latestEventTimestamp)
+  → release() → refCount-- → if 0: NDK.subscription.stop()
 ```
 
 ### Relay Health Tracking (`nostr/RelayHealth.ts`)
@@ -499,9 +506,13 @@ Subscription closed (component unmount or explicit)
 - Unhealthy relays excluded from publish relay sets
 - Recovery: successful event from relay resets failure count
 
-### Startup Stability (`nostr/startupStability.ts`)
+### Startup Stability (Pending Merge)
 
-At startup, relays may flood hundreds of events. Without rate control, this blocks the main thread and causes the app to stall. The stability module:
+The current version **does not yet include** startupStability.ts. This stabilization module is on branch `fix/startup-relay-stability` and pending merge.
+
+**Current behavior:** No rate control at startup — relays may flood hundreds of events, potentially blocking the main thread.
+
+**Planned behavior (after merge):**
 - Intercepts the NDK event stream at startup
 - Dispatches events in batches of `FLUSH_BATCH_SIZE=64` per animation frame
 - Uses `requestAnimationFrame` with `setTimeout(0)` fallback for environments that throttle rAF
@@ -517,10 +528,10 @@ At startup, relays may flood hundreds of events. Without rate control, this bloc
 ### Event Deduplication
 
 Two-layer deduplication:
-1. **`EventCache`** — global in-memory set of seen event IDs (FIFO eviction at 2048 entries)
-2. **`SubscriptionManager`** — per-subscription `seenIds` Set (FIFO eviction at 4096 entries)
+1. **`SubscriptionManager`** — per-subscription `seenIds` Set prevents duplicate callback dispatch.
+2. **`EventCache`** — global in-memory cache of recent event IDs with FIFO-style eviction at 2048 entries (auxiliary cache for downstream reads).
 
-Events that pass both layers are dispatched to handlers.
+Events are deduped for dispatch by `seenIds`; `EventCache` is populated after dispatch eligibility checks.
 
 ---
 
