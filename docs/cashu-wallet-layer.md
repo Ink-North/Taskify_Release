@@ -190,6 +190,63 @@ Entry: `StateCheckManager.checkStates(proofs)`
 
 ---
 
+## Mint refresh retry matrix (keyset drift resilience)
+
+`CashuManager.withMintRefreshRetry(...)` is the core one-retry guard used by claim/receive/send/melt quote and melt execution paths.
+
+Anchors:
+- Retry wrapper: `taskify-pwa/src/wallet/CashuManager.ts:415–424`
+- Refresh trigger classifier: `:376–390`
+- Refresh implementation + rebuild fallback: `:402–413`
+
+### Trigger conditions (current code)
+
+The retry path runs once when either of these matches:
+
+1. **Known numeric error codes**: `11005`, `12001`, `12002`
+   - Anchor: `REFRESH_RETRY_CODES` (`taskify-pwa/src/wallet/CashuManager.ts:54`)
+2. **Message/detail text contains** keyset-drift hints:
+   - `"no keyset found"`
+   - `"keyset"`
+   - `"input_fee_ppk"`
+   - `"transaction is not balanced"`
+   - `"wallet keyset has no keys"`
+   - Anchor: `shouldRefreshMintState(...)` (`taskify-pwa/src/wallet/CashuManager.ts:376–390`)
+
+If `wallet.loadMint(true)` itself fails with specific keyset-loading messages, manager rebuilds wallet state via `init()` before the second attempt.
+
+Operationally: this is a **single refresh + single retry** strategy (not unbounded retry).
+
+## Melt idempotency + recovery deep slice
+
+This is the highest-risk wallet mutation path and should be preserved during refactors.
+
+Anchors:
+- Main melt flow: `taskify-pwa/src/wallet/CashuManager.ts:757–828`
+- Pending blank-change store: `:107–137`
+- Change finalization: `:139–159`
+- Request-id idempotency wrapper: `taskify-pwa/src/mint/MintConnection.ts:205–224`
+
+### Sequence (exact behavior)
+
+1. `MintConnection.payMeltQuote(...)` computes deterministic request id from quote/request and calls `PaymentRequestManager.executeOnce(...)`.
+2. `CashuManager.executeMeltQuote(...)` pre-splits proofs (`keep`, `send`) and validates DLEQ on both sets before melt.
+3. During `wallet.meltProofs(...)`, `onChangeOutputsCreated` stores melt blanks by quote key in `pendingMeltBlanks`.
+4. On thrown melt error:
+   - restore unpaid state (`keep + send`) immediately,
+   - check melt quote status,
+   - if quote is actually paid, finalize stored blanks via `completeMelt(...)`, DLEQ-validate change, then persist paid state (`keep + change`).
+5. On successful melt response:
+   - DLEQ-validate returned change when present,
+   - if response has no change but stored blanks exist and quote is paid, finalize from stored blanks,
+   - persist paid (`keep + change`) or unpaid (`keep + send`) proof set accordingly.
+
+### Invariants to protect
+
+- Never persist unvalidated change proofs.
+- Never drop `pendingMeltBlanks` cleanup on successful paid resolution.
+- Preserve request-id idempotency to avoid duplicate payment execution races.
+
 ## Security & Reliability Notes (Current)
 
 - DLEQ proof validation is explicit in wallet and connection paths before proofs are treated as valid.
