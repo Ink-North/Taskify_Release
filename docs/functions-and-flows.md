@@ -72,12 +72,9 @@ App.tsx (mount)
   8. Startup relay ingest begins:
        SubscriptionManager.subscribe(taskFilters)
        → src/nostr/SubscriptionManager.ts
-       → CursorStore loads `since` per filter (src/nostr/CursorStore.ts)
-       → Events arrive → EventCache.seen() deduplication
-       → startupStability frame-budget dispatch:
-            src/nostr/startupStability.ts  [on fix/startup-relay-stability, pending merge]
-            FLUSH_BATCH_SIZE = 64 events per requestAnimationFrame
-            → Prevents main-thread stall from relay event flood
+       → CursorStore injects `since` per normalized filter (src/nostr/CursorStore.ts)
+       → Events arrive → per-subscription `seenIds` dedupe + EventCache.add(raw)
+       → Handlers fire immediately from the NDK `event` callback (no frame-budget dispatcher in this branch)
 
   9. CashuManager.init() for each configured mint:
        Path: src/wallet/CashuManager.ts
@@ -105,7 +102,7 @@ App.tsx (mount)
 ### Where to Edit
 - Change relay defaults: `src/lib/relays.ts`
 - Change storage init timeout: `src/storage/storageBootstrap.ts`
-- Change startup event batch size: `src/nostr/startupStability.ts` (`FLUSH_BATCH_SIZE`) — file on `fix/startup-relay-stability`, pending merge
+- Change startup ingest behavior (dedupe/cursor/event callback path): `src/nostr/SubscriptionManager.ts`
 - Change polyfills: `src/main.tsx` top-of-file
 
 ---
@@ -696,65 +693,60 @@ Error codes: `PARSE_JSON` | `VALIDATION` | `NOT_FOUND` | `CONFLICT` | `FORBIDDEN
 #### PWA Side (scheduling)
 
 ```
-1. User sets a reminder on a task (5m, 15m, 1h, 1 day preset, or custom)
-   → Task edit modal / reminder UI
+1. User sets reminders on a task (preset/custom `minutesBefore[]`)
+   → Task edit modal / reminder UI (App.tsx computes snapshot from current tasks)
 
-2. src/domains/push/pushUtils.ts constructs reminder payload:
-   { scheduledAt: ISO timestamp, title, body, taskId, boardId }
-
-3. PWA: POST /api/reminder
+2. PWA pushes the full reminder snapshot to Worker:
+   PUT /api/reminders
    Headers: Content-Type: application/json
-   Body: { deviceId, scheduledAt, payload }
-   → Cloudflare Worker receives
+   Body: {
+     deviceId,
+     reminders: [{ taskId, boardId, title, dueISO, minutesBefore: number[] }, ...]
+   }
 
-4. Worker: stores in TASKIFY_REMINDERS KV:
-   Key: "reminder:{deviceId}:{scheduledAt}:{uuid}"
-   Value: JSON({ endpoint, keys, payload })
+3. Worker `handleSaveReminders(...)` validates device + payload,
+   then rewrites reminder rows for that device in D1 table `reminders`:
+   - DELETE existing rows for device_id
+   - INSERT each computed reminder occurrence (send_at = dueISO - minutesBefore)
+
+4. Worker clears stale pending notifications for that device
+   (`DELETE FROM pending_notifications WHERE device_id = ?`).
 ```
 
 #### Worker Side (delivery, every minute)
 
 ```
 Worker cron trigger (*/1 * * * *)
-  Path: worker/src/index.ts → scheduled() handler
+  Path: worker/src/index.ts → scheduled() handler → processDueReminders(env)
 
-  1. KV.list({ prefix: "reminder:" }) → all pending reminders
+  1. Query due rows from D1 `reminders` table (batched):
+       SELECT ... FROM reminders WHERE send_at <= now ORDER BY send_at LIMIT 256
 
-  2. For each reminder:
-     a. Parse key to extract scheduledAt
-     b. if scheduledAt > now: skip (not yet due)
-     c. if scheduledAt <= now:
-        → Fetch device endpoint from TASKIFY_DEVICES KV
-        → Build Web Push request:
-             VAPID sign with VAPID_PRIVATE_KEY (P-256 ECDSA)
-             Encrypt payload with device's public key (RFC 8291)
-        → POST to push endpoint (Google FCM / Apple APNs / etc.)
-             201/202: success
-             → KV.delete(reminderKey)
-             → D1.insert(sent_reminders: taskId, firedAt)
-             410: subscription expired
-             → KV.delete(deviceKey) — remove device registration
-             → KV.delete(reminderKey)
-             Other error: log, retry next cron run
+  2. Delete fetched reminder rows, group by device_id, and enqueue entries into
+     D1 `pending_notifications` for client polling.
 
-  3. User's browser/device receives push
-     → Service worker: self.addEventListener("push", ...)
-     → self.registration.showNotification(title, {body, data})
+  3. Client poll path:
+       POST /api/reminders/poll  (deviceId or endpoint)
+     → Worker returns pending rows and deletes delivered pending records.
+
+  4. Browser app receives pending reminder payload and shows notification/UI.
 ```
 
 ### State Touched
-- `TASKIFY_REMINDERS` KV — reminder record created (scheduling), deleted (after fire)
-- `TASKIFY_DEVICES` KV — device record deleted on 410
-- `TASKIFY_DB` D1 — sent reminder logged
+- `TASKIFY_DB` D1 `reminders` table — rewritten per device on each PUT `/api/reminders`
+- `TASKIFY_DB` D1 `pending_notifications` table — filled by cron, drained by `/api/reminders/poll`
+- `TASKIFY_DEVICES` KV — device lookup/registration source (reminders require known device)
 
 ### Persistence Side Effects
-- KV entries created and deleted by Worker
-- D1 audit log entry written per fired reminder
+- Existing reminder rows for the device are replaced atomically via D1 batch
+- Due reminders are deleted from `reminders` and inserted into `pending_notifications`
+- Polling client reads + deletes pending rows (at-least-once semantics per poll window)
 
 ### Where to Edit
-- Push utilities (PWA): `src/domains/push/pushUtils.ts`
-- Worker cron handler: `worker/src/index.ts` (`scheduled` export)
-- Reminder scheduling API: `worker/src/index.ts` (`/api/reminder` route)
+- PWA reminder snapshot + sync call: `src/App.tsx` (PUT `${workerBaseUrl}/api/reminders`)
+- Push utility helpers: `src/domains/push/pushUtils.ts`
+- Worker cron handler: `worker/src/index.ts` (`scheduled` export → `processDueReminders`)
+- Reminder APIs: `worker/src/index.ts` (`PUT /api/reminders`, `POST /api/reminders/poll`)
 - Service worker push handler: `taskify-pwa/public/` (service worker file)
 - Worker bindings config: `wrangler.toml`
 
@@ -770,7 +762,7 @@ Worker cron trigger (*/1 * * * *)
 | Nostr event publishing | `src/nostr/PublishCoordinator.ts`, `NostrSession.ts` |
 | Nostr subscriptions | `src/nostr/SubscriptionManager.ts` |
 | Relay health | `src/nostr/RelayHealth.ts` |
-| Startup event flood control | `src/nostr/startupStability.ts` (pending merge from `fix/startup-relay-stability`) |
+| Startup event ingest behavior | `src/nostr/SubscriptionManager.ts` (`sub.on("event", ...)` immediate handler path) |
 | Cashu send/receive | `src/wallet/CashuManager.ts` |
 | Proof storage | `src/wallet/storage.ts` |
 | P2PK locking | `src/wallet/p2pk.ts` |
