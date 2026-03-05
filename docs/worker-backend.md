@@ -98,7 +98,7 @@ Reference: `worker/src/index.ts:174–233`, plus migration baseline `worker/migr
 `PUT /api/reminders` (`handleSaveReminders`) validates payload and performs full replacement for device state.
 
 High-level flow:
-1. Parse `{ deviceId, subscriptionId?, reminders[] }`
+1. Parse `{ deviceId, reminders[] }`
 2. Validate reminder item shape inline (`taskId`, `title`, `dueISO`, `minutesBefore[]`) and compute `sendAt`
 3. Resolve/verify device record
 4. Replace existing device reminder rows in D1
@@ -123,7 +123,7 @@ Reference:
 References:
 - `scheduled`: `worker/src/index.ts:317–335`
 - `processDueReminders`: `worker/src/index.ts:2443+`
-- `appendPending`: `worker/src/index.ts:2498+`
+- `appendPending`: `worker/src/index.ts:2507+`
 - `sendPushPing`: `worker/src/index.ts:2779+`
 
 ### 5.3 Client poll + drain
@@ -209,7 +209,7 @@ Common failure classes:
    - Mitigation: validate env setup and secrets before deploy
 
 2. **Stale push subscriptions**
-   - 410 from push service during ping
+   - 404/410 from push service during ping
    - Worker cleanup path removes stale device registrations
 
 3. **Reminder drift / late delivery**
