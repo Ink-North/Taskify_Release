@@ -258,7 +258,55 @@ Implementation detail worth preserving:
 - Handler-level validation returns stable 4xx codes used by callers to differentiate user/actionable failures vs transient failures.
 - Everything else is wrapped by the router `try/catch` and returned as `500` with `{ error }`.
 
-## 12) Known limitations (current state)
+## 12) Reminder dispatch deep slice (DB + side-effect sequence)
+
+This section is a precise "what runs in what order" map for the cron-to-device path.
+Use it when changing idempotency or debugging duplicate/missed notifications.
+
+### 12.1 `processDueReminders` batch loop contract
+
+Anchor: `worker/src/index.ts:2443–2504`
+
+Per iteration:
+1. **Select due rows** (`send_at <= now`, ordered, capped by `LIMIT 256`).
+   - SQL anchor: `:2451–2457`
+2. **Delete selected reminder rows immediately** (device_id + reminder_key pairs).
+   - SQL anchor: `:2466–2471`
+3. **Group reminders by device** in-memory.
+   - Grouping anchor: `:2473–2481`
+4. For each device:
+   - Load device record (`getDeviceRecord`).
+   - If missing device: clear pending rows for that device and skip push.
+     - Missing-device cleanup anchor: `:2484–2487`
+   - Else append pending rows (`appendPending`) and push ping.
+     - append + ping anchor: `:2496–2499`
+
+Important behavior: reminder rows are removed **before** push ping, so queue durability relies on `pending_notifications`, not `reminders`.
+
+### 12.2 Queue append/poll drain semantics
+
+- Append path: `appendPending` inserts one row per reminder with shared `created_at` batch timestamp.
+  - Anchor: `worker/src/index.ts:2507–2528`
+- Poll path: `handlePollReminders` loads all pending rows for device, ordered by `(created_at, id)`, then deletes exactly those row IDs.
+  - Anchor: `worker/src/index.ts:2415–2431`
+
+This yields:
+- deterministic delivery order per device (oldest first),
+- at-most-once drain for fetched row IDs,
+- no server retry queue after successful poll response.
+
+### 12.3 Stale-subscription cleanup trigger
+
+When push ping returns `404/410`, worker calls `handleDeleteDevice(deviceId, env)`.
+That cascades through D1 + KV mirrors (device/reminder/pending).
+
+Anchors:
+- push expiry branch: `worker/src/index.ts:2795–2798`
+- deletion fan-out: `worker/src/index.ts:2305–2333`
+
+Operational implication: endpoint expiry is treated as terminal device invalidation, not temporary backoff.
+
+## 13) Known limitations (current state)
 
 - Worker implementation is monolithic (`worker/src/index.ts`), so cross-cutting edits are easy to miss in review.
 - Legacy KV migration paths increase branch complexity and testing surface.
