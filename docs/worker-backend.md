@@ -241,7 +241,24 @@ Before changing reminder/backend logic, verify:
 
 ---
 
-## 11) Known limitations (current state)
+## 11) Endpoint error semantics (status-code quick map)
+
+Use this when changing validation/handler behavior so clients and service worker retries stay correct.
+
+| Route | Success | Caller-visible error statuses in current implementation | Notes / code anchors |
+|---|---|---|---|
+| `PUT /api/devices` | `200` JSON `{ subscriptionId, deviceId }` | `400` (`deviceId`/`platform`/`subscription` validation), `500` (router-level catch) | Validation in `handleRegisterDevice` (`worker/src/index.ts:608–622`) |
+| `DELETE /api/devices/:deviceId` | `204` empty body | `500` (unexpected DB/runtime error via router catch) | Delete is idempotent in practice; missing rows still return `204` (`worker/src/index.ts:2305–2333`) |
+| `PUT /api/reminders` | `204` empty body | `400` (`deviceId` missing, `reminders` not array), `404` (unknown device), `500` (router catch) | Existing reminders are replaced, then pending queue is cleared (`worker/src/index.ts:2335–2401`) |
+| `POST /api/reminders/poll` | `200` JSON (`[]` or `PendingReminder[]`) | `404` (`Device not registered`), `500` (router catch) | Poll drains `pending_notifications` rows in same request (`worker/src/index.ts:2404–2441`) |
+| `PUT /api/backups` | `200` JSON `{ ok: true }` | `400` (`npub`/`ciphertext`/`iv` validation), `501` (R2 not configured), `500` (router catch) | Writes backup envelope with timestamps (`worker/src/index.ts:347–379`) |
+| `GET /api/backups?npub=...` | `200` JSON `{ backup }` | `400` (invalid `npub`), `404` (not found), `500` (read/parse corruption), `501` (R2 not configured) | Updates `lastReadAt` best-effort before returning payload (`worker/src/index.ts:381–429`) |
+
+Implementation detail worth preserving:
+- Handler-level validation returns stable 4xx codes used by callers to differentiate user/actionable failures vs transient failures.
+- Everything else is wrapped by the router `try/catch` and returned as `500` with `{ error }`.
+
+## 12) Known limitations (current state)
 
 - Worker implementation is monolithic (`worker/src/index.ts`), so cross-cutting edits are easy to miss in review.
 - Legacy KV migration paths increase branch complexity and testing surface.
