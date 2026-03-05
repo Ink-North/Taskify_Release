@@ -149,7 +149,7 @@ App.tsx (mount)
 
    D. Restore from cloud (Worker R2)
       Handler: handleOnboardingRestoreFromCloud (App.tsx)
-        → Accepts nsec, fetches backup from GET /api/backup/{pubkeyHex}
+        → Accepts nsec, fetches backup from GET /api/backups?npub={npub}
         → Decrypts with user key
         → Restores same as backup file path
 
@@ -157,7 +157,7 @@ App.tsx (mount)
       Handler: handleOnboardingEnableNotifications (App.tsx)
         → navigator.serviceWorker.ready
         → pushManager.subscribe({userVisibleOnly: true, applicationServerKey})
-        → POST /api/subscribe with endpoint + keys
+        → PUT /api/devices with endpoint + push keys (registers device)
 
 3. User clicks "Complete"
    Handler: completeOnboardingWithReload (App.tsx ~line 8184)
@@ -717,19 +717,26 @@ Error codes: `PARSE_JSON` | `VALIDATION` | `NOT_FOUND` | `CONFLICT` | `FORBIDDEN
 
 ```
 Worker cron trigger (*/1 * * * *)
-  Path: worker/src/index.ts → scheduled() handler → processDueReminders(env)
+  Path: worker/src/index.ts → scheduled() handler
+  Runs two tasks each invocation:
+    a. processDueReminders(env)  — deliver due reminder push notifications
+    b. cleanupExpiredBackups(env) — prune stale R2 backup objects
 
+  processDueReminders steps:
   1. Query due rows from D1 `reminders` table (batched):
        SELECT ... FROM reminders WHERE send_at <= now ORDER BY send_at LIMIT 256
 
   2. Delete fetched reminder rows, group by device_id, and enqueue entries into
-     D1 `pending_notifications` for client polling.
+     D1 `pending_notifications` for client polling (appendPending).
 
-  3. Client poll path:
-       POST /api/reminders/poll  (deviceId or endpoint)
-     → Worker returns pending rows and deletes delivered pending records.
+  3. For each device: resolve push subscription (D1 first, KV migration fallback),
+     then send a lightweight Web Push ping (sendPushPing) to wake the service worker.
+     → If push endpoint is expired (HTTP 410): device state is removed.
 
-  4. Browser app receives pending reminder payload and shows notification/UI.
+  4. Service worker wakes on push, then polls:
+       POST /api/reminders/poll  (with subscription endpoint)
+     → Worker returns pending rows, deletes delivered records, returns payload.
+     → SW shows one notification per pending item.
 ```
 
 ### State Touched

@@ -200,7 +200,7 @@ All Worker logic is in a single file (~98KB). Responsibilities:
 
 | Area | Detail |
 |------|--------|
-| **Static assets** | Serves `taskify-pwa/dist/` via `ASSETS` R2 binding |
+| **Static assets** | Serves `taskify-pwa/dist/` via `ASSETS` static-assets binding (`[assets]` in `wrangler.toml`; type `AssetFetcher`, not R2) |
 | **Device registration** | `PUT /api/devices` and `DELETE /api/devices/:deviceId` — stores push subscription records (D1 as source-of-truth, optional KV mirrors) |
 | **Reminder scheduling** | `PUT /api/reminders` — upserts reminder rows in D1 (`reminders` table) per device |
 | **Reminder delivery polling** | `POST /api/reminders/poll` — drains pending reminder rows for clients that poll after push wake-up |
@@ -253,7 +253,7 @@ main.tsx
        │
        └─ Push notification registration check
             └─ If configured: registers service worker subscription
-                 → Worker /api/subscribe endpoint
+                 → Worker PUT /api/devices (registers push subscription)
 ```
 
 ### Task Event Flow (Nostr Sync)

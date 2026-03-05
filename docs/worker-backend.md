@@ -56,6 +56,20 @@ Router dispatch in `fetch()`:
 
 Reference: `worker/src/index.ts:290–307`.
 
+### API contract anchors (agent quick-check table)
+
+Use this table before changing handler logic so caller contracts stay aligned.
+
+| Route | Request contract | Response contract | Primary caller(s) | Handler anchor |
+|---|---|---|---|---|
+| `GET /api/config` | none | `{ workerBaseUrl, vapidPublicKey }` | PWA bootstrap/config load | router branch in `fetch()` (`worker/src/index.ts:278`) |
+| `PUT /api/devices` | `{ deviceId, platform, subscription{endpoint,keys{auth,p256dh}} }` | `{ subscriptionId, deviceId }` | `taskify-pwa/src/App.tsx:13237` | `worker/src/index.ts:608` (`handleRegisterDevice`) |
+| `DELETE /api/devices/:deviceId` | path param `deviceId` | `204` empty body | `taskify-pwa/src/App.tsx:13321` | `worker/src/index.ts:2305` (`handleDeleteDevice`) |
+| `PUT /api/reminders` | `{ deviceId, reminders[] }` | `204` empty body | reminder sync in PWA | `worker/src/index.ts:2335` (`handleSaveReminders`) |
+| `POST /api/reminders/poll` | `{ endpoint }` or `{ deviceId }` | `PendingReminder[]` and drains rows | `taskify-pwa/public/sw.js:213` | `worker/src/index.ts:2404` (`handlePollReminders`) |
+| `PUT /api/backups` | `{ npub, ciphertext, iv, version?, createdAt? }` | `{ ok: true }` | onboarding backup save | `worker/src/index.ts:347` (`handleSaveBackup`) |
+| `GET /api/backups?npub=...` | query `npub` | `{ backup }` (payload has `ciphertext`, `iv`, metadata) | onboarding restore | `taskify-pwa/src/App.tsx:2295` | `worker/src/index.ts:381` (`handleLoadBackup`) |
+
 ---
 
 ## 4) Data model (D1 source-of-truth)
