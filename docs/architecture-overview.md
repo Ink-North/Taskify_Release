@@ -201,19 +201,20 @@ All Worker logic is in a single file (~98KB). Responsibilities:
 | Area | Detail |
 |------|--------|
 | **Static assets** | Serves `taskify-pwa/dist/` via `ASSETS` R2 binding |
-| **Push subscriptions** | `/api/subscribe` — stores device endpoint + keys in D1 |
-| **Reminder scheduling** | `/api/reminder` — writes `{scheduledAt, payload}` to `TASKIFY_REMINDERS` KV |
-| **Cron handler** | Runs every minute; scans `TASKIFY_REMINDERS` KV; fires overdue reminders via Web Push |
-| **R2 backups** | `/api/backup` — stores encrypted backup blobs in `TASKIFY_BACKUPS` bucket |
-| **VAPID signing** | Signs Web Push requests using P-256 ECDSA; private key in `VAPID_PRIVATE_KEY` KV |
+| **Device registration** | `PUT /api/devices` and `DELETE /api/devices/:deviceId` — stores push subscription records (D1 as source-of-truth, optional KV mirrors) |
+| **Reminder scheduling** | `PUT /api/reminders` — upserts reminder rows in D1 (`reminders` table) per device |
+| **Reminder delivery polling** | `POST /api/reminders/poll` — drains pending reminder rows for clients that poll after push wake-up |
+| **Cron handler** | Runs every minute; reads due reminders from D1, appends pending notifications, sends Web Push ping |
+| **R2 backups** | `PUT /api/backups` and `GET /api/backups?npub=...` — stores encrypted backup blobs in `TASKIFY_BACKUPS` bucket |
+| **VAPID signing** | Signs Web Push requests using P-256 ECDSA; private key resolved from `VAPID_PRIVATE_KEY` env/KV binding |
 
 **Cloudflare bindings** (`wrangler.toml`):
-- `TASKIFY_DEVICES` KV — device registration cache
-- `TASKIFY_REMINDERS` KV — pending reminder queue
-- `TASKIFY_PENDING` KV — in-flight push state
-- `VAPID_PRIVATE_KEY` KV — VAPID signing key
+- `TASKIFY_DB` D1 — source-of-truth for `devices`, `reminders`, and `pending_notifications`
+- `TASKIFY_DEVICES` KV (optional) — legacy/cache lookup for device records
+- `TASKIFY_REMINDERS` KV (optional) — legacy reminder storage keyspace
+- `TASKIFY_PENDING` KV (optional) — legacy pending-notification keyspace
+- `VAPID_PRIVATE_KEY` env or KV binding — VAPID signing key material
 - `TASKIFY_BACKUPS` R2 — encrypted backup objects
-- `TASKIFY_DB` D1 — device subscriptions + sent-reminder log
 
 ---
 
@@ -355,24 +356,23 @@ External agent sends JSON:
 ### Push Reminder Flow
 
 ```
-User sets reminder on task
+User updates reminder set for a device
   │
-  └─ PWA: POST /api/reminder {scheduledAt, payload, deviceId}
-       └─ Worker: writes to TASKIFY_REMINDERS KV
+  └─ PWA: PUT /api/reminders { deviceId, reminders[] }
+       └─ Worker: replaces device reminder rows in D1 (`reminders` table)
 
 Cloudflare Worker cron (every minute)
   │
-  ├─ Scans TASKIFY_REMINDERS KV for entries where scheduledAt <= now
+  ├─ Reads due rows from D1 where send_at <= now (batched)
   │
-  ├─ For each overdue reminder:
-  │    ├─ Fetch device endpoint from TASKIFY_DEVICES KV
-  │    ├─ Sign Web Push payload with VAPID private key (P-256 ECDSA)
-  │    ├─ POST to device push endpoint
-  │    │    → 201/202: success, mark reminder sent in D1
-  │    │    → 410: subscription expired, remove device from KV + D1
-  │    └─ Delete fired reminder from TASKIFY_REMINDERS KV
+  ├─ For each device with due reminders:
+  │    ├─ Deletes fired rows from `reminders`
+  │    ├─ Appends payload rows into `pending_notifications`
+  │    ├─ Resolves device subscription (D1, with KV fallback)
+  │    ├─ Signs Web Push ping with VAPID private key (P-256 ECDSA)
+  │    └─ POSTs ping to device endpoint (410 triggers subscription cleanup)
   │
-  └─ Browser receives push → service worker shows notification
+  └─ Client receives push and calls POST /api/reminders/poll to drain pending items
 ```
 
 ---

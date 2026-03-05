@@ -25,8 +25,8 @@ This doc maps the **current wallet + mint implementation** in `taskify-pwa/src/w
   - Maintains in-memory `pendingMeltBlanks` to recover `change` proofs if a melt is paid but response handling is interrupted.
 
 - `storage.ts`
-  - localStorage-backed proof store and mint list management.
-  - Pending token queue helpers (`addPendingToken`, `markPendingTokenAttempt`, `replacePendingTokens`, etc.).
+  - IndexedDB-backed wallet store via `idbKeyValue` (`TASKIFY_STORE_WALLET`) with localStorage-style keys (`cashu_proofs_v1`, `cashu_tracked_mints_v1`, etc.).
+  - Proof persistence helpers (`getProofs`, `setProofs`) plus mint-list and pending-token queue helpers (`addPendingToken`, `markPendingTokenAttempt`, `replacePendingTokens`, etc.).
 
 - `seed.ts`
   - Seed lifecycle: `getWalletSeedMnemonic`, `getWalletSeedBytes`, backup/restore helpers, counter persistence.
