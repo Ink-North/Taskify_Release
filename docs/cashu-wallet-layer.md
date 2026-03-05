@@ -247,6 +247,74 @@ Anchors:
 - Never drop `pendingMeltBlanks` cleanup on successful paid resolution.
 - Preserve request-id idempotency to avoid duplicate payment execution races.
 
+## MintConnection request-control contract (agent verification chunk)
+
+`MintConnection` mixes three distinct control layers that are easy to conflate during refactors:
+
+1) `MintRequestCache` (request-key dedupe / short memoization),
+2) `MintRateLimiter` (local pacing + 429 backoff),
+3) `PaymentRequestManager` (in-flight idempotency for melt execution).
+
+### 1) Rate-limit wrapping is selective, not universal
+
+`runWithRateLimit(...)` is used for quote/status style calls (`createMintQuote`, `checkMintQuote`, `createMeltQuote`) but **not** for all wallet mutations.
+
+Anchors:
+- Wrapper: `taskify-pwa/src/mint/MintConnection.ts` (`runWithRateLimit`)
+- Wrapped flows: `createMintQuote`, `checkMintQuote`, `createMeltQuote`
+- Direct mutation flows: `claimMint`, `receiveToken`, `createSendToken`, `payMeltQuote`
+
+Implication: mutation reliability mainly depends on wallet-layer retry/idempotency guards, not the rate-limiter scheduler.
+
+### 2) Cache TTL=0 is explicit bypass mode
+
+`runWithRateLimit` checks `options.ttlMs === 0` and skips cache, but still schedules through `MintRateLimiter`.
+
+Anchor:
+- `taskify-pwa/src/mint/MintConnection.ts` (`runWithRateLimit`)
+
+In `MintRequestCache`, non-positive TTLs become near-immediate expiry (`now + 1`) rather than permanent cache entries.
+
+Anchor:
+- `taskify-pwa/src/mint/MintRequestCache.ts` (`getOrCreate`)
+
+### 3) Request-key stability is payload-order independent
+
+`MintRequestCache.buildKey(...)` uses stable object key ordering via `stableStringify`, so equivalent payload objects produce deterministic keys.
+
+Anchors:
+- `taskify-pwa/src/mint/MintRequestCache.ts` (`stableStringify`, `buildKey`)
+
+Operational consequence: callers can pass object literals in different key order without blowing dedupe hit rate.
+
+### 4) 429 handling escalates to max backoff
+
+`MintRateLimiter.schedule(...)` reads HTTP status from `err.response.status` / `err.status` and, on `429`, sets backoff to `maxBackoffMs` (default 5000ms).
+
+Anchors:
+- `taskify-pwa/src/mint/MintRateLimiter.ts` (`schedule`, `registerSignal`, constructor defaults)
+
+For non-429 failures, optional `signal.slow` only bumps to at least `minIntervalMs` (default 120ms), then relaxes on later successes.
+
+### 5) Melt payment idempotency is per request-id while in-flight
+
+`PaymentRequestManager.executeOnce(...)` dedupes by trimmed `requestId` using an in-memory `Map`; entry is removed in `finally`.
+
+Anchors:
+- `taskify-pwa/src/mint/PaymentRequestManager.ts` (`executeOnce`)
+- Request-id derivation: `taskify-pwa/src/mint/MintConnection.ts` (`buildMeltPaymentRequestId`, `payMeltQuote`)
+
+Boundary: this is process-local in-flight dedupe, not durable replay protection across app restarts.
+
+### Safe-edit guardrails
+
+If modifying this layer, preserve:
+- deterministic request-keying (`buildKey`) for equivalent payloads,
+- explicit cache bypass semantics when `ttlMs === 0`,
+- 429-specific aggressive backoff path,
+- in-flight melt idempotency keyed by deterministic request-id derivation,
+- DLEQ re-validation after wallet mutation return paths.
+
 ## Security & Reliability Notes (Current)
 
 - DLEQ proof validation is explicit in wallet and connection paths before proofs are treated as valid.
