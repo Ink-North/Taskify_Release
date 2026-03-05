@@ -156,6 +156,43 @@ Entry: `NostrSession.publish(...)` / `publishRaw(...)` → `PublishCoordinator.p
 
 ---
 
+## Relay Auth + Reconnect State Machine (agent troubleshooting chunk)
+
+This is the concrete event-driven behavior in `NostrSession.setupRelayHooks()`.
+
+### Hook wiring and side effects
+
+| NDK pool event/policy | Current behavior | Code anchor |
+|---|---|---|
+| `relayAuthDefaultPolicy(relay, challenge)` | Calls `RelayAuthManager.respond(...)`; returns signed auth event or `false`; logs failures without throwing | `taskify-pwa/src/nostr/NostrSession.ts:186–201` |
+| `relay:connect` | Marks relay healthy, resets auth state, logs one-time debug summary in DEV | `taskify-pwa/src/nostr/NostrSession.ts:201–205` |
+| `relay:ready` | Marks relay healthy (lightweight confirmation) | `taskify-pwa/src/nostr/NostrSession.ts:207–209` |
+| `notice` containing "auth" | Emits informational auth notice log only | `taskify-pwa/src/nostr/NostrSession.ts:211–215` |
+| `relay:disconnect` | Marks failure (`reason: "disconnect"`), resets auth state, schedules reconnect | `taskify-pwa/src/nostr/NostrSession.ts:217–221` |
+| `relay:authed` | Marks relay authed + healthy | `taskify-pwa/src/nostr/NostrSession.ts:223–227` |
+
+### Reconnect scheduling behavior
+
+`NostrSession.scheduleRelayConnect(relayUrl)` uses `RelayHealthTracker.nextAttemptIn(...)` delay and enforces **one active timer per relay** via `relayRetryTimers` map.
+
+Flow:
+1. If a timer exists for relay, no-op.
+2. Wait computed delay from relay health backoff.
+3. On timer fire:
+   - if relay still blocked by backoff, recursively reschedule
+   - else call `ndk.pool.getRelay(relayUrl, true)` and `relay.connect()` best-effort
+4. Failed reconnect attempts are swallowed (debug-only logging in DEV), leaving failure accounting to relay hooks.
+
+Anchors:
+- `taskify-pwa/src/nostr/NostrSession.ts:239–263` (`scheduleRelayConnect`)
+- `taskify-pwa/src/nostr/RelayHealth.ts` (`nextAttemptIn`, failure counter/backoff math)
+
+### Practical debugging implications
+
+- If relays appear "stuck," inspect whether they are in backoff (`nextAttemptIn > 0`) before assuming subscription logic is broken.
+- Reconnect attempts are timer-driven and do not force immediate reconnect on every disconnect.
+- Auth failures and transport failures are intentionally non-fatal to the session singleton; degraded relay sets are expected behavior.
+
 ## Security & Reliability Notes (current code)
 
 - Relay auth challenges are handled via NDK auth policy hook and `RelayAuthManager`.
