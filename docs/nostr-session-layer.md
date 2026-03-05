@@ -15,6 +15,21 @@ This doc maps the **current implementation** in `taskify-pwa/src/nostr/` (branch
 
 ## File Map
 
+## Fast Code Anchors (jump directly by function)
+
+Use this when you need to verify behavior against code quickly.
+
+| Concern | Anchor(s) |
+|---|---|
+| Session singleton boot path | `taskify-pwa/src/nostr/NostrSession.ts:74` (`init`), `:122` (`ensureRelays`), `:86` (`connect`) |
+| Relay hook wiring + auth policy | `taskify-pwa/src/nostr/NostrSession.ts:186` (`setupRelayHooks`) |
+| Relay health transitions | `taskify-pwa/src/nostr/RelayHealth.ts:38` (`markSuccess`), `:51` (`markFailure`) |
+| NIP-11 refresh + failure accounting | `taskify-pwa/src/nostr/NostrSession.ts:231` (`refreshRelayInfo`) + `:143/:153` (low-severity failures) |
+| Subscription dedupe/refcount | `taskify-pwa/src/nostr/SubscriptionManager.ts:153` (`subscribe`), `:219` (`release`) |
+| Cursor injection/update | `taskify-pwa/src/nostr/SubscriptionManager.ts:141` (`since` injection), event handler path around `:192` |
+| Replaceable publish coalescing | `taskify-pwa/src/nostr/PublishCoordinator.ts:117` (`publish`), `:143` (`shouldSkipReplaceable` gate), pending-map reuse around `:148` |
+| SessionPool compatibility behavior | `taskify-pwa/src/nostr/SessionPool.ts:46` (`subscribe` async wrapper), `:83` (`sub`) |
+
 ### Session + coordination
 - `NostrSession.ts`
   - Owns the singleton NDK instance.

@@ -88,7 +88,7 @@ App.tsx (mount)
   10. Push subscription check:
         If push configured: navigator.serviceWorker.ready
         → getSubscription() or subscribe()
-        → POST /api/subscribe to Worker
+        → PUT /api/devices to Worker (registers push subscription)
 ```
 
 ### State Touched
