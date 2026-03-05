@@ -347,7 +347,59 @@ Quick re-check anchors:
 - Poll read+delete ids: `worker/src/index.ts:2415–2431`
 - Delete fan-out: `worker/src/index.ts:2305–2333`
 
-## 14) Known limitations (current state)
+## 14) Backup retention + cleanup sweep contract (agent verification chunk)
+
+Cloud backup cleanup is **age-based, scheduled, and state-throttled** (not per-request).
+
+### 14.1 Trigger + throttling
+
+`cleanupExpiredBackups(env)` runs from the scheduled path and gates expensive R2 scans via a state object:
+
+- State key: `backups-cleanup-state.json`
+- Reads `lastRunAt` from that object
+- Skips the sweep if last run is less than one week ago (`ONE_WEEK_MS`)
+
+Anchors:
+- State key constant: `worker/src/index.ts:161`
+- Cleanup entry + throttle check: `worker/src/index.ts:491–519`
+
+### 14.2 Sweep semantics
+
+When sweep runs, it lists `TASKIFY_BACKUPS` with:
+
+- `prefix: "backups/"`
+- `limit: 1000`
+- cursor pagination until `truncated` is false
+
+For each object, Worker attempts parse + timestamp extraction and deletes objects that are:
+
+- empty/unreadable
+- invalid JSON/object shape
+- stale (`max(lastReadAt, updatedAt, createdAt) < now - THREE_MONTHS_MS`)
+
+Anchors:
+- List + pagination: `worker/src/index.ts:527–590`
+- Timestamp comparison + delete conditions: `worker/src/index.ts:566–579`
+
+### 14.3 Metadata update invariants
+
+- `GET /api/backups` updates `lastReadAt` (best-effort) before returning payload.
+- Sweep updates cleanup state key with new `lastRunAt` only when a scan attempt occurred.
+- Cleanup state write failures are logged but do not fail request/scheduled handling.
+
+Anchors:
+- Read path metadata touch: `worker/src/index.ts:403–428`
+- Cleanup state writeback: `worker/src/index.ts:592–607`
+
+### 14.4 Safe-edit guardrails
+
+If you touch cleanup logic, preserve these invariants:
+
+- Keep age cutoff based on backup payload timestamps, not object listing metadata alone.
+- Keep cursor pagination (do not assume all keys fit one list call).
+- Keep cleanup state throttling to avoid weekly full scans on every schedule tick.
+
+## 15) Known limitations (current state)
 
 - Worker implementation is monolithic (`worker/src/index.ts`), so cross-cutting edits are easy to miss in review.
 - Legacy KV migration paths increase branch complexity and testing surface.
