@@ -94,6 +94,33 @@ This doc maps the **current wallet + mint implementation** in `taskify-pwa/src/w
 
 ---
 
+## Agent Code Anchors (spot-check map)
+
+Use this table when verifying docs against code. Anchors are function-level and stable enough for grep-based navigation.
+
+| Area | Code anchor |
+|---|---|
+| Wallet bootstrap + proof hydration | `taskify-pwa/src/wallet/CashuManager.ts:427` (`init`) + `:440` (`getProofs`) + `:470` (`setProofs`) |
+| Mint-claim path | `taskify-pwa/src/wallet/CashuManager.ts:563` (`claimMint`) |
+| Receive token path | `taskify-pwa/src/wallet/CashuManager.ts:574` (`receiveToken`) |
+| Send token path | `taskify-pwa/src/wallet/CashuManager.ts:632` (`createSendToken`) |
+| Melt quote + execute | `taskify-pwa/src/wallet/CashuManager.ts:746` (`createMeltQuote`) + `:757` (`executeMeltQuote`) + `:843` (`payMeltQuote`) |
+| Interrupted melt recovery | `taskify-pwa/src/wallet/CashuManager.ts:145` (`wallet.completeMelt(blanks)`) |
+| DLEQ verification gates | `taskify-pwa/src/wallet/dleq.ts:57` (`assertValidProofsDleq`) + callsites in `CashuManager.ts:98` and `MintConnection.ts:107` |
+| Per-mint connection bootstrap | `taskify-pwa/src/mint/MintSession.ts:53` (`getConnection`) + `taskify-pwa/src/mint/MintConnection.ts:62` (`init`) |
+| Request dedupe + rate-limit wrapper | `taskify-pwa/src/mint/MintConnection.ts:75` (`runWithRateLimit`) + `taskify-pwa/src/mint/MintRequestCache.ts:26` (`buildKey`) + `taskify-pwa/src/mint/MintRateLimiter.ts:16` (constructor defaults) |
+| Quote orchestration | `taskify-pwa/src/mint/MintQuoteManager.ts:43` (`requestMintQuote`) |
+| Proof-state batching | `taskify-pwa/src/mint/StateCheckManager.ts:30` (`flush`) + `:73` (`checkStates`) |
+| Wallet persistence primitives | `taskify-pwa/src/wallet/storage.ts:247` (`getProofs`) + `:252` (`setProofs`) |
+| Seed counter persistence | `taskify-pwa/src/wallet/seed.ts:192` (`persistWalletCounter`) + `:203` (`persistWalletCounterSnapshot`) |
+
+### Quick verification recipe (agents)
+
+1. Confirm every outward wallet mutation re-checks DLEQ (`claimMint`, `receiveToken`, `createSendToken`, `payMeltQuote`).
+2. Confirm every networked mint call enters through `MintConnection.runWithRateLimit(...)` unless explicitly local-only.
+3. Confirm persistence writes happen after proof normalization (`setProofs`) rather than raw mint response storage.
+4. Confirm melt-recovery path still uses `pendingMeltBlanks` + `completeMelt` before final proof commit.
+
 ## Control Flow Reference
 
 ## 1) Session and connection lifecycle
