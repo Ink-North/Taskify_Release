@@ -614,6 +614,75 @@ When modifying fetch/relay resolution behavior, preserve:
 - permissive `undefined` relay-set fallback rather than throwing on degraded topology,
 - raw-event-first normalization plus final `id` filter before returning events.
 
+## PublishCoordinator signer + debounce contract (agent verification chunk)
+
+This section captures behavior in `taskify-pwa/src/nostr/PublishCoordinator.ts` that callers depend on for replaceable-event coalescing and signer compatibility.
+
+### 1) Signer coercion accepts three input shapes
+
+`signerFromInput(...)` supports:
+- prebuilt `NDKSigner`
+- raw `Uint8Array` private key bytes (converted to hex)
+- private-key string (passed to `NDKPrivateKeySigner`)
+
+Anchor:
+- `taskify-pwa/src/nostr/PublishCoordinator.ts` (`signerFromInput`)
+
+Boundary: invalid/unsupported signer values should continue to degrade to `undefined` signer rather than throwing before publish.
+
+### 2) `created_at` is always populated before publish
+
+For template input, constructor path sets `created_at` default to current unix seconds.
+For existing `NDKEvent` input, `publish(...)` still backfills when missing.
+
+Anchors:
+- `taskify-pwa/src/nostr/PublishCoordinator.ts` (`publish` event construction + `if (!event.created_at)` guard)
+
+Operational implication: return values (`createdAt`) remain stable even when caller omits timestamps.
+
+### 3) Replaceable dedupe is shape-based (`kind/content/tags`)
+
+`hashEventShape(...)` includes only:
+- `kind`
+- `content`
+- `tags`
+
+It intentionally excludes `created_at` and signature fields.
+
+Anchors:
+- `taskify-pwa/src/nostr/PublishCoordinator.ts` (`hashEventShape`, `shouldSkipReplaceable`)
+
+Implication: repeated replaceable publishes with same semantic payload are skipped when `skipIfIdentical` is enabled (default on).
+
+### 4) Pending replaceable publish is shared-promise, latest-event-wins
+
+When a replaceable key is already pending:
+1. pending event payload is overwritten with newest event,
+2. relay set is overwritten with newest relay set,
+3. debounce timer is reset,
+4. all callers await one eventual publish result.
+
+Anchors:
+- `taskify-pwa/src/nostr/PublishCoordinator.ts` (`pending` map usage in `publish`, `scheduleDebouncedPublish`)
+
+This preserves coalescing semantics under rapid UI updates.
+
+### 5) Non-replaceable events bypass pending map entirely
+
+Only events with a computed replaceable key enter debounce/pending flow.
+All others publish immediately via `publishNow(...)` and return directly.
+
+Anchors:
+- `taskify-pwa/src/nostr/PublishCoordinator.ts` (`buildReplaceableKey`, final immediate `publishNow` branch)
+
+### Safe-edit guardrails
+
+If you change publish internals, preserve:
+- signer input compatibility (`NDKSigner` + `Uint8Array` + string),
+- shape-based duplicate suppression for replaceable events,
+- latest-event-wins pending coalescing per replaceable key,
+- non-replaceable immediate publish path.
+
 ## Agent Jump-Start Checklist
 
 When debugging or extending Nostr behavior, read in this order:
