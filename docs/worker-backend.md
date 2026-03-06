@@ -513,3 +513,49 @@ If you modify preview or NIP-05 logic, preserve:
 - cache-first NIP-05 response path with bounded freshness,
 - multi-endpoint NIP-05 lookup order (`https` first, localhost-safe `http` handling),
 - stable response shape consumed by existing PWA callers.
+
+## 18) Schema bootstrap + concurrency contract (agent verification chunk)
+
+The Worker does runtime schema bootstrapping and intentionally de-duplicates concurrent bootstrap attempts in-process.
+
+### 18.1 `ensureSchema` single-flight behavior
+
+Anchors:
+- schema gate state: `worker/src/index.ts:166` (`schemaReadyPromise`)
+- bootstrap function: `worker/src/index.ts:174–233`
+
+Contract:
+1. First caller creates `schemaReadyPromise` and runs DDL.
+2. Concurrent callers await the same promise instead of issuing duplicate DDL.
+3. If bootstrap fails, `.catch(...)` resets `schemaReadyPromise = null` so a later request/cron tick can retry.
+
+Operational implication:
+- cold starts with concurrent requests should not race schema creation in the same isolate.
+- transient D1 errors do not permanently poison future bootstrap attempts.
+
+### 18.2 DDL + index invariants
+
+Current bootstrapped objects:
+- `devices`
+- `reminders` (FK to `devices` with `ON DELETE CASCADE`)
+- `pending_notifications` (FK to `devices` with `ON DELETE CASCADE`)
+- indexes: `idx_reminders_send_at`, `idx_pending_device`
+
+Anchors:
+- table creation block: `worker/src/index.ts:186–227`
+- index creation: `worker/src/index.ts:229–230`
+
+Guardrails when editing:
+- preserve `ON DELETE CASCADE` for reminder/pending rows unless deletion semantics are intentionally changed across handlers.
+- preserve `send_at` and `pending device_id` indexes or provide equivalent query-path indexing before merge.
+- keep bootstrap idempotent (`CREATE ... IF NOT EXISTS`) because it runs from both fetch and scheduled entry points.
+
+### 18.3 Entry-point dependency ordering
+
+Both HTTP and cron paths call `ensureSchema` before touching D1-backed flows.
+
+Anchors:
+- fetch path: `worker/src/index.ts:274`
+- scheduled runner sequence: `worker/src/index.ts:317–323`
+
+This ordering is required so first-run deployments do not fail reminder or device operations due to missing tables.
