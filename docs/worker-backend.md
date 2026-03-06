@@ -453,3 +453,63 @@ If you modify scheduled flow:
 - There is no dedicated worker unit test suite yet for reminder/push paths (roadmap gap).
 
 This is intentional documentation of **present reality**, not a proposal.
+
+## 17) Preview proxy + NIP-05 lookup contracts (agent verification chunk)
+
+These two endpoints are externally visible and easy to regress because they include fallback logic and caching behavior that is not obvious from the router table alone.
+
+### 17.1 `/api/preview` contract (`handlePreviewProxy`)
+
+Anchor: `worker/src/index.ts` (`handlePreviewProxy`)
+
+Request requirements:
+- query param `url` is required.
+- URL is normalized through `unwrapGoogleRedirectUrl(...)`.
+- only `http:` and `https:` protocols are accepted.
+
+Core flow:
+1. Fetch target with browser-like headers (`buildBrowserHeaders`) and redirect-following.
+2. Abort the fetch after `PREVIEW_TIMEOUT_MS` via `AbortController`.
+3. Read body through `readResponseBodyLimited(...)` (bounded body read).
+4. Attempt rich extraction via `derivePreviewFromHtml(...)`.
+5. If incomplete/blocked, attempt alternate resolver path (`attemptAlternatePreview(...)`).
+6. If still unresolved, return deterministic fallback preview (`buildFallbackPreview(...)`).
+
+Behavioral invariants:
+- endpoint never proxies arbitrary non-http(s) protocols.
+- failures degrade to structured fallback preview payloads instead of hard 5xx whenever possible.
+- response metadata includes fallback/blocked hints when rich preview extraction fails.
+
+### 17.2 `/api/nip05` lookup contract (`handleNip05Lookup`)
+
+Anchors:
+- parser: `worker/src/index.ts` (`parseNip05Address`)
+- resolver: `worker/src/index.ts` (`handleNip05Lookup`)
+
+Input behavior:
+- accepts `address`, `addr`, or `nip05` query parameter.
+- requires strict `name@domain` format; both parts are lowercased/trimmed.
+
+Lookup sequence:
+1. Try Cloudflare cache hit (`caches.default`) keyed by normalized address.
+2. If cache stale/miss, fetch `https://<domain>/.well-known/nostr.json?name=<name>`.
+3. Then fetch `https://<domain>/.well-known/nostr.json`.
+4. For non-localhost domains, also try the two `http://` variants.
+5. Return first successful JSON record and cache it with timestamp headers.
+
+Status semantics:
+- `400` for invalid address format.
+- `502` when all upstream lookup attempts fail.
+- `200` with `{ nip05, resolvedFrom, record }` on success.
+
+Compatibility note:
+- fallback to the no-query `.well-known/nostr.json` path is intentionally preserved for providers that return the full names map without `?name=` filtering.
+
+### 17.3 Safe-edit guardrails
+
+If you modify preview or NIP-05 logic, preserve:
+- URL protocol allowlist (`http/https`) for preview fetches,
+- timeout-bounded preview fetch + fallback response behavior,
+- cache-first NIP-05 response path with bounded freshness,
+- multi-endpoint NIP-05 lookup order (`https` first, localhost-safe `http` handling),
+- stable response shape consumed by existing PWA callers.
