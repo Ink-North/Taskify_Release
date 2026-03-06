@@ -315,6 +315,112 @@ If modifying this layer, preserve:
 - in-flight melt idempotency keyed by deterministic request-id derivation,
 - DLEQ re-validation after wallet mutation return paths.
 
+## NWC (NIP-47) request/response contract (agent verification chunk)
+
+This section captures the concrete behavior of `wallet/nwc.ts` + `context/NwcContext.tsx` so relay/auth changes do not silently break wallet-connect flows.
+
+### 1) URI parsing enforces strict relay + secret requirements
+
+`parseNwcUri(...)` requires:
+- `nostr+walletconnect://` scheme,
+- decodable wallet pubkey (`npub`, `nprofile`, or 64-hex),
+- at least one valid `relay` URL (normalized to `ws/wss`),
+- decodable client secret (`nsec` or 64-hex).
+
+Anchors:
+- `taskify-pwa/src/wallet/nwc.ts` (`parseNwcUri`, `decodePubkey`, `decodeSecret`, `normalizeRelay`)
+
+Operational implication: malformed relays are dropped during parse; if all relays are invalid, connect fails early with a validation error rather than failing during publish/subscribe.
+
+### 2) Request flow is relay-sequential with per-relay timeout
+
+`NwcClient.request(...)` tries relays one-by-one in URI order and returns on first successful response; if one relay errors/times out, next relay is attempted.
+
+Within each relay attempt (`requestViaRelay`):
+1. Subscribe for kind `23195` responses with `#p=[clientPubkey]` on that relay.
+2. Encrypt request payload with `nip04.encrypt(clientSecretHex, walletPubkey, payload)`.
+3. Publish kind `23194` request event (tagged `p=walletPubkey`, `t=nwc`) signed by client secret.
+4. If publish returns event id, response handler enforces `e`-tag correlation when present.
+5. Resolve `result` or reject on `error` payload; timeout rejects after default `20s`.
+
+Anchors:
+- `taskify-pwa/src/wallet/nwc.ts` (`NWC_EVENT_KIND_REQUEST`, `NWC_EVENT_KIND_RESPONSE`, `request`, `requestViaRelay`)
+
+### 3) Response correlation is permissive-by-default, strict when e-tag exists
+
+If response includes `e` tag and a request id is known, non-matching responses are ignored.
+If response omits `e`, handler still attempts decrypt/parse.
+
+Anchor:
+- `taskify-pwa/src/wallet/nwc.ts` (`requestViaRelay` event handler)
+
+Boundary to preserve: this supports wallets that omit `e` while still preferring strict correlation when wallet includes it.
+
+### 4) Context-level connect is "best effort metadata", not hard gate
+
+`NwcProvider.connect(...)` validates URI and marks status connected even if `get_info` or `get_balance` fails; those failures are logged and info can be refreshed later.
+
+Anchors:
+- `taskify-pwa/src/context/NwcContext.tsx` (`connect`, `refreshInfo`, `getBalanceMsat`)
+
+Implication: UI should treat `status=connected` as transport config success, not guaranteed capability discovery.
+
+### Safe-edit guardrails
+
+When changing NWC behavior, preserve:
+- strict URI parse/validation before storage,
+- per-relay timeout cleanup releasing subscriptions,
+- request-event signing with client secret,
+- fallback compatibility for responses missing `e` tag,
+- persisted connection key `cashu_nwc_connection_v1` restore path.
+
+## Seed derivation + counter persistence contract (agent verification chunk)
+
+`wallet/seed.ts` provides deterministic seed material and per-mint/keyset counters used by NUT-13-style deterministic wallet derivation.
+
+### 1) Seed generation/storage invariants
+
+- Seed record key: `cashu_wallet_seed_v1`
+- Counter store key: `cashu_wallet_seed_counters_v1`
+- New seed generation uses 128-bit mnemonic entropy and stores both mnemonic + derived `seedHex`.
+
+Anchors:
+- `taskify-pwa/src/wallet/seed.ts` (`LS_WALLET_SEED`, `LS_WALLET_COUNTERS`, `generateSeedRecord`, `ensureSeedRecord`)
+
+### 2) Counter namespace is mint-normalized and keyset-scoped
+
+Counter keys are stored as `<normalizedMintUrl>|<keysetId>`, where mint URL normalization trims and removes trailing slashes.
+
+Anchors:
+- `taskify-pwa/src/wallet/seed.ts` (`normalizeMintUrl`, `counterKey`, `getWalletCounterInit`, `persistWalletCounter`)
+
+Operational implication: equivalent mint URLs with/without trailing slash share the same deterministic counter space.
+
+### 3) Backup/restore shape is explicit and versioned
+
+Backup payload contract:
+- `type: "nut13-wallet-backup"`
+- `version: 1`
+- `mnemonic`
+- nested `counters[mint][keysetId]`
+
+`restoreWalletSeedBackup(...)` validates type/version/mnemonic, rebuilds `seedHex`, and replaces in-memory + persisted counter store.
+
+Anchors:
+- `taskify-pwa/src/wallet/seed.ts` (`getWalletSeedBackup`, `getWalletSeedBackupJson`, `restoreWalletSeedBackup`)
+
+### 4) Regeneration is destructive for counters by design
+
+`regenerateWalletSeed()` creates a new mnemonic and clears all stored counters.
+
+Anchor:
+- `taskify-pwa/src/wallet/seed.ts` (`regenerateWalletSeed`)
+
+Safe-edit guardrails:
+- keep backup payload backward-compat checks (`type`/`version`),
+- keep mint URL normalization consistent across read/write APIs,
+- keep numeric counter clamping (`>=0`, integer floor) to avoid drift from malformed inputs.
+
 ## Security & Reliability Notes (Current)
 
 - DLEQ proof validation is explicit in wallet and connection paths before proofs are treated as valid.
