@@ -668,6 +668,69 @@ If modifying quote orchestration, preserve:
 - cache refresh-before-callback behavior for quote subscriptions,
 - explicit TTL choices (or document coordinated changes across both entry paths).
 
+## SwapManager execution + cache-bypass contract (agent verification chunk)
+
+`SwapManager.swap(inputs, outputs)` is intentionally treated as a **wallet mutation path** (not a quote/status polling path), so it bypasses short-TTL request caching while still using the mint connection rate-limiter lane.
+
+### 1) Swap operation support is runtime-gated
+
+`swap(...)` checks for `wallet.swap` at runtime and throws a hard error if unavailable.
+
+Anchors:
+- `taskify-pwa/src/mint/SwapManager.ts` (`swap`, `wallet?.swap` guard)
+- `taskify-pwa/src/mint/MintConnection.ts` (`wallet` getter)
+
+Implication: mint/wallet capability drift surfaces as explicit failure (`"Mint swap operation is not supported by this wallet"`) instead of silent no-op fallback.
+
+### 2) Request key is deterministic over input/output proof shape
+
+`buildKey(inputs, outputs)` composes a key from:
+- input secrets (fallback to `C:amount`), and
+- output amount/keyset-id tuples,
+then prefixes via `requestCache.buildKey("POST", "swap", ...)`.
+
+Anchor:
+- `taskify-pwa/src/mint/SwapManager.ts` (`buildKey`)
+
+Boundary: because `swap(...)` uses `ttlMs: 0`, this key is currently not consumed by `requestCache.getOrCreate(...)`; it is still constructed for interface parity with other connection calls and future cache-policy changes.
+
+### 3) Cache bypass is explicit (`ttlMs: 0`) while rate-limit scheduling remains
+
+`swap(...)` calls:
+- `connection.runWithRateLimit(key, factory, { ttlMs: 0 })`
+
+In `MintConnection.runWithRateLimit(...)`, `ttlMs === 0` returns direct scheduled work and skips `requestCache.getOrCreate(...)`.
+
+Anchors:
+- `taskify-pwa/src/mint/SwapManager.ts` (`runWithRateLimit(..., { ttlMs: 0 })`)
+- `taskify-pwa/src/mint/MintConnection.ts` (`runWithRateLimit`, `ttlMs === 0` branch)
+
+Operational effect:
+- no stale cached swap payloads,
+- no deduped replay suppression from request cache,
+- still paced by `MintRateLimiter` to avoid local burst pressure.
+
+### 4) Return-shape normalization + DLEQ validation is mandatory
+
+Swap response is normalized as:
+- `res.proofs` when object payload has array proofs,
+- otherwise raw array response,
+- otherwise empty list.
+
+Then `connection.validateProofsDleq(...)` is always applied before returning proofs.
+
+Anchors:
+- `taskify-pwa/src/mint/SwapManager.ts` (`proofs` normalization + `validateProofsDleq`)
+- `taskify-pwa/src/mint/MintConnection.ts` (`validateProofsDleq`)
+
+### Safe-edit guardrails
+
+If modifying swap behavior, preserve:
+- explicit runtime unsupported-operation guard,
+- cache-bypass semantics for mutation safety (`ttlMs: 0`) unless replaced with a stronger idempotency design,
+- DLEQ validation before exposing swap-returned proofs,
+- deterministic key construction compatibility with existing request-key conventions (unless all related call sites are updated together).
+
 ## Security & Reliability Notes (Current)
 
 - DLEQ proof validation is explicit in wallet and connection paths before proofs are treated as valid.
