@@ -714,3 +714,61 @@ If you change registration identity behavior, re-verify:
 - endpoint-based poll still resolves the intended device,
 - stale/expired endpoint cleanup (`404/410` push result) still deletes the same canonical `device_id`,
 - KV fallback migration (`migrateDeviceFromKv`) still preserves endpoint index parity.
+
+## 21) CORS + request trust boundary contract (agent verification chunk)
+
+The Worker currently exposes a public cross-origin API surface with no auth/session layer in this file.
+That is intentional for push-reminder device flows, but it is a high-impact contract that should not be changed accidentally.
+
+### 21.1 CORS behavior is globally permissive
+
+Current response behavior:
+- JSON helper responses include `Access-Control-Allow-Origin: *` via `JSON_HEADERS`.
+- `OPTIONS` preflight returns `204` with:
+  - `Access-Control-Allow-Origin: *`
+  - `Access-Control-Allow-Methods: GET,POST,PUT,DELETE,OPTIONS`
+  - `Access-Control-Allow-Headers: Content-Type,Authorization`
+  - `Access-Control-Max-Age: 86400`
+
+Anchors:
+- `worker/src/index.ts:147–150` (`JSON_HEADERS`)
+- `worker/src/index.ts:261–270` (`OPTIONS` preflight branch)
+- `worker/src/index.ts:2922–2926` (`jsonResponse`)
+
+Operational implication: browser clients can call API endpoints cross-origin without credential coupling in this layer.
+
+### 21.2 Request identity is payload-driven, not authenticated
+
+For the reminder/device endpoints, authorization checks are currently structural/existence checks only:
+- `PUT /api/devices`: validates payload shape and upserts by `deviceId`/endpoint hash.
+- `PUT /api/reminders`: accepts `deviceId` and requires that device exists.
+- `POST /api/reminders/poll`: resolves by `deviceId` or endpoint hash and drains queue.
+
+Anchors:
+- register validation/upsert: `worker/src/index.ts:608–649`
+- save reminders validation/device existence: `worker/src/index.ts:2335–2343`
+- poll device resolution: `worker/src/index.ts:2404–2413`
+
+Boundary to preserve/document during changes:
+- there is no bearer-token or signature verification gate in these handlers today;
+- any auth hardening change is a breaking client contract and must be coordinated with PWA callers.
+
+### 21.3 Invalid JSON bodies normalize to handler-level 4xx paths
+
+`parseJson` returns `null` on parse failure instead of throwing.
+Handlers then perform field validation and emit stable 4xx errors (for example `deviceId is required`, `reminders must be an array`, etc.).
+
+Anchors:
+- parser: `worker/src/index.ts:2944–2949`
+- example 4xx guards: `worker/src/index.ts:611–621`, `:2338–2346`, `:2411–2413`
+
+Why this matters:
+- malformed JSON does not hit router-level `500` by default;
+- client-side retries can distinguish validation errors from transient server failures.
+
+### Safe-edit guardrails
+
+If modifying API security/CORS behavior, preserve or intentionally migrate with rollout notes:
+- explicit CORS preflight handling for browser clients,
+- stable handler-level validation error shapes/statuses,
+- clear compatibility plan before introducing auth requirements on existing device/reminder routes.
