@@ -556,6 +556,34 @@ If modifying push delivery/auth logic, preserve:
 - ES256 JWT signing with bounded expiration,
 - private key fallback compatibility (PKCS#8 + validated raw key path).
 
+## 23) Poll drain concurrency + idempotency boundary (agent verification chunk)
+
+`POST /api/reminders/poll` performs a **read-then-delete** sequence, but not inside an explicit SQL transaction.
+
+Anchors:
+- row read: `worker/src/index.ts:2415–2423`
+- delete by selected row ids: `worker/src/index.ts:2428–2431`
+
+### Current contract
+
+1. Pending rows are fetched in deterministic order (`ORDER BY created_at, id`).
+2. The same handler invocation then deletes exactly those fetched row ids.
+3. Response payload is built from the fetched rows (not a second post-delete query).
+
+### Practical boundary (important)
+
+Because select + delete are separate D1 calls, concurrent poll requests for the same device can observe overlapping rows before one delete batch wins.
+
+Operationally this means:
+- normal single-consumer flow behaves as at-most-once,
+- concurrent duplicate poll invocations may produce duplicate deliveries unless client-side dedupe exists.
+
+### Safe-edit guardrails
+
+If you change poll/drain behavior, preserve one of these explicitly:
+- keep current read-then-delete contract and document caller dedupe responsibility, **or**
+- move to an atomic claim/drain strategy (transactional delete-return pattern) and update service worker assumptions/tests accordingly.
+
 ## 17) Known limitations (current state)
 
 - Worker implementation is monolithic (`worker/src/index.ts`), so cross-cutting edits are easy to miss in review.

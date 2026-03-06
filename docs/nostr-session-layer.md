@@ -628,7 +628,7 @@ This section captures behavior in `taskify-pwa/src/nostr/PublishCoordinator.ts` 
 Anchor:
 - `taskify-pwa/src/nostr/PublishCoordinator.ts` (`signerFromInput`)
 
-Boundary: invalid/unsupported signer values should continue to degrade to `undefined` signer rather than throwing before publish.
+Boundary: this helper only normalizes `string`/`Uint8Array`; any other truthy value is passed through to `event.sign(...)`, so runtime-invalid signer objects can still fail there.
 
 ### 2) `created_at` is always populated before publish
 
