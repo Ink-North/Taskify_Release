@@ -491,6 +491,50 @@ When modifying pending-token flows, preserve:
 - partial-spend recovery path using `checkTokenStates` (do not convert all spent-like errors into hard terminal drop),
 - balance refresh after queue mutation and redemption attempts.
 
+## Mint capability cache + fallback contract (agent verification chunk)
+
+`MintCapabilityStore` provides shared per-mint `getMintInfo()` caching across connections. This affects feature gating (`supports*` checks) and reduces repeated startup probes.
+
+### 1) Cache key normalization and TTL behavior
+
+- Mint URLs are normalized by trim + trailing slash removal before read/write.
+- Cache entries store `{ info, fetchedAt }`.
+- Default TTL is `5m` (`300000ms`); `ttlMs <= 0` disables expiry.
+
+Anchors:
+- `taskify-pwa/src/mint/MintCapabilityStore.ts:12–18` (constructor + normalize)
+- `taskify-pwa/src/mint/MintCapabilityStore.ts:20–29` (`getCached` + TTL eviction)
+
+Operational implication: equivalent mint URLs (`https://mint.example` vs `https://mint.example/`) resolve to one cache slot.
+
+### 2) Connection init treats capability fetch as best-effort
+
+`MintConnection.init()` always initializes wallet state first, then attempts mint-info warmup, but intentionally swallows mint-info errors.
+
+Anchor:
+- `taskify-pwa/src/mint/MintConnection.ts:62–71`
+
+This keeps wallet operations available even when `getMintInfo` endpoints are flaky/unavailable.
+
+### 3) Mint info fetch fallback path
+
+`MintConnection.getMintInfo()` uses capability-store `get(...)` and tries:
+1. `wallet.getMintInfo()`
+2. fallback `(manager as any).ensureMintInfo?.()` if direct call throws
+
+Anchor:
+- `taskify-pwa/src/mint/MintConnection.ts:83–92`
+
+Compatibility note: the fallback keeps older/newer cashu-ts integration paths working without hard-coupling to one method shape.
+
+### 4) Safe-edit guardrails
+
+If you change capability probing/caching, preserve:
+- URL normalization symmetry across cache read/write,
+- shared cache store usage (avoid per-call ad-hoc probes),
+- best-effort startup fetch (do not hard-fail `init()` on info fetch errors),
+- `getMintInfo()` fallback behavior unless all callers are migrated in lockstep.
+
 ## Security & Reliability Notes (Current)
 
 - DLEQ proof validation is explicit in wallet and connection paths before proofs are treated as valid.
