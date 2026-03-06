@@ -337,6 +337,97 @@ When changing subscription internals, preserve:
 
 ---
 
+## WalletNostrClient + BoardKey derivation contract (agent verification chunk)
+
+This section documents wallet-facing Nostr behavior that sits on top of `NostrSession` internals and is easy to break during relay/publish refactors.
+
+### 1) Wallet state publishes are replaceable + debounced by default
+
+`WalletNostrClient.publishWalletState(...)` computes a replaceable key and publishes with:
+- `debounceMs: 400`
+- `returnEvent: true`
+- relay set supplied by caller
+
+Anchor:
+- `taskify-pwa/src/nostr/WalletNostrClient.ts` (`publishWalletState`)
+
+Implication: rapid consecutive wallet-state writes for the same replaceable key are coalesced by `PublishCoordinator` instead of flooding relays.
+
+### 2) Replaceable-key derivation depends on signer pubkey and optional `d` tag
+
+`buildReplaceableKey(...)` emits:
+- `replaceable:<kind>:<pubkey>:<dTag>` when a `d` tag exists
+- otherwise `replaceable:<kind>:<pubkey>`
+
+If `kind` or signer-derived pubkey is unavailable, it returns `undefined` and publish falls back to non-coalesced behavior.
+
+Anchors:
+- `taskify-pwa/src/nostr/WalletNostrClient.ts` (`buildReplaceableKey`, `derivePubkey`)
+
+### 3) Signer parsing accepts both raw hex and `nsec`
+
+`derivePubkey(...)` accepts:
+- `Uint8Array` private key
+- 64-char hex private key string
+- `nsec...` input decoded via `nip19.decode`
+
+Any parse failure is swallowed and treated as no signer/pubkey.
+
+Anchor:
+- `taskify-pwa/src/nostr/WalletNostrClient.ts` (`derivePubkey`)
+
+Boundary to preserve: signer parse failures should not crash publish paths.
+
+### 4) Wallet fetch path always returns raw Nostr events with ids
+
+`fetchEvents(...)` calls `ndk.fetchEvents(..., { closeOnEose: true }, relaySet)` and maps each entry to `rawEvent()` fallback; events lacking `id` are filtered out.
+
+Anchor:
+- `taskify-pwa/src/nostr/WalletNostrClient.ts` (`fetchEvents`)
+
+Operational consequence: callers can rely on normalized `NostrEvent` payloads rather than NDK wrapper instances.
+
+### 5) Wallet subscribe path is delegated to `SubscriptionManager`
+
+`subscribe(...)` and `initWalletSubscriptions(...)` are thin wrappers over `SubscriptionManager.subscribe(...)`, passing relay URLs and optional handlers (`onEvent`, `onEose`, `closeOnEose`).
+
+Anchors:
+- `taskify-pwa/src/nostr/WalletNostrClient.ts` (`subscribe`, `initWalletSubscriptions`)
+
+### 6) Board key derivation is deterministic per board id
+
+`BoardKeyManager.getBoardKeys(boardId)` derives key material as:
+1. `sha256("taskify-board-nostr-key-v1" || boardId)`
+2. Treat hash output as private key bytes/hex
+3. Derive pubkey via `getPublicKey`
+4. Construct `NDKPrivateKeySigner(skHex)`
+
+Anchors:
+- `taskify-pwa/src/nostr/BoardKeyManager.ts` (`BOARD_KEY_LABEL`, `getBoardKeys`)
+
+### 7) Key objects are memoized by board id (promise cache)
+
+`BoardKeyManager` caches the in-flight promise per `boardId` in a `Map`, so concurrent lookups reuse one derivation path.
+
+Anchor:
+- `taskify-pwa/src/nostr/BoardKeyManager.ts` (`cache`, `getBoardKeys`)
+
+### 8) NIP-19 encoding failures degrade gracefully
+
+`npub`/`nsec` encoding attempts are wrapped in try/catch; failures keep raw hex forms instead of throwing.
+
+Anchor:
+- `taskify-pwa/src/nostr/BoardKeyManager.ts` (`getBoardKeys`)
+
+### Safe-edit guardrails
+
+When touching wallet-facing nostr code, preserve:
+- deterministic replaceable-key shape (`kind + pubkey + optional d-tag`),
+- wallet-state publish debounce default (`400ms`) unless intentionally changed,
+- signer parse compatibility (`Uint8Array` + hex + `nsec`),
+- fetch normalization to raw events with valid ids,
+- deterministic board-key derivation label and per-board promise memoization.
+
 ## Agent Jump-Start Checklist
 
 When debugging or extending Nostr behavior, read in this order:
