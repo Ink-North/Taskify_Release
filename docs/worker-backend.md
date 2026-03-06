@@ -772,3 +772,68 @@ If modifying API security/CORS behavior, preserve or intentionally migrate with 
 - explicit CORS preflight handling for browser clients,
 - stable handler-level validation error shapes/statuses,
 - clear compatibility plan before introducing auth requirements on existing device/reminder routes.
+
+## 22) Backup object-key + read-side mutation contract (agent verification chunk)
+
+Backup persistence looks simple, but there are two behavior contracts that are easy to break during refactors:
+1) object-key canonicalization (`npub` normalization) controls read/write identity;
+2) every successful backup read mutates metadata (`lastReadAt`) as a side effect.
+
+### 22.1 Object key identity is lowercased `npub` with strict prefix/charset checks
+
+`getBackupObjectKey` enforces:
+- input must be non-empty string,
+- normalized with `trim().toLowerCase()`,
+- must start with `npub`,
+- must match `/^[0-9a-z]+$/`.
+
+Generated key format:
+- `backups/taskify-backup-${npub}.json`
+
+Anchors:
+- validator/key builder: `worker/src/index.ts:335–342`
+- write path usage: `worker/src/index.ts:353`
+- read path usage: `worker/src/index.ts:386`
+
+Compatibility implication:
+- clients using uppercase or mixed-case `npub` still resolve the same object;
+- changing canonicalization rules can silently orphan existing backups.
+
+### 22.2 Reads perform metadata write-back (`lastReadAt`) but omit it from response
+
+`handleLoadBackup` flow:
+- fetch object,
+- parse JSON payload,
+- create `storedPayload = { ...payload, lastReadAt: nowIso }`,
+- best-effort `put` back to R2,
+- strip `lastReadAt` before returning `{ backup: responsePayload }`.
+
+Anchors:
+- read + parse: `worker/src/index.ts:390–412`
+- metadata write-back: `worker/src/index.ts:415–427`
+- response field stripping: `worker/src/index.ts:434–435`
+
+Contract to preserve:
+- telemetry/retention logic can rely on `lastReadAt` in storage,
+- API consumers should not rely on `lastReadAt` being present in response bodies.
+
+### 22.3 R2 metadata headers are pinned on both save and read-side rewrite
+
+Both save and read-side metadata update use:
+- `contentType: "application/json"`
+- `cacheControl: "private, max-age=0, must-revalidate"`
+
+Anchors:
+- save headers: `worker/src/index.ts:372–376`
+- read-side rewrite headers: `worker/src/index.ts:418–423`
+
+Why this matters:
+- changing only one path creates inconsistent object metadata across historical backups;
+- tooling that inspects object metadata for troubleshooting/retention can drift if headers diverge.
+
+### Safe-edit guardrails
+
+If modifying backup handlers, re-verify:
+- mixed-case `npub` lookups still hit existing backup keys,
+- load path continues to be resilient to unreadable/corrupt objects with explicit 4xx/5xx responses,
+- `lastReadAt` behavior remains intentional (kept in storage, excluded from response unless consciously changed with client coordination).
