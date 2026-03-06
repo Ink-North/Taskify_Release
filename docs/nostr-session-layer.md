@@ -683,6 +683,72 @@ If you change publish internals, preserve:
 - latest-event-wins pending coalescing per replaceable key,
 - non-replaceable immediate publish path.
 
+## SubscriptionManager canonicalization + ref-count contract (agent verification chunk)
+
+This section captures subtle behavior in `taskify-pwa/src/nostr/SubscriptionManager.ts` that prevents duplicate subscriptions and early-event loss.
+
+### 1) Subscription key is canonicalized across filter/relay ordering
+
+`normalizeFilters(...)` and relay normalization make logically equivalent calls share one key:
+- relay list is trimmed/deduped/sorted,
+- filter object keys are stable-sorted before stringify,
+- `kinds`, `authors`, and tag arrays are normalized to unique sorted values,
+- numeric fields (`since`, `until`, `limit`) are coerced to finite numbers.
+
+Anchors:
+- relay normalization: `normalizeRelayList(...)`
+- filter normalization: `normalizeFilter(...)`
+- key materialization: `stableStringify(...)`, `normalizeFilters(...)`
+
+Operational implication: caller-side key/array ordering differences should not create duplicate live NDK subscriptions.
+
+### 2) Cursor injection happens only when `since` is absent and `skipSince` is false
+
+During normalization, `cursorStore.getSince(filter)` is injected only if:
+- caller did not pass `skipSince`, and
+- normalized filter has no explicit `since`.
+
+Anchor:
+- `normalizeFilters(...)` (`if (!skipSince && nf.since == null) ...`)
+
+Boundary: explicit caller `since` always wins over cursor-derived values.
+
+### 3) State is registered before `ndk.subscribe(...)` to avoid lost early events
+
+`subscribe(...)` stores `SubscriptionState` in `subs` and allocates handlers **before** creating the NDK subscription object.
+
+Anchor:
+- `subscribe(...)` comment + ordering around `this.subs.set(key, state)` then `this.ndk.subscribe(...)`
+
+Why this matters: if relays emit events immediately, handlers and dedupe state already exist when callbacks fire.
+
+### 4) Dedupe is per-shared-subscription (`seenIds`) + global cache assist
+
+Event callback behavior:
+1. drop event if `raw.id` already in `state.seenIds`,
+2. add raw event to `EventCache` (if configured),
+3. update cursor timestamps using shared normalized filters,
+4. fan out to all attached handlers.
+
+Anchor:
+- `sub.on("event", ...)` block in `subscribe(...)`
+
+Implication: each canonical subscription key gets one event stream with in-process fanout, not one NDK stream per caller.
+
+### 5) Release semantics are ref-counted and stop at zero only
+
+`release(...)` removes the caller handler, decrements `refCount`, and only calls `subscription.stop()` when count reaches zero.
+
+Anchors:
+- `release(...)`
+- existing-subscription branch in `subscribe(...)` (`existing.refCount += 1`)
+
+Safe-edit guardrails:
+- preserve canonical key generation across equivalent filter payloads,
+- preserve pre-subscribe state registration ordering,
+- preserve ref-count stop-at-zero behavior,
+- preserve cursor-injection precedence (explicit `since` > cursor).
+
 ## Agent Jump-Start Checklist
 
 When debugging or extending Nostr behavior, read in this order:
