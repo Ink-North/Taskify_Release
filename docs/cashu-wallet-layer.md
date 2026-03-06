@@ -430,15 +430,15 @@ It lives in `wallet/storage.ts` and is executed in `context/CashuContext.tsx`.
 
 Persistent key + shape:
 - key: `cashu_pending_tokens_v1`
-- entry fields: `id`, `mint`, `token`, optional `amount`, `attempts`, `lastError`, `createdAt`, `updatedAt`, optional `source`
+- entry fields: `id`, `mint`, `token`, `addedAt`, `attempts`, optional `amount`, optional `lastTriedAt`, optional `lastError`, optional `source`
 
 Anchors:
 - `taskify-pwa/src/wallet/storage.ts` (`LS_PENDING_TOKENS`, `PendingTokenEntry`, `normalizePendingTokens`)
 - mutation helpers: `addPendingToken`, `removePendingToken`, `markPendingTokenAttempt`, `replacePendingTokens`, `setPendingTokenSource`
 
 Behavioral details to preserve:
-- token dedupe key is `(mint, token)` (new insert with same pair replaces prior entry identity),
-- `markPendingTokenAttempt` increments attempts and stamps `updatedAt`,
+- token dedupe currently keys on raw `token` string (new insert with same token replaces prior entry identity regardless of mint),
+- `markPendingTokenAttempt` increments attempts and stamps `lastTriedAt` (+ `lastError`),
 - `replacePendingTokens` normalizes entries before write (shape cleanup on restore/import).
 
 ### 2) Redemption loop semantics
