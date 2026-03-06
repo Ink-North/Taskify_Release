@@ -600,6 +600,74 @@ If you change capability probing/caching, preserve:
 - best-effort startup fetch (do not hard-fail `init()` on info fetch errors),
 - `getMintInfo()` fallback behavior unless all callers are migrated in lockstep.
 
+## MintQuoteManager cache + terminal-state contract (agent verification chunk)
+
+`MintQuoteManager` adds quote-specific caching behavior on top of `MintConnection` request-cache/rate-limiter controls.
+This section captures the concrete cache keys and terminal-state shortcuts that callers currently rely on.
+
+### 1) Mint quote cache is quote-id keyed and terminal-state sticky
+
+`checkMintQuote(quoteId)` first checks in-memory `mintQuoteCache` and immediately returns cached values only when state is terminal:
+- `PAID`
+- `ISSUED`
+
+Otherwise it fetches fresh status through `connection.checkMintQuote(...)` and refreshes cache.
+
+Anchors:
+- `taskify-pwa/src/mint/MintQuoteManager.ts` (`checkMintQuote`, `rememberMintQuote`)
+- `taskify-pwa/src/mint/MintConnection.ts` (`checkMintQuote`)
+
+Operational implication:
+- repeated status polls for paid/issued quotes avoid extra network calls,
+- non-terminal states still re-check mint status rather than pinning stale cache entries.
+
+### 2) Melt quote cache is invoice-keyed with quote/request fallback
+
+`requestMeltQuote(invoice)` first checks `meltQuoteCache.get(invoice)`.
+When saving, `rememberMeltQuote` prefers key order:
+1. explicit key argument,
+2. `quote.request`,
+3. `quote.quote`.
+
+Anchors:
+- `taskify-pwa/src/mint/MintQuoteManager.ts` (`requestMeltQuote`, `rememberMeltQuote`)
+
+Why this matters:
+- callers can later retrieve quote by original invoice string,
+- cache still retains quote/request aliases for downstream reuse paths.
+
+### 3) Quote update subscriptions refresh cache before caller callback
+
+`subscribeMintQuoteUpdates(...)` wraps connection callback and calls `rememberMintQuote(quote)` before invoking caller `callback(quote)`.
+
+Anchor:
+- `taskify-pwa/src/mint/MintQuoteManager.ts` (`subscribeMintQuoteUpdates`)
+
+Boundary to preserve:
+- push/streamed quote updates must continue to hydrate local cache first so subsequent `checkMintQuote` calls see fresh state.
+
+### 4) Request-cache TTL layering differs by quote type
+
+Current TTLs across quote paths:
+- Mint quote create: `3000ms`
+- Mint quote status check: `1500ms` (`slow: true`)
+- Melt quote create: `2000ms` in `MintConnection`, `2500ms` in manager-level request path
+
+Anchors:
+- `taskify-pwa/src/mint/MintConnection.ts` (`createMintQuote`, `checkMintQuote`, `createMeltQuote`)
+- `taskify-pwa/src/mint/MintQuoteManager.ts` (`requestMintQuote`, `requestMeltQuote`)
+
+Note for maintainers:
+- There are two entry paths for quote creation (`MintConnection.*` and `MintQuoteManager.*`) with slightly different TTLs; keep this divergence intentional (or consolidate explicitly with call-site updates).
+
+### Safe-edit guardrails
+
+If modifying quote orchestration, preserve:
+- terminal-state fast-return behavior for `PAID`/`ISSUED`,
+- invoice-first melt-quote cache lookup semantics,
+- cache refresh-before-callback behavior for quote subscriptions,
+- explicit TTL choices (or document coordinated changes across both entry paths).
+
 ## Security & Reliability Notes (Current)
 
 - DLEQ proof validation is explicit in wallet and connection paths before proofs are treated as valid.
