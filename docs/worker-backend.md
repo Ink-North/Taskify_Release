@@ -224,7 +224,48 @@ Operational references:
 
 ---
 
-## 10) Agent change checklist (safe edits)
+## 10) KV→D1 migration contract (legacy compatibility)
+
+The worker still supports progressive migration from legacy KV namespaces into D1 at read time. This path is easy to break during “cleanup” refactors, so verify these invariants before deleting any fallback logic.
+
+Primary anchors:
+- Device read fallback: `getDeviceRecord` → `migrateDeviceFromKv` (`worker/src/index.ts:2557–2653`)
+- Endpoint reverse lookup fallback: `findDeviceIdByEndpoint` (`worker/src/index.ts:2584–2607`)
+- Reminder migration: `migrateRemindersFromKv` (`worker/src/index.ts:2655–2711`)
+- Pending queue migration: `migratePendingFromKv` (`worker/src/index.ts:2713–2749`)
+
+### Migration behavior that must stay true
+
+1. **D1 is preferred; KV is fallback-only.**
+   - Reads hit D1 first, then attempt KV migration only on miss.
+2. **Migration is destructive to legacy KV once imported.**
+   - After successful import, legacy keys are deleted best-effort.
+3. **Malformed KV payloads fail closed.**
+   - Parse/shape failures are logged and ignored, not partially imported.
+4. **Reminder and pending payloads are normalized before insert.**
+   - Invalid entries are dropped before D1 writes.
+5. **Endpoint hash consistency is repaired during migration.**
+   - Missing `endpointHash` in legacy records is recomputed before upsert.
+
+### Agent verification pseudocode
+
+```text
+read device from D1
+if missing and TASKIFY_DEVICES exists:
+  parse legacy device JSON
+  validate shape
+  compute endpointHash if absent
+  upsert to D1
+  migrate reminders/pending arrays from KV to D1
+  delete legacy KV keys best-effort
+```
+
+Refactor warning:
+- `findDeviceIdByEndpoint` can trigger migration as a side effect (`endpoint:{hash}` lookup → device id). Do not assume endpoint lookup is read-only in mixed deployments.
+
+---
+
+## 11) Agent change checklist (safe edits)
 
 Before changing reminder/backend logic, verify:
 
@@ -241,7 +282,7 @@ Before changing reminder/backend logic, verify:
 
 ---
 
-## 11) Endpoint error semantics (status-code quick map)
+## 12) Endpoint error semantics (status-code quick map)
 
 Use this when changing validation/handler behavior so clients and service worker retries stay correct.
 
