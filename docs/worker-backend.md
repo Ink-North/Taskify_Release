@@ -445,7 +445,77 @@ If you modify scheduled flow:
 - Preserve explicit ordering decisions (or document intentional reordering in this file).
 - Do not convert failures into silent success without adding equivalent observability.
 
-## 16) Known limitations (current state)
+## 16) Push wake ping contract (TTL + VAPID signing)
+
+Reminder delivery depends on an intentionally minimal "wake ping" request to each subscription endpoint.
+This section captures the concrete behavior so payload/auth changes do not silently break service-worker wakeups.
+
+### 16.1 TTL derivation (`computePushTtlSeconds`)
+
+Anchor: `worker/src/index.ts:2768–2777`
+
+Current behavior:
+1. Start with baseline TTL `300` seconds.
+2. For each reminder with parseable `dueISO`, compute `secondsUntilDue`.
+3. Raise TTL to at least `secondsUntilDue + 120` buffer.
+4. Clamp final TTL to `[300, 86400]`.
+
+Operational implication:
+- Near-term reminders still get at least 5 minutes of push validity.
+- Far-future due reminders can extend TTL up to 24h, reducing missed wake windows.
+
+### 16.2 Ping request shape (`sendPushPing`)
+
+Anchor: `worker/src/index.ts:2779–2810`
+
+Request contract to push endpoint:
+- method: `POST`
+- body: empty (`Content-Length: 0`)
+- headers:
+  - `TTL: <computed seconds>`
+  - `Authorization: WebPush <vapid-jwt>`
+  - `Crypto-Key: p256ecdsa=<VAPID_PUBLIC_KEY>`
+
+Error handling semantics:
+- `404`/`410` => treat subscription as expired and call `handleDeleteDevice(deviceId, env)`.
+- other non-2xx => log warning, keep device.
+- transport/runtime exceptions => catch + log, do not throw to caller.
+
+### 16.3 VAPID JWT contract (`createVapidJWT`)
+
+Anchor: `worker/src/index.ts:2811–2831`
+
+Claims/signing behavior:
+- validates `VAPID_PUBLIC_KEY` and `VAPID_SUBJECT` are configured.
+- computes `aud` from subscription endpoint origin (`protocol + host`).
+- sets `exp = now + 12h`.
+- signs `base64url(header).base64url(payload)` with ES256 using worker private key.
+
+Payload shape:
+- `{ aud, exp, sub }`
+
+### 16.4 Private-key import fallback behavior
+
+Anchors:
+- key resolution: `worker/src/index.ts:2859–2878` (`resolvePrivateKeyPem`)
+- import path: `worker/src/index.ts:2833–2857` (`getPrivateKey`)
+- raw-key fallback guard: `worker/src/index.ts:2880+` (`shouldAttemptRawVapidImport`, `importRawVapidPrivateKey`)
+
+Current contract:
+- primary path imports PKCS#8 PEM key material.
+- if import fails with supported key shape, fallback attempts raw 32-byte P-256 private key import (validated against public key).
+- resolved `CryptoKey` is cached in-process (`cachedPrivateKey`) for subsequent pings.
+
+### Safe-edit guardrails
+
+If modifying push delivery/auth logic, preserve:
+- empty-body wake ping semantics (payload-free push trigger),
+- 404/410 terminal cleanup path,
+- `aud` derivation from endpoint origin,
+- ES256 JWT signing with bounded expiration,
+- private key fallback compatibility (PKCS#8 + validated raw key path).
+
+## 17) Known limitations (current state)
 
 - Worker implementation is monolithic (`worker/src/index.ts`), so cross-cutting edits are easy to miss in review.
 - Legacy KV migration paths increase branch complexity and testing surface.
@@ -454,7 +524,7 @@ If you modify scheduled flow:
 
 This is intentional documentation of **present reality**, not a proposal.
 
-## 17) Preview proxy + NIP-05 lookup contracts (agent verification chunk)
+## 18) Preview proxy + NIP-05 lookup contracts (agent verification chunk)
 
 These two endpoints are externally visible and easy to regress because they include fallback logic and caching behavior that is not obvious from the router table alone.
 
@@ -514,7 +584,7 @@ If you modify preview or NIP-05 logic, preserve:
 - multi-endpoint NIP-05 lookup order (`https` first, localhost-safe `http` handling),
 - stable response shape consumed by existing PWA callers.
 
-## 18) Schema bootstrap + concurrency contract (agent verification chunk)
+## 19) Schema bootstrap + concurrency contract (agent verification chunk)
 
 The Worker does runtime schema bootstrapping and intentionally de-duplicates concurrent bootstrap attempts in-process.
 
@@ -560,7 +630,7 @@ Anchors:
 
 This ordering is required so first-run deployments do not fail reminder or device operations due to missing tables.
 
-## 19) Device identity reconciliation contract (agent verification chunk)
+## 20) Device identity reconciliation contract (agent verification chunk)
 
 `PUT /api/devices` is intentionally endpoint-centric, not strict-client-id centric. This avoids duplicate registrations when app/device IDs rotate but the push endpoint remains stable.
 
