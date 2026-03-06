@@ -521,8 +521,8 @@ The Worker does runtime schema bootstrapping and intentionally de-duplicates con
 ### 18.1 `ensureSchema` single-flight behavior
 
 Anchors:
-- schema gate state: `worker/src/index.ts:166` (`schemaReadyPromise`)
-- bootstrap function: `worker/src/index.ts:174–233`
+- schema gate state: `worker/src/index.ts:165` (`schemaReadyPromise`)
+- bootstrap function: `worker/src/index.ts:174–235`
 
 Contract:
 1. First caller creates `schemaReadyPromise` and runs DDL.
@@ -542,8 +542,8 @@ Current bootstrapped objects:
 - indexes: `idx_reminders_send_at`, `idx_pending_device`
 
 Anchors:
-- table creation block: `worker/src/index.ts:186–227`
-- index creation: `worker/src/index.ts:229–230`
+- table creation block: `worker/src/index.ts:186–226`
+- index creation: `worker/src/index.ts:227–228`
 
 Guardrails when editing:
 - preserve `ON DELETE CASCADE` for reminder/pending rows unless deletion semantics are intentionally changed across handlers.
@@ -555,7 +555,51 @@ Guardrails when editing:
 Both HTTP and cron paths call `ensureSchema` before touching D1-backed flows.
 
 Anchors:
-- fetch path: `worker/src/index.ts:274`
-- scheduled runner sequence: `worker/src/index.ts:317–323`
+- fetch path: `worker/src/index.ts:275`
+- scheduled runner sequence: `worker/src/index.ts:320–322`
 
 This ordering is required so first-run deployments do not fail reminder or device operations due to missing tables.
+
+## 19) Device identity reconciliation contract (agent verification chunk)
+
+`PUT /api/devices` is intentionally endpoint-centric, not strict-client-id centric. This avoids duplicate registrations when app/device IDs rotate but the push endpoint remains stable.
+
+### 19.1 Registration resolution order
+
+Anchor: `worker/src/index.ts:608–648` (`handleRegisterDevice`)
+
+Current behavior:
+1. Validate payload shape (`deviceId`, `platform`, `subscription.endpoint`, push keys).
+2. Compute `endpointHash = hashEndpoint(subscription.endpoint)`.
+3. Try `getDeviceRecord(env, deviceId)`.
+4. If no row by provided `deviceId`, try `findDeviceIdByEndpoint(env, subscription.endpoint)`.
+5. If endpoint lookup resolves an existing row, reuse that `device_id` as `resolvedDeviceId`.
+6. Upsert using `resolvedDeviceId`; return `{ subscriptionId: endpointHash, deviceId: resolvedDeviceId }`.
+
+Operational implication:
+- callers can present a new/random `deviceId` and still attach to the prior canonical record when endpoint is unchanged.
+
+### 19.2 D1 uniqueness and upsert semantics
+
+Anchors:
+- schema uniqueness: `worker/src/index.ts:187–195` (`endpoint_hash TEXT NOT NULL UNIQUE`)
+- upsert query: `worker/src/index.ts:2530–2555` (`upsertDevice`)
+
+Invariants:
+- `endpoint_hash` must stay unique across `devices`.
+- Upsert conflict key is `device_id`; endpoint updates are applied in-place.
+- `updated_at` is refreshed on every register/update call.
+
+### 19.3 Poll/delete consistency dependency
+
+`/api/reminders/poll` endpoint lookup depends on the same endpoint-hash mapping path (`findDeviceIdByEndpoint`) used during registration reconciliation.
+
+Anchors:
+- poll handler lookup path: `worker/src/index.ts:2404–2414`
+- endpoint hash lookup: `worker/src/index.ts:2584–2607`
+- delete fan-out: `worker/src/index.ts:2305–2333`
+
+If you change registration identity behavior, re-verify:
+- endpoint-based poll still resolves the intended device,
+- stale/expired endpoint cleanup (`404/410` push result) still deletes the same canonical `device_id`,
+- KV fallback migration (`migrateDeviceFromKv`) still preserves endpoint index parity.
