@@ -584,6 +584,63 @@ If you change poll/drain behavior, preserve one of these explicitly:
 - keep current read-then-delete contract and document caller dedupe responsibility, **or**
 - move to an atomic claim/drain strategy (transactional delete-return pattern) and update service worker assumptions/tests accordingly.
 
+## 24) Preview proxy resource-bound + fallback-shape contract (agent verification chunk)
+
+`/api/preview` is intentionally built as a **bounded fetch + layered fallback** endpoint. Preserve these limits and response-shape guarantees when modifying preview behavior.
+
+### 24.1 Hard runtime bounds (timeout + body size)
+
+Current constants:
+- `PREVIEW_TIMEOUT_MS = 8000`
+- `PREVIEW_MAX_BYTES = 600000`
+
+Anchors:
+- constants: `worker/src/index.ts:136–139`
+- timeout abort wiring in `handlePreviewProxy`: `worker/src/index.ts:2228–2242`
+- bounded body reader: `worker/src/index.ts:916+` (`readResponseBodyLimited`)
+
+Contract:
+- upstream fetches are aborted after timeout via `AbortController`,
+- response body reads are capped (no unbounded HTML buffering),
+- timeout/read failures degrade to alternate/fallback preview payloads instead of raw upstream errors.
+
+### 24.2 Protocol guard + redirect unwrapping
+
+Input behavior:
+1. requires query `url`,
+2. normalizes Google redirect wrappers (`unwrapGoogleRedirectUrl`),
+3. rejects non-`http(s)` URLs with `400`.
+
+Anchors:
+- request parse/validation: `worker/src/index.ts:2215–2227`
+- redirect unwrapping helper: `worker/src/index.ts:717+`
+
+Security implication: this endpoint is not a generic protocol proxy; `file:`, `data:`, and other schemes remain blocked at handler entry.
+
+### 24.3 Fallback layering and caller-visible flags
+
+`handlePreviewProxy` attempts in this order:
+1. direct fetch + HTML derivation (`derivePreviewFromHtml`),
+2. alternate enrichment (`attemptAlternatePreview`) when blocked/incomplete/fetch failure,
+3. deterministic URL-based fallback (`buildFallbackPreview`).
+
+Anchors:
+- main decision tree: `worker/src/index.ts:2230–2303`
+- alternate resolver: `worker/src/index.ts:2087+`
+- fallback builder/response wrapper: `worker/src/index.ts:1052+`, `:1041+`
+
+Response-shape contract:
+- success payload always uses preview JSON shape,
+- degraded paths set response metadata hints (`fallback` and, when detected, `blocked`) via `buildPreviewResponse(...)` extras.
+
+### 24.4 Safe-edit guardrails
+
+If you touch preview handling, preserve:
+- protocol allowlist enforcement before fetch,
+- timeout + byte-cap bounded fetch/read behavior,
+- layered alternate/fallback path (no raw HTML passthrough on failure),
+- stable caller-facing fallback signaling (`fallback`/`blocked`) used by clients for UX decisions.
+
 ## 17) Known limitations (current state)
 
 - Worker implementation is monolithic (`worker/src/index.ts`), so cross-cutting edits are easy to miss in review.
