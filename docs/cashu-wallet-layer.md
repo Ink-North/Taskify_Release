@@ -315,6 +315,71 @@ If modifying this layer, preserve:
 - in-flight melt idempotency keyed by deterministic request-id derivation,
 - DLEQ re-validation after wallet mutation return paths.
 
+## MintSession singleton + hook propagation contract (agent verification chunk)
+
+`MintSession` is the multi-mint façade most app code calls. It has subtle singleton + hook-update behavior that can be broken by “cleanup” refactors.
+
+### 1) `init(...)` is mutating singleton setup, not a pure constructor
+
+`MintSession.init(hooks)` does two different things:
+- creates singleton once when missing,
+- otherwise merges new hooks into existing instance via `setHooks`.
+
+Anchors:
+- `taskify-pwa/src/mint/MintSession.ts` (`init`, `getInstance`, `setHooks`)
+
+Implication: repeated init calls from different app surfaces can intentionally update hook callbacks on the live session.
+
+### 2) Hook updates are propagated to all existing connections
+
+`setHooks(...)` stores merged hooks and then calls `conn.updateHooks(...)` for every cached connection.
+
+Anchors:
+- `taskify-pwa/src/mint/MintSession.ts` (`setHooks`)
+- `taskify-pwa/src/mint/MintConnection.ts` (`updateHooks`)
+
+Operational consequence: hook changes are hot-applied; they are not limited to newly created mint connections.
+
+### 3) Mint URL identity is normalized before cache lookup
+
+Both `MintSession` and `MintConnection` normalize mint URLs by trimming and removing trailing slashes.
+
+Anchors:
+- `taskify-pwa/src/mint/MintSession.ts` (`normalize`, `getConnection`)
+- `taskify-pwa/src/mint/MintConnection.ts` (constructor `this.mintUrl = mintUrl.trim().replace(/\/+$/, "")`)
+
+Boundary to preserve: equivalent URLs (`https://mint.example` vs `https://mint.example/`) must map to the same `connections` entry.
+
+### 4) Connection initialization is single-flight per mint
+
+`MintConnection.init()` memoizes `initPromise`, so concurrent calls share one bootstrap sequence:
+1. `manager.init()`
+2. best-effort `getMintInfo()` warmup (errors swallowed)
+
+Anchor:
+- `taskify-pwa/src/mint/MintConnection.ts` (`init`)
+
+This prevents duplicate wallet bootstrap work and avoids hard failures when mint capability endpoints are flaky.
+
+### 5) Static helpers route through `getConnection(...)` every time
+
+All static methods (`requestMintQuote`, `executeMelt`, `receiveToken`, etc.) resolve connection via `getConnection(...)` first, which ensures:
+- normalized mint identity,
+- hook refresh on reused connections,
+- init-before-use behavior.
+
+Anchor:
+- `taskify-pwa/src/mint/MintSession.ts` (all static helper methods)
+
+### Safe-edit guardrails
+
+When modifying `MintSession`/`MintConnection` orchestration, preserve:
+- singleton mutation semantics for `init(hooks)` (do not silently turn it into no-op after first call),
+- hook propagation to existing connections,
+- mint URL normalization symmetry across session and connection layers,
+- `initPromise` single-flight behavior,
+- static helper pattern of resolving through `getConnection` before operations.
+
 ## NWC (NIP-47) request/response contract (agent verification chunk)
 
 This section captures the concrete behavior of `wallet/nwc.ts` + `context/NwcContext.tsx` so relay/auth changes do not silently break wallet-connect flows.
