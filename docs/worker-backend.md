@@ -450,7 +450,7 @@ If you modify scheduled flow:
 Reminder delivery depends on an intentionally minimal "wake ping" request to each subscription endpoint.
 This section captures the concrete behavior so payload/auth changes do not silently break service-worker wakeups.
 
-### 16.1 TTL derivation (`computePushTtlSeconds`)
+### 16.1 TTL derivation (`computeReminderTTL`)
 
 Anchor: `worker/src/index.ts:2768–2777`
 
@@ -528,7 +528,7 @@ This is intentional documentation of **present reality**, not a proposal.
 
 These two endpoints are externally visible and easy to regress because they include fallback logic and caching behavior that is not obvious from the router table alone.
 
-### 17.1 `/api/preview` contract (`handlePreviewProxy`)
+### 18.1 `/api/preview` contract (`handlePreviewProxy`)
 
 Anchor: `worker/src/index.ts` (`handlePreviewProxy`)
 
@@ -550,7 +550,7 @@ Behavioral invariants:
 - failures degrade to structured fallback preview payloads instead of hard 5xx whenever possible.
 - response metadata includes fallback/blocked hints when rich preview extraction fails.
 
-### 17.2 `/api/nip05` lookup contract (`handleNip05Lookup`)
+### 18.2 `/api/nip05` lookup contract (`handleNip05Lookup`)
 
 Anchors:
 - parser: `worker/src/index.ts` (`parseNip05Address`)
@@ -575,7 +575,7 @@ Status semantics:
 Compatibility note:
 - fallback to the no-query `.well-known/nostr.json` path is intentionally preserved for providers that return the full names map without `?name=` filtering.
 
-### 17.3 Safe-edit guardrails
+### 18.3 Safe-edit guardrails
 
 If you modify preview or NIP-05 logic, preserve:
 - URL protocol allowlist (`http/https`) for preview fetches,
@@ -588,7 +588,7 @@ If you modify preview or NIP-05 logic, preserve:
 
 The Worker does runtime schema bootstrapping and intentionally de-duplicates concurrent bootstrap attempts in-process.
 
-### 18.1 `ensureSchema` single-flight behavior
+### 19.1 `ensureSchema` single-flight behavior
 
 Anchors:
 - schema gate state: `worker/src/index.ts:165` (`schemaReadyPromise`)
@@ -603,7 +603,7 @@ Operational implication:
 - cold starts with concurrent requests should not race schema creation in the same isolate.
 - transient D1 errors do not permanently poison future bootstrap attempts.
 
-### 18.2 DDL + index invariants
+### 19.2 DDL + index invariants
 
 Current bootstrapped objects:
 - `devices`
@@ -620,7 +620,7 @@ Guardrails when editing:
 - preserve `send_at` and `pending device_id` indexes or provide equivalent query-path indexing before merge.
 - keep bootstrap idempotent (`CREATE ... IF NOT EXISTS`) because it runs from both fetch and scheduled entry points.
 
-### 18.3 Entry-point dependency ordering
+### 19.3 Entry-point dependency ordering
 
 Both HTTP and cron paths call `ensureSchema` before touching D1-backed flows.
 
@@ -634,7 +634,7 @@ This ordering is required so first-run deployments do not fail reminder or devic
 
 `PUT /api/devices` is intentionally endpoint-centric, not strict-client-id centric. This avoids duplicate registrations when app/device IDs rotate but the push endpoint remains stable.
 
-### 19.1 Registration resolution order
+### 20.1 Registration resolution order
 
 Anchor: `worker/src/index.ts:608–648` (`handleRegisterDevice`)
 
@@ -649,7 +649,7 @@ Current behavior:
 Operational implication:
 - callers can present a new/random `deviceId` and still attach to the prior canonical record when endpoint is unchanged.
 
-### 19.2 D1 uniqueness and upsert semantics
+### 20.2 D1 uniqueness and upsert semantics
 
 Anchors:
 - schema uniqueness: `worker/src/index.ts:187–195` (`endpoint_hash TEXT NOT NULL UNIQUE`)
@@ -660,7 +660,7 @@ Invariants:
 - Upsert conflict key is `device_id`; endpoint updates are applied in-place.
 - `updated_at` is refreshed on every register/update call.
 
-### 19.3 Poll/delete consistency dependency
+### 20.3 Poll/delete consistency dependency
 
 `/api/reminders/poll` endpoint lookup depends on the same endpoint-hash mapping path (`findDeviceIdByEndpoint`) used during registration reconciliation.
 
