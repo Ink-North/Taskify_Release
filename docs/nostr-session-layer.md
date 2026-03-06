@@ -251,6 +251,77 @@ If modifying `SessionPool`, preserve:
 - deterministic relay normalization before session init,
 - compatibility alias `publishEvent(...) -> publish(...)`.
 
+## Relay-set construction + degraded-connect contract (agent verification chunk)
+
+This section captures the exact behavior that decides *which* relays are used for fetch/subscribe/publish operations when some relays are unhealthy.
+
+### 1) Relay selection is health-aware but not health-exclusive
+
+`buildRelaySet(...)` normalizes relay URLs, calls `ensureRelays(...)`, and then iterates each relay with:
+- `canConnect = relayHealth.canAttempt(relayUrl)`
+- `ndk.pool.getRelay(relayUrl, canConnect)`
+
+Anchors:
+- `taskify-pwa/src/nostr/NostrSession.ts:103` (`buildRelaySet`)
+- `taskify-pwa/src/nostr/NostrSession.ts:122` (`ensureRelays`)
+
+Operational implication:
+- a relay in backoff can still be included in the constructed `NDKRelaySet`, but active reconnect attempts are deferred/scheduled rather than forced immediately.
+
+### 2) Degraded mode returns `undefined` relay set (not hard failure)
+
+If no relay objects are collected (for example all `getRelay(...)` calls fail), `buildRelaySet` returns `undefined`.
+
+Anchor:
+- `taskify-pwa/src/nostr/NostrSession.ts:117`
+
+Why it matters:
+- downstream calls (`fetchEvents`, publisher/subscription resolver path) must tolerate `undefined` relay sets and rely on NDK defaults instead of assuming a non-empty explicit set.
+
+### 3) Reconnect timers are single-flight per relay
+
+`scheduleRelayConnect(...)` enforces one active timer per relay URL using `relayRetryTimers` map:
+- if timer exists: no-op,
+- on timer fire: drop map entry, re-check backoff gate, then connect best-effort.
+
+Anchors:
+- timer map declaration: `taskify-pwa/src/nostr/NostrSession.ts:31`
+- scheduler: `taskify-pwa/src/nostr/NostrSession.ts:239–262`
+
+Contract to preserve:
+- repeated disconnect/no-attempt loops should not create unbounded concurrent reconnect timers for the same relay.
+
+### 4) Relay info priming obeys same backoff gate
+
+`primeRelayInfo(...)` does not bypass health backoff:
+- if relay is currently blocked, it registers `onBackoffExpiry(...)` callback and returns,
+- otherwise it performs async NIP-11 fetch via `fetchRelayInfo(...)`.
+
+Anchors:
+- `taskify-pwa/src/nostr/NostrSession.ts:230–237` (`primeRelayInfo`)
+- `taskify-pwa/src/nostr/NostrSession.ts:138–157` (`fetchRelayInfo`)
+
+Implication:
+- metadata refresh and reconnect pressure are coordinated by the same health tracker rather than independent retry storms.
+
+### 5) Fetch normalization guarantees raw-event output with `id`
+
+`fetchEvents(...)` maps NDK event wrappers to `rawEvent()` when available and filters out entries lacking `id`.
+
+Anchor:
+- `taskify-pwa/src/nostr/NostrSession.ts:178–184`
+
+Boundary:
+- callers can treat returned values as plain `NostrEvent[]` with stable id presence, even when underlying NDK object shapes vary.
+
+### Safe-edit guardrails
+
+If modifying relay-selection or reconnect internals, preserve:
+- health-gated connect attempts (`canAttempt` checks) in both relay-set build and relay priming paths,
+- single-flight reconnect timer behavior per relay URL,
+- graceful `undefined` relay-set behavior instead of throwing on empty relay object sets,
+- fetch-path normalization to id-bearing raw events.
+
 ## Security & Reliability Notes (current code)
 
 - Relay auth challenges are handled via NDK auth policy hook and `RelayAuthManager`.
