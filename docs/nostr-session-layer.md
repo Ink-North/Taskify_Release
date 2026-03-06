@@ -565,6 +565,55 @@ When editing auth behavior, preserve:
 - 15s duplicate-challenge suppression semantics unless rollout notes call out behavior changes,
 - `relayAuthDefaultPolicy` failure mode of returning `false` (non-throwing) to avoid crashing session bootstrap.
 
+## Fetch path + degraded relay-set contract (agent verification chunk)
+
+`NostrSession.fetchEvents(...)` has intentionally permissive behavior under relay degradation. It should still return whatever data is available instead of hard-failing on partial relay outages.
+
+### 1) Relay health gates connect attempts, not relay inclusion
+
+`buildRelaySet(...)` checks `relayHealth.canAttempt(relayUrl)` per relay and passes that flag into `ndk.pool.getRelay(relayUrl, canConnect)`.
+
+If a relay is currently backoff-blocked:
+- it is still included in the relay set object when obtainable,
+- but immediate connect attempts are suppressed,
+- and `scheduleRelayConnect(...)` is queued for later retry.
+
+Anchors:
+- `taskify-pwa/src/nostr/NostrSession.ts` (`buildRelaySet`, `scheduleRelayConnect`)
+
+Operational implication: read paths can remain partially functional even while reconnect is deferred.
+
+### 2) Empty relay resolution returns `undefined`, not an error
+
+When normalization yields no relay URLs, or all relay object lookups fail, `buildRelaySet(...)` returns `undefined`.
+
+`fetchEvents(...)` then calls `ndk.fetchEvents(...)` with that `undefined` relay set.
+
+Anchors:
+- `taskify-pwa/src/nostr/NostrSession.ts` (`buildRelaySet`, `fetchEvents`)
+
+Boundary to preserve: callers should not receive a synthetic "no relays" exception from this layer.
+
+### 3) Result materialization is raw-event-first with id guard
+
+After `ndk.fetchEvents(...)`, results are converted by:
+1. preferring `ev.rawEvent()` when available,
+2. falling back to casting the NDK event instance,
+3. filtering out entries without a truthy `id`.
+
+Anchor:
+- `taskify-pwa/src/nostr/NostrSession.ts` (`fetchEvents` map/filter pipeline)
+
+Why this matters: downstream code can rely on returned items being id-bearing Nostr event objects even when relay responses are heterogeneous.
+
+### Safe-edit guardrails
+
+When modifying fetch/relay resolution behavior, preserve:
+- health-aware connect gating (`canAttempt`) separate from relay set construction,
+- timer-based reconnect scheduling for blocked relays,
+- permissive `undefined` relay-set fallback rather than throwing on degraded topology,
+- raw-event-first normalization plus final `id` filter before returning events.
+
 ## Agent Jump-Start Checklist
 
 When debugging or extending Nostr behavior, read in this order:
