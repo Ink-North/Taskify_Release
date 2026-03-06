@@ -421,6 +421,76 @@ Safe-edit guardrails:
 - keep mint URL normalization consistent across read/write APIs,
 - keep numeric counter clamping (`>=0`, integer floor) to avoid drift from malformed inputs.
 
+## Pending token redemption queue contract (agent verification chunk)
+
+This queue bridges UX-level "save token now, redeem later" flows and crash/offline recovery.
+It lives in `wallet/storage.ts` and is executed in `context/CashuContext.tsx`.
+
+### 1) Storage-level queue invariants
+
+Persistent key + shape:
+- key: `cashu_pending_tokens_v1`
+- entry fields: `id`, `mint`, `token`, optional `amount`, `attempts`, `lastError`, `createdAt`, `updatedAt`, optional `source`
+
+Anchors:
+- `taskify-pwa/src/wallet/storage.ts` (`LS_PENDING_TOKENS`, `PendingTokenEntry`, `normalizePendingTokens`)
+- mutation helpers: `addPendingToken`, `removePendingToken`, `markPendingTokenAttempt`, `replacePendingTokens`, `setPendingTokenSource`
+
+Behavioral details to preserve:
+- token dedupe key is `(mint, token)` (new insert with same pair replaces prior entry identity),
+- `markPendingTokenAttempt` increments attempts and stamps `updatedAt`,
+- `replacePendingTokens` normalizes entries before write (shape cleanup on restore/import).
+
+### 2) Redemption loop semantics
+
+Primary runner: `redeemPendingTokens()` in `CashuContext`.
+
+Flow:
+1. Guard against concurrent runs using `redeemingPendingRef`.
+2. Snapshot pending entries via `listPendingTokens()`.
+3. Process each entry sequentially through `processPendingEntry(...)`.
+4. On per-entry failure:
+   - store attempt/error via `markPendingTokenAttempt(...)`,
+   - break early only for likely offline errors.
+5. Always clear in-progress flag and refresh balances in `finally`.
+
+Anchors:
+- `taskify-pwa/src/context/CashuContext.tsx` (`redeemPendingTokens`, `processPendingEntry`)
+
+### 3) Duplicate-proof and partially-spent handling
+
+`processPendingEntry` intentionally avoids double-crediting and can salvage partially spendable tokens:
+
+- extracts token proofs for the target mint,
+- filters out proofs whose secrets already exist in wallet state,
+- if all proofs already exist, removes queue entry and exits,
+- on "already spent" receive failure, calls `MintSession.checkTokenStates(...)` and retries receive with only non-`SPENT` proofs,
+- if none remain spendable, removes queue entry and surfaces "Token already spent".
+
+Anchors:
+- `taskify-pwa/src/context/CashuContext.tsx` (`extractProofsForMint` usage, `isTokenAlreadySpentError` branch, `MintSession.checkTokenStates` path)
+
+### 4) Cross-mint intake behavior
+
+`savePendingTokenForRedemption(...)` can enqueue tokens for a mint different from the current active mint:
+
+- derives target mint from token payload when possible,
+- falls back to active mint when token is opaque,
+- ensures mint is tracked (`addMintToList`) before queueing,
+- returns `crossMint` flag for caller/UI context.
+
+Anchors:
+- `taskify-pwa/src/context/CashuContext.tsx` (`savePendingTokenForRedemption`)
+
+### Safe-edit guardrails
+
+When modifying pending-token flows, preserve:
+- durable queue write before asynchronous redemption attempts,
+- sequential processing + offline short-circuit to avoid noisy retry storms,
+- duplicate-proof filtering before receive attempts,
+- partial-spend recovery path using `checkTokenStates` (do not convert all spent-like errors into hard terminal drop),
+- balance refresh after queue mutation and redemption attempts.
+
 ## Security & Reliability Notes (Current)
 
 - DLEQ proof validation is explicit in wallet and connection paths before proofs are treated as valid.
