@@ -428,6 +428,72 @@ When touching wallet-facing nostr code, preserve:
 - fetch normalization to raw events with valid ids,
 - deterministic board-key derivation label and per-board promise memoization.
 
+## RelayAuthManager challenge-response contract (agent verification chunk)
+
+`RelayAuthManager` in `taskify-pwa/src/nostr/RelayAuth.ts` is the concrete NIP-42 auth responder behind `NostrSession.setupRelayHooks()`.
+
+### 1) Auth dedupe is per relay connection, not global relay URL
+
+Connection identity key is `"<relay.url>|<connectedAt>"`, so a reconnect creates a new auth namespace even for the same relay URL.
+
+Anchors:
+- `taskify-pwa/src/nostr/RelayAuth.ts` (`connectionKey`)
+- `taskify-pwa/src/nostr/NostrSession.ts` (`relay:connect` / `relay:disconnect` hooks call `authManager.reset`)
+
+Operational implication: auth challenge suppression does not leak across connection generations.
+
+### 2) Signer loading is strict and storage-gated
+
+`loadSigner()` returns `null` unless:
+- browser kv storage is available,
+- `LS_NOSTR_SK` exists,
+- key is exactly 64 hex chars.
+
+When missing/invalid, auth policy returns `false` (no auth event), not a thrown error.
+
+Anchors:
+- `taskify-pwa/src/nostr/RelayAuth.ts` (`loadSigner`)
+- `taskify-pwa/src/nostr/NostrSession.ts` (`relayAuthDefaultPolicy`)
+
+### 3) Challenge replay suppression window is 15 seconds
+
+`respond(...)` skips rebuilding/re-signing auth events when the same connection key and same challenge were already handled in the last `15_000ms`.
+
+Anchor:
+- `taskify-pwa/src/nostr/RelayAuth.ts` (`respond`)
+
+Why this matters: relays that emit duplicate challenge frames do not trigger repeated signing work or noisy duplicate auth publishes.
+
+### 4) Auth event shape is fixed ClientAuth with empty content
+
+`buildAuthEvent(...)` constructs:
+- kind: `NDKKind.ClientAuth`
+- tags: `["relay", relayUrl]`, `["challenge", challenge]`
+- content: empty string
+- signature: client secret signer (`NDKPrivateKeySigner`)
+
+Anchor:
+- `taskify-pwa/src/nostr/RelayAuth.ts` (`buildAuthEvent`)
+
+### 5) Authed timestamp updates on both response + relay authed hook
+
+- `respond(...)` writes `authedAt=Date.now()` when issuing an auth event.
+- `markAuthed(...)` refreshes timestamp again on `relay:authed` pool event.
+
+Anchors:
+- `taskify-pwa/src/nostr/RelayAuth.ts` (`respond`, `markAuthed`)
+- `taskify-pwa/src/nostr/NostrSession.ts` (`relay:authed` hook)
+
+This keeps dedupe timing aligned with real relay confirmation rather than request send time alone.
+
+### Safe-edit guardrails
+
+When editing auth behavior, preserve:
+- connection-scoped auth state keying (`relay.url|connectedAt`) so reconnects do not inherit stale challenge state,
+- strict signer validation before signing (do not silently accept malformed key storage),
+- 15s duplicate-challenge suppression semantics unless rollout notes call out behavior changes,
+- `relayAuthDefaultPolicy` failure mode of returning `false` (non-throwing) to avoid crashing session bootstrap.
+
 ## Agent Jump-Start Checklist
 
 When debugging or extending Nostr behavior, read in this order:
