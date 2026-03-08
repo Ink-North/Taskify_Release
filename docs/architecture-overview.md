@@ -594,7 +594,6 @@ lastEditedBy set but not trusted → "untrusted"
 | **Monolithic App.tsx** | ~800KB root component; hard to navigate and test in isolation | `taskify-pwa/src/App.tsx` |
 | **No wallet/mint tests** | Swap, P2PK, NWC flows are entirely untested | `src/wallet/`, `src/mint/` |
 | **No Worker tests** | Cron, push dispatch, KV/D1 logic untested outside live Cloudflare | `worker/src/index.ts` |
-| **No CLI tests** | CLI commands untested programmatically | `taskify-cli/` |
 | **No E2E tests** | Browser-level flows (onboarding, task create, wallet send) unverified | — |
 | **No coverage tooling** | No `c8` / `nyc` configured; coverage is unknown | `taskify-pwa/package.json` |
 | **localStorage for secrets** | Nostr SK in localStorage is readable by injected scripts; no secure enclave | `src/nostrKeys.ts` |

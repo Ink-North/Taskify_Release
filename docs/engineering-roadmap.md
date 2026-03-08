@@ -7,7 +7,7 @@
 
 ## Context
 
-Taskify has a working product across three surfaces (PWA, Worker, CLI) with a small but meaningful test suite covering agent dispatch, Nostr startup stability, and onboarding gating. This roadmap formalizes the next steps to make the codebase approachable for contributors and AI agents, and to close the largest gaps in test coverage before the next feature cycle.
+Taskify has a working product across two primary surfaces (PWA + Worker) with a small but meaningful test suite covering agent dispatch, Nostr startup stability, and onboarding gating. This roadmap formalizes the next steps to make the codebase approachable for contributors and AI agents, and to close the largest gaps in test coverage before the next feature cycle.
 
 ---
 
@@ -40,17 +40,6 @@ Taskify has a working product across three surfaces (PWA, Worker, CLI) with a sm
 **Acceptance criteria:**
 - Each doc covers: purpose, key files, data flow diagram or pseudocode, failure modes, and known limitations. ✅
 - Docs reference specific file paths and line ranges where relevant. ✅
-
----
-
-### Milestone 1.3: CLI Documentation (Day 5)
-
-**Deliverables:**
-- `taskify-cli/README.md` — complete command reference, installation, and usage examples ✅
-
-**Acceptance criteria:**
-- All CLI commands documented with flags and example output. ✅
-- Installation steps tested clean from scratch. ✅
 
 ---
 
@@ -118,22 +107,6 @@ Current test count: 3 files. Target: expand to cover 6+ domains.
 
 ---
 
-### Milestone 2.4: CLI Tests (Day 10)
-
-**Target files:**
-- `taskify-cli/src/commands.test.ts`
-
-**Coverage goals:**
-- Each CLI command parses flags correctly
-- Invalid flags produce helpful error output, non-zero exit code
-- `--help` output matches documented commands
-
-**Acceptance criteria:**
-- Tests run with Node `--test` from `taskify-cli/` directory.
-- No real Nostr relay connections in CLI tests.
-
----
-
 ## Coverage Tracking
 
 | Domain | Week 1 Start | Week 2 Result |
@@ -146,7 +119,6 @@ Current test count: 3 files. Target: expand to cover 6+ domains.
 | PublishCoordinator | None | Deferred (NDK stub complexity) |
 | Wallet / Cashu | None | Deferred (second-reviewer requirement) |
 | Worker backend | None | Deferred (no local Cloudflare env) |
-| CLI | None | Documented; runtime test deferred (Playwright dependency) |
 
 **Total new tests this cycle: 46** (19 RelayHealth + 27 agentSecurity)
 

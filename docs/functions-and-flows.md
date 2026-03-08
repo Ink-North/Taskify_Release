@@ -573,7 +573,6 @@ Compound boards reference multiple child boards. `boardScopeIds()` (`src/domains
 ### Entry Points
 - `window.taskifyAgent.exec(jsonString)` — browser API (registered in App.tsx when `?agent=1`)
 - `src/ui/agent/AgentModePanel.tsx` — manual input panel in agent mode UI
-- CLI: `taskify-cli/bin/taskify-agent.js` — wraps Playwright to call `window.taskifyAgent.exec`
 
 ### Step-by-Step
 

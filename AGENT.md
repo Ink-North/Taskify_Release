@@ -29,13 +29,12 @@ Taskify_Release/
 │   │   └── index.ts      # Worker entry: push notifications, reminders, cron, backups
 │   └── migrations/       # D1 SQL migrations
 │
-├── taskify-cli/          # CLI companion tool
-│   ├── bin/              # CLI entry point
-│   └── package.json
-│
 ├── docs/                 # Project documentation
-│   ├── agent-mode.md     # Agent Mode command reference
-│   └── engineering-roadmap.md
+│   ├── agent-mode.md              # Agent Mode command reference
+│   ├── architecture-overview.md   # Runtime architecture and data flows
+│   ├── domains-layer-reference.md # Domain-by-domain map for src/domains/
+│   ├── functions-and-flows.md     # End-to-end runtime flows
+│   └── engineering-roadmap.md     # Documentation + testing roadmap
 │
 ├── scripts/              # Build helpers (install-worker-deps.mjs, etc.)
 ├── wrangler.toml         # Cloudflare Worker + asset config
@@ -54,7 +53,6 @@ Taskify is a **privacy-first, local-first task manager** with Nostr-based sync a
 |---|---|---|
 | **PWA** | React 19, Vite, Tailwind | UI, local state, Nostr sync, Cashu wallet |
 | **Cloudflare Worker** | Wrangler, TypeScript | Push notifications, reminder scheduling, backup storage, cron triggers |
-| **CLI** | Node.js | Developer/power-user task management from terminal |
 | **Nostr relay network** | NDK, nostr-tools | Decentralized event transport and persistence |
 
 ### Data Flow
@@ -140,17 +138,10 @@ cp .dev.vars.example .dev.vars  # fill in VAPID_PUBLIC_KEY, VAPID_SUBJECT
 npx wrangler dev
 ```
 
-**CLI:**
-```sh
-cd taskify-cli
-npm install
-node bin/taskify-cli.js --help
-```
-
 ### Important Notes
 
 - The test runner is **Node's built-in `--test`** (not Jest, not Vitest). Tests import native `assert` and `node:test`.
-- No monorepo build tool — each package (`taskify-pwa`, `worker`, `taskify-cli`) is independent.
+- No monorepo build tool — each package (`taskify-pwa`, `worker`) is independent.
 - PWA build output (`taskify-pwa/dist/`) is served by the Cloudflare Worker via `[assets]` binding.
 - Wrangler config (`wrangler.toml`) is at repo root; it references paths relative to root.
 
@@ -176,7 +167,6 @@ Additional tests exist on feature branches and are being promoted into `New_Feat
 - **No tests** for wallet/Cashu layer (swap, P2PK, NWC, mint sessions)
 - **No tests** for push notification Worker logic
 - **No tests** for relay health / relay auth flows
-- **No tests** for CLI commands
 - **No integration tests** — all tests are unit-level
 - **No E2E tests** — browser-level flows are untested
 - Coverage tooling not yet configured (no c8/nyc setup)
@@ -194,7 +184,6 @@ Additional tests exist on feature branches and are being promoted into `New_Feat
 | New domain / subsystem | `AGENT.md` structure map + architecture section |
 | New branch or deploy flow change | `AGENT.md` branch promotion |
 | New test file or coverage change | `AGENT.md` testing table + roadmap |
-| New CLI command | `taskify-cli/README.md` |
 | New env var or infra binding | `wrangler.toml` comment + `AGENT.md` |
 
 PRs that change behavior without updating relevant docs will be flagged in review.

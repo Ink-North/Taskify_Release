@@ -475,36 +475,3 @@ Full shape of a task returned in agent responses:
 }
 ```
 
----
-
-## CLI Quick Reference
-
-The `taskify-agent` CLI wraps the same command envelope via headless Playwright.
-
-```bash
-# Simple plaintext
-taskify-agent "list"
-taskify-agent "list open 20"
-taskify-agent "list any query Nathan"
-taskify-agent "list open board board-abc"
-taskify-agent "done task-123"
-taskify-agent "get task-123"
-taskify-agent "create Buy groceries"
-
-# Structured flags
-taskify-agent list --status open --limit 25
-taskify-agent list --status any --query "Nathan"
-taskify-agent create "Review PR" --note "Check tests" --priority 2 --due 2026-03-10T09:00:00Z
-taskify-agent done task-123
-taskify-agent get task-123
-
-# Raw op passthrough
-taskify-agent raw task.list --params '{"status":"any","query":"Nathan"}'
-
-# Full envelope
-taskify-agent exec '{"v":1,"id":"h1","op":"meta.help","params":{}}'
-```
-
-Global flags: `--url`, `--profile`, `--headed`, `--timeout`, `--json`
-
-Exit codes: `0` = `ok: true`, `1` = `ok: false`, `2` = CLI/parse error.

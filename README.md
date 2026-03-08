@@ -24,7 +24,7 @@ Taskify is a privacy-first, local-first task manager with Nostr-based sync and a
 | **Contacts** | Nostr-based contact list (NIP-51) | `src/lib/contacts.ts`, `src/lib/nip51Contacts.ts` |
 | **Settings** | Relays, push notifications, theme, startup view, backups | `src/ui/settings/` |
 | **Onboarding** | Key generation/import, agent mode setup, hard navigation gating | `src/onboarding/` |
-| **Agent Mode** | JSON command API for AI/CLI task operations | `src/agent/`, `docs/agent-mode.md` |
+| **Agent Mode** | JSON command API for AI/scripted task operations | `src/agent/`, `docs/agent-mode.md` |
 | **Bible Tracker** | Scripture reading progress and memory card tracking | `src/components/BibleTracker.tsx` |
 | **Reminders** | Push notification scheduling via Cloudflare Worker cron | `worker/src/index.ts`, `src/domains/push/` |
 
@@ -53,13 +53,10 @@ Taskify_Release/
 │   ├── src/index.ts           # Worker entry — all backend logic in one file
 │   └── migrations/            # D1 SQL migrations
 │
-├── taskify-cli/               # CLI companion for Agent Mode
-│   ├── bin/taskify-agent.js   # CLI entry point (Playwright-based)
-│   └── README.md              # CLI usage reference
-│
 ├── docs/                      # Project documentation
-│   ├── agent-mode.md          # Agent command reference with examples
+│   ├── agent-mode.md             # Agent command reference with examples
 │   ├── architecture-overview.md  # Runtime architecture and data flows
+│   ├── domains-layer-reference.md# Domain-by-domain map for src/domains/
 │   ├── engineering-roadmap.md    # Testing and docs roadmap (March 2026)
 │   └── functions-and-flows.md    # End-to-end flow walkthroughs for agents/contributors
 │
@@ -68,7 +65,7 @@ Taskify_Release/
 └── scripts/                   # Build helpers (install-worker-deps.mjs)
 ```
 
-There is no monorepo build tool. Each package (`taskify-pwa`, `worker`, `taskify-cli`) is managed independently. PWA build output (`taskify-pwa/dist/`) is served by the Cloudflare Worker via the `[assets]` binding.
+There is no monorepo build tool. Each package (`taskify-pwa`, `worker`) is managed independently. PWA build output (`taskify-pwa/dist/`) is served by the Cloudflare Worker via the `[assets]` binding.
 
 **Where to start:**
 - App logic: `taskify-pwa/src/App.tsx` (root component) and `src/domains/tasks/taskTypes.ts`
@@ -99,14 +96,6 @@ npm test             # Node --test runner (see Testing section)
 ```sh
 # Requires wrangler auth and .dev.vars with VAPID_PUBLIC_KEY, VAPID_SUBJECT, VAPID_PRIVATE_KEY
 npx wrangler dev     # Worker at http://localhost:8787
-```
-
-### CLI
-
-```sh
-cd taskify-cli
-npm install
-node bin/taskify-agent.js --help
 ```
 
 ### Common Commands
@@ -183,7 +172,6 @@ When you change behavior, update the docs. See `AGENT.md` for the full docs-upda
 | New domain or subsystem | `AGENT.md` + `docs/architecture-overview.md` |
 | New branch or deploy flow change | `AGENT.md` branch promotion section |
 | New test file or coverage change | `AGENT.md` testing table + `docs/engineering-roadmap.md` |
-| New CLI command | `taskify-cli/README.md` |
 | New env var or Worker binding | `wrangler.toml` comment + `AGENT.md` |
 
 PRs that change behavior without updating relevant docs will be flagged in review.
@@ -195,6 +183,6 @@ PRs that change behavior without updating relevant docs will be flagged in revie
 - [`AGENT.md`](./AGENT.md) — full contributor guide: architecture, protocols, safe contribution rules
 - [`docs/agent-mode.md`](./docs/agent-mode.md) — agent command reference with copy-paste examples
 - [`docs/architecture-overview.md`](./docs/architecture-overview.md) — runtime architecture and data flows
+- [`docs/domains-layer-reference.md`](./docs/domains-layer-reference.md) — source-of-truth map for `src/domains/*`
 - [`docs/functions-and-flows.md`](./docs/functions-and-flows.md) — end-to-end flow walkthroughs with file references
 - [`docs/engineering-roadmap.md`](./docs/engineering-roadmap.md) — testing and documentation roadmap
-- [`taskify-cli/README.md`](./taskify-cli/README.md) — CLI installation and usage

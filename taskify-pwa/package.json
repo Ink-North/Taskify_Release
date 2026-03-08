@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/agent/agentDispatcher.test.ts",
+    "test": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/agent/agentDispatcher.test.ts src/agent/agentSecurity.test.ts src/nostr/RelayHealth.test.ts",
     "test:lint": "npm run lint"
   },
   "dependencies": {
