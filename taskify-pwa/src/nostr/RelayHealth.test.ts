@@ -106,10 +106,11 @@ test("markFailure sets nextAllowedAttemptAt in the future", () => {
 
 // --- severity weighting ---
 
-test("markFailure with low severity results in smaller or equal backoff than normal (weight effect visible at ≥2 failures)", () => {
-  // On the first failure, both low and normal floor to BASE_BACKOFF_MS due to clamping.
-  // Severity weight only separates them when exponent is high enough that backoff * weight > BASE.
-  // At 3 failures: base = 5000*2^2=20000, low=10000, normal=20000 — clearly separated.
+test("markFailure with low severity results in strictly smaller backoff than normal after multiple failures", () => {
+  // On the first failure, raw low backoff (2500ms) is floored to BASE_BACKOFF_MS (5000ms) — same as normal.
+  // Severity weight only visibly separates the two when the exponent is large enough to exceed the floor.
+  // At 3 failures: low = 5000*2^2*0.5 = 10000ms, normal = 5000*2^2*1 = 20000ms.
+  // Jitter is ±10% (±1000ms vs ±2000ms) so the ranges [9000,11000] and [18000,22000] never overlap.
   const trackerLow = new RelayHealthTracker();
   const trackerNormal = new RelayHealthTracker();
   for (let i = 0; i < 3; i++) {
@@ -118,7 +119,7 @@ test("markFailure with low severity results in smaller or equal backoff than nor
   }
   const low = trackerLow.nextAttemptIn(RELAY);
   const normal = trackerNormal.nextAttemptIn(RELAY);
-  assert.ok(low <= normal, `low=${low} should be <= normal=${normal}`);
+  assert.ok(low < normal, `low=${low} should be < normal=${normal}`);
 });
 
 test("markFailure with high severity results in larger backoff than normal", () => {
