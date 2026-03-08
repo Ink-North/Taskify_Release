@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "scripts": {
+    "test": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/index.test.ts"
+  },
   "dependencies": {
     "link-preview-js": "^3.1.0"
   }
