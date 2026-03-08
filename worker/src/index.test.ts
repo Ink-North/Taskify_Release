@@ -371,3 +371,86 @@ test("scheduled handles 410 by removing expired device", async () => {
   assert.equal(db.devices.has("dev-expired"), false, "expired device should be deleted");
   assert.equal(db.reminders.length, 0, "due reminder row should be consumed");
 });
+
+test("scheduled batches multiple devices and sends one push per device", async () => {
+  const db = new MockD1();
+  const env = await makeEnv(db);
+
+  const endpointA = "https://push.example/a";
+  const endpointB = "https://push.example/b";
+  db.devices.set("dev-a", {
+    device_id: "dev-a",
+    platform: "ios",
+    endpoint: endpointA,
+    endpoint_hash: await sha256Hex(endpointA),
+    subscription_auth: "auth-a",
+    subscription_p256dh: "p256dh-a",
+    updated_at: Date.now(),
+  });
+  db.devices.set("dev-b", {
+    device_id: "dev-b",
+    platform: "android",
+    endpoint: endpointB,
+    endpoint_hash: await sha256Hex(endpointB),
+    subscription_auth: "auth-b",
+    subscription_p256dh: "p256dh-b",
+    updated_at: Date.now(),
+  });
+
+  const now = Date.now();
+  db.reminders.push(
+    {
+      device_id: "dev-a",
+      reminder_key: "a1:15",
+      task_id: "a1",
+      board_id: "board-a",
+      title: "A1",
+      due_iso: new Date(now + 120_000).toISOString(),
+      minutes: 15,
+      send_at: now - 1_000,
+    },
+    {
+      device_id: "dev-a",
+      reminder_key: "a2:5",
+      task_id: "a2",
+      board_id: "board-a",
+      title: "A2",
+      due_iso: new Date(now + 180_000).toISOString(),
+      minutes: 5,
+      send_at: now - 500,
+    },
+    {
+      device_id: "dev-b",
+      reminder_key: "b1:10",
+      task_id: "b1",
+      board_id: "board-b",
+      title: "B1",
+      due_iso: new Date(now + 90_000).toISOString(),
+      minutes: 10,
+      send_at: now - 700,
+    },
+  );
+
+  const originalFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    urls.push(String(url));
+    return new Response("", { status: 201 });
+  }) as any;
+
+  try {
+    await worker.scheduled({ scheduledTime: Date.now(), cron: "* * * * *" } as any, env, undefined as any);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(urls.length, 2, "one push ping per device");
+  assert.ok(urls.includes(endpointA));
+  assert.ok(urls.includes(endpointB));
+
+  const pendingA = db.pending.filter((p) => p.device_id === "dev-a");
+  const pendingB = db.pending.filter((p) => p.device_id === "dev-b");
+  assert.equal(pendingA.length, 2, "all dev-a due reminders should be pending");
+  assert.equal(pendingB.length, 1, "all dev-b due reminders should be pending");
+  assert.equal(db.reminders.length, 0, "all processed due reminders should be removed");
+});
