@@ -92,12 +92,12 @@ Current test count: 3 files. Target: expand to cover 6+ domains.
 - `GET /api/config` contract validation ✅
 - `PUT /api/reminders` unknown device behavior (404) ✅
 - `POST /api/reminders/poll` drain semantics (returns + deletes pending rows) ✅
-- `scheduled()` handler baseline path with empty due reminders ✅
+- `scheduled()` due-reminder path enqueues pending + sends push ping ✅
+- Push dispatch 410-expiry cleanup assertion ✅
+- VAPID signing-path header assertion (`Authorization`, `Crypto-Key`, `TTL`) ✅
 
 **Still pending for full hardening:**
-- Push dispatch 410-expiry cleanup assertion
-- VAPID signing-path unit tests
-- Due-reminder batch processing with grouped device delivery
+- Additional edge-case coverage for batched multi-device due-reminder windows
 
 ---
 
@@ -114,7 +114,7 @@ Current test count: 3 files. Target: expand to cover 6+ domains.
 | Wallet / Cashu | None | ✅ Added (SwapManager + p2pk) |
 | Worker backend | None | ✅ Added baseline API/scheduler tests |
 
-**Total new tests this cycle: 70** (19 RelayHealth + 27 agentSecurity + 3 SwapManager + 5 p2pk + 4 worker)
+**Total new tests this cycle: 72** (19 RelayHealth + 27 agentSecurity + 1 agent happy-path smoke + 3 SwapManager + 5 p2pk + 5 worker)
 
 ---
 
