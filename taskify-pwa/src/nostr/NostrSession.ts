@@ -1,4 +1,4 @@
-import NDK, { NDKRelaySet, type NDKFilter, type NDKRelay } from "@nostr-dev-kit/ndk";
+import NDK, { NDKEvent, NDKRelaySet, type NDKFilter, type NDKRelay } from "@nostr-dev-kit/ndk";
 import type { EventTemplate, NostrEvent } from "nostr-tools";
 import { CursorStore } from "./CursorStore";
 import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } from "./SubscriptionManager";
@@ -85,7 +85,10 @@ export class NostrSession {
 
   private async connect(): Promise<void> {
     if (this.initialized) return;
-    await this.ndk.connect();
+    await Promise.race([
+      this.ndk.connect(),
+      new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+    ]);
     this.logDebugSummary();
     this.initialized = true;
   }
@@ -175,12 +178,48 @@ export class NostrSession {
     return this.publisher.publishRaw(event, options);
   }
 
-  async fetchEvents(filters: NDKFilter[], relayUrls?: string[]): Promise<NostrEvent[]> {
+  async fetchEvents(
+    filters: NDKFilter[],
+    relayUrls?: string[],
+    timeoutMs = 15_000,
+    eoseGraceMs = 200,
+  ): Promise<NostrEvent[]> {
     const relaySet = await this.buildRelaySet(relayUrls);
-    const fetched = await this.ndk.fetchEvents(filters, { closeOnEose: true }, relaySet);
-    return Array.from(fetched)
-      .map((ev) => ev.rawEvent?.() ?? (ev as unknown as NostrEvent))
-      .filter((ev): ev is NostrEvent => !!ev?.id);
+
+    return new Promise<NostrEvent[]>((resolve) => {
+      const collected: NostrEvent[] = [];
+      const seenIds = new Set<string>();
+      let graceTimer: ReturnType<typeof setTimeout> | null = null;
+      let settled = false;
+
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        if (graceTimer) clearTimeout(graceTimer);
+        clearTimeout(hardTimer);
+        try { sub.stop(); } catch { /* ignore */ }
+        resolve(collected);
+      };
+
+      let hardTimer = setTimeout(settle, timeoutMs);
+
+      const opts = { closeOnEose: false, relaySet };
+      const sub = this.ndk.subscribe(filters, opts);
+
+      sub.on("event", (evt: NDKEvent) => {
+        if (settled) return;
+        const raw = evt.rawEvent?.() as NostrEvent ?? (evt as unknown as NostrEvent);
+        if (!raw?.id || seenIds.has(raw.id)) return;
+        seenIds.add(raw.id);
+        collected.push(raw);
+      });
+
+      sub.on("eose", () => {
+        if (!graceTimer && !settled) {
+          graceTimer = setTimeout(settle, eoseGraceMs);
+        }
+      });
+    });
   }
 
   private setupRelayHooks() {

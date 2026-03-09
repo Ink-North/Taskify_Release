@@ -2058,7 +2058,7 @@ declare global {
 
 const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
 const NOSTR_MIGRATION_BUFFER_MS = 15000;
-const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 3000;
+const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 8000;
 
 function loadDefaultRelays(): string[] {
   try {
