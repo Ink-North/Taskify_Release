@@ -27,6 +27,7 @@ export type AgentTaskCreateInput = {
   priority?: 1 | 2 | 3;
   columnId?: string;
   idempotencyKey?: string;
+  assignees?: string[];
 };
 
 export type AgentTaskPatchInput = {
@@ -35,6 +36,8 @@ export type AgentTaskPatchInput = {
   dueISO?: string | null;
   priority?: 1 | 2 | 3 | null;
   columnId?: string | null;
+  inboxItem?: boolean;
+  assignees?: string[];
 };
 
 export type AgentRuntime = {

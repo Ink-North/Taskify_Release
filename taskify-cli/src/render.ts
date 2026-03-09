@@ -74,7 +74,7 @@ function formatRec(task: FullTaskRecord): string {
 }
 
 function formatBounty(task: FullTaskRecord): string {
-  const b = task.bounty;
+  const b = task.bounty as Record<string, unknown> | undefined;
   if (!b || b.amount === undefined) return "";
   const amt = String(b.amount);
   switch (b.state) {
@@ -100,7 +100,16 @@ function formatRecurrenceFull(task: FullTaskRecord): string {
   }
 }
 
-const COL_HEADER = `${"ID".padEnd(8)}  ${"TITLE".padEnd(40)}  ${"DUE".padEnd(12)}  ${"PRI".padEnd(4)}  ${"REC".padEnd(5)}  ${"BOUNTY".padEnd(8)}  TRUST`;
+function formatAssignee(task: FullTaskRecord): string {
+  const assignees = task.assignees;
+  if (!Array.isArray(assignees) || assignees.length === 0) return "".padEnd(12);
+  const first = assignees[0];
+  const npub = toNpubSafe(first) ?? first;
+  const truncated = npub.length > 12 ? npub.slice(0, 9) + "..." : npub;
+  return truncated.padEnd(12);
+}
+
+const COL_HEADER = `${"ID".padEnd(8)}  ${"TITLE".padEnd(40)}  ${"DUE".padEnd(12)}  ${"PRI".padEnd(4)}  ${"REC".padEnd(5)}  ${"BOUNTY".padEnd(8)}  ${"ASSIGN".padEnd(12)}  TRUST`;
 
 export function renderTable(tasks: FullTaskRecord[], trustedNpubs: string[], columnName?: string): void {
   const byBoard = new Map<string, FullTaskRecord[]>();
@@ -127,8 +136,9 @@ export function renderTable(tasks: FullTaskRecord[], trustedNpubs: string[], col
       const pri = formatPri(task.priority);
       const rec = formatRec(task);
       const bounty = formatBounty(task).padEnd(8);
+      const assign = formatAssignee(task);
       const trust = trustLabel(task.lastEditedBy, trustedNpubs);
-      console.log(`${id}  ${title}  ${due}  ${pri}  ${rec}  ${bounty}  ${trust}`);
+      console.log(`${id}  ${title}  ${due}  ${pri}  ${rec}  ${bounty}  ${assign}  ${trust}`);
     }
   }
 }
@@ -173,13 +183,14 @@ export function renderTaskCard(task: FullTaskRecord, trustedNpubs: string[], loc
   }
 
   if (task.bounty) {
-    const b = task.bounty;
+    const b = task.bounty as Record<string, unknown>;
     console.log(`${lbl("Bounty:")}`);
     if (b.amount !== undefined) console.log(`  ${lbl("Amount:")}${b.amount}`);
     console.log(`  ${lbl("State:")}${b.state}`);
     if (b.lock) console.log(`  ${lbl("Lock:")}${b.lock}`);
     if (b.mint) {
-      const mintDisplay = b.mint.length > 40 ? b.mint.slice(0, 37) + "..." : b.mint;
+      const mint = String(b.mint);
+      const mintDisplay = mint.length > 40 ? mint.slice(0, 37) + "..." : mint;
       console.log(`  ${lbl("Mint:")}${mintDisplay}`);
     }
   }

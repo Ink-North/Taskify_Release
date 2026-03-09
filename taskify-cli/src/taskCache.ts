@@ -32,6 +32,8 @@ export type CachedTask = {
   recurrence?: unknown;
   bounty?: object;
   reminders?: string[];
+  inboxItem?: boolean;
+  assignees?: string[];
 };
 
 export type BoardCache = {

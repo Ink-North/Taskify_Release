@@ -261,7 +261,7 @@ function buildTaskBaseSummary(task: AgentTaskRecord) {
     title: task.title,
     note: task.note ?? "",
     boardId: task.boardId,
-    status: task.completed ? "done" : "open",
+    status: (task.completed ? "done" : "open") as "open" | "done",
     dueISO: toNullableDueISO(task),
     priority: task.priority ?? null,
     updatedISO: toUpdatedISO(task),
@@ -386,7 +386,7 @@ function validateCommand(raw: unknown): ValidationResult<AgentCommandV1> {
             ? params.idempotencyKey.trim()
             : (nextDetails["params.idempotencyKey"] = "Expected string", undefined);
       if (Object.keys(nextDetails).length > 0) {
-        return { ok: false, details: nextDetails, id };
+        return { ok: false, details: nextDetails, id, version: version ?? 1 };
       }
       return {
         ok: true,
@@ -404,7 +404,7 @@ function validateCommand(raw: unknown): ValidationResult<AgentCommandV1> {
       const taskId = requireString(params, "taskId", nextDetails);
       if (!isPlainObject(params.patch)) {
         nextDetails["params.patch"] = "Expected object";
-        return { ok: false, details: nextDetails, id };
+        return { ok: false, details: nextDetails, id, version: version ?? 1 };
       }
       const rawPatch = params.patch as Record<string, unknown>;
       const patch: AgentTaskPatchInput = {};
@@ -433,7 +433,7 @@ function validateCommand(raw: unknown): ValidationResult<AgentCommandV1> {
         nextDetails["params.patch"] = "At least one patch field is required";
       }
       if (Object.keys(nextDetails).length > 0) {
-        return { ok: false, details: nextDetails, id };
+        return { ok: false, details: nextDetails, id, version: version ?? 1 };
       }
       return {
         ok: true,
@@ -454,7 +454,7 @@ function validateCommand(raw: unknown): ValidationResult<AgentCommandV1> {
           ? params.status
           : (nextDetails["params.status"] = 'Expected "open" or "done"', undefined);
       if (Object.keys(nextDetails).length > 0) {
-        return { ok: false, details: nextDetails, id };
+        return { ok: false, details: nextDetails, id, version: version ?? 1 };
       }
       return {
         ok: true,
@@ -503,7 +503,7 @@ function validateCommand(raw: unknown): ValidationResult<AgentCommandV1> {
         nextDetails["params.cursor"] = "Invalid cursor";
       }
       if (Object.keys(nextDetails).length > 0) {
-        return { ok: false, details: nextDetails, id };
+        return { ok: false, details: nextDetails, id, version: version ?? 1 };
       }
       return {
         ok: true,
@@ -526,7 +526,7 @@ function validateCommand(raw: unknown): ValidationResult<AgentCommandV1> {
       const nextDetails: Record<string, string> = {};
       const taskId = requireString(params, "taskId", nextDetails);
       if (Object.keys(nextDetails).length > 0) {
-        return { ok: false, details: nextDetails, id };
+        return { ok: false, details: nextDetails, id, version: version ?? 1 };
       }
       return {
         ok: true,
@@ -546,7 +546,7 @@ function validateCommand(raw: unknown): ValidationResult<AgentCommandV1> {
         else nextDetails["params.mode"] = 'Expected "off", "moderate", or "strict"';
       }
       if (Object.keys(nextDetails).length > 0) {
-        return { ok: false, details: nextDetails, id };
+        return { ok: false, details: nextDetails, id, version: version ?? 1 };
       }
       return {
         ok: true,
@@ -562,7 +562,7 @@ function validateCommand(raw: unknown): ValidationResult<AgentCommandV1> {
         nextDetails["params.npub"] = 'Expected string starting with "npub1"';
       }
       if (Object.keys(nextDetails).length > 0) {
-        return { ok: false, details: nextDetails, id };
+        return { ok: false, details: nextDetails, id, version: version ?? 1 };
       }
       return {
         ok: true,
@@ -816,8 +816,10 @@ export async function dispatchAgentCommand(raw: string): Promise<AgentResponseV1
         }, command.v);
       }
 
-      default:
-        return failure(command.id, "VALIDATION", "Unsupported operation", { op: "Unsupported operation" }, command.v);
+      default: {
+        const _cmd = command as unknown as { id: string; v: number };
+        return failure(_cmd.id, "VALIDATION", "Unsupported operation", { op: "Unsupported operation" }, _cmd.v);
+      }
     }
   } catch (error: any) {
     const code = error?.code;

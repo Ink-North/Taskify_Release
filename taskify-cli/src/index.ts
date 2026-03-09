@@ -1,6 +1,8 @@
 #!/usr/bin/env node --experimental-strip-types
 import { Command } from "commander";
 import chalk from "chalk";
+import { readFile, writeFile } from "fs/promises";
+import { nip19 } from "nostr-tools";
 import { loadConfig, saveConfig } from "./config.ts";
 import { createNostrRuntime, type NostrRuntime } from "./nostrRuntime.ts";
 import { renderTable, renderTaskCard, renderJson } from "./render.ts";
@@ -1424,6 +1426,605 @@ Return ONLY a valid JSON array (no markdown):
         await runtime.updateTask(s.id, boardId, { priority: s.priority });
       }
       console.log(chalk.green(`✓ Applied ${changes.length} priority update(s)`));
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+// ---- CSV helpers ----
+
+function csvEscape(val: string): string {
+  if (!val) return "";
+  if (val.includes(",") || val.includes('"') || val.includes("\n")) {
+    return '"' + val.replace(/"/g, '""') + '"';
+  }
+  return val;
+}
+
+function parseCSVLine(line: string): string[] {
+  const fields: string[] = [];
+  let i = 0;
+  while (i <= line.length) {
+    if (i === line.length) { fields.push(""); break; }
+    if (line[i] === '"') {
+      let field = "";
+      i++;
+      while (i < line.length) {
+        if (line[i] === '"' && line[i + 1] === '"') { field += '"'; i += 2; }
+        else if (line[i] === '"') { i++; break; }
+        else { field += line[i++]; }
+      }
+      fields.push(field);
+      if (line[i] === ",") i++;
+    } else {
+      const end = line.indexOf(",", i);
+      if (end === -1) { fields.push(line.slice(i)); break; }
+      else { fields.push(line.slice(i, end)); i = end + 1; }
+    }
+  }
+  return fields;
+}
+
+function parseCSV(text: string): Record<string, string>[] {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (lines.length < 2) return [];
+  const headers = parseCSVLine(lines[0]);
+  return lines.slice(1).map((line) => {
+    const values = parseCSVLine(line);
+    const row: Record<string, string> = {};
+    headers.forEach((h, idx) => { row[h.trim()] = (values[idx] ?? "").trim(); });
+    return row;
+  });
+}
+
+function npubOrHexToHex(val: string): string {
+  if (val.startsWith("npub1")) {
+    try {
+      const decoded = nip19.decode(val);
+      if (decoded.type === "npub") return decoded.data as string;
+    } catch { /* fall through */ }
+  }
+  return val;
+}
+
+// ---- export ----
+program
+  .command("export")
+  .description("Export tasks to JSON, CSV, or Markdown")
+  .option("--board <id|name>", "Board to export from")
+  .option("--format <json|csv|md>", "Output format (default: json)", "json")
+  .option("--status <open|done|any>", "Status filter (default: open)", "open")
+  .option("--output <file>", "Write to file instead of stdout")
+  .action(async (opts) => {
+    const config = await loadConfig();
+    const boardId = await resolveBoardId(opts.board, config);
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const tasks = await runtime.listTasks({
+        boardId,
+        status: opts.status as "open" | "done" | "any",
+        refresh: false,
+      });
+      const boardEntry = config.boards.find((b) => b.id === boardId);
+
+      let output = "";
+
+      if (opts.format === "json") {
+        output = JSON.stringify(tasks, null, 2);
+      } else if (opts.format === "csv") {
+        const CSV_HEADER = "id,title,status,priority,dueISO,column,boardName,note,subtasks,createdAt";
+        const rows = tasks.map((t) => {
+          const subtaskStr = (t.subtasks ?? []).map((s) => s.title).join("|");
+          return [
+            csvEscape(t.id),
+            csvEscape(t.title),
+            csvEscape(t.completed ? "done" : "open"),
+            csvEscape(t.priority ? String(t.priority) : ""),
+            csvEscape(t.dueISO ? t.dueISO.slice(0, 10) : ""),
+            csvEscape(t.column ?? ""),
+            csvEscape(t.boardName ?? ""),
+            csvEscape(t.note ?? ""),
+            csvEscape(subtaskStr),
+            csvEscape(t.createdAt ? String(t.createdAt) : ""),
+          ].join(",");
+        });
+        output = [CSV_HEADER, ...rows].join("\n") + "\n";
+      } else if (opts.format === "md") {
+        const boardName = boardEntry?.name ?? boardId.slice(0, 8);
+        const statusLabel = opts.status === "done" ? "Done Tasks" : opts.status === "any" ? "All Tasks" : "Open Tasks";
+        const lines: string[] = [`## ${statusLabel} — ${boardName}`, ""];
+        // Group by column
+        const byColumn = new Map<string, typeof tasks>();
+        for (const t of tasks) {
+          const colId = t.column ?? "";
+          const group = byColumn.get(colId) ?? [];
+          group.push(t);
+          byColumn.set(colId, group);
+        }
+        for (const [colId, colTasks] of byColumn) {
+          let colName = colId;
+          if (boardEntry?.columns) {
+            const col = boardEntry.columns.find((c) => c.id === colId);
+            if (col) colName = col.name;
+          }
+          if (!colId) colName = "No Column";
+          lines.push(`### ${colName}`, "");
+          for (const t of colTasks) {
+            const check = t.completed ? "x" : " ";
+            const meta: string[] = [];
+            if (t.priority) meta.push(`priority: ${t.priority === 3 ? "high" : t.priority === 2 ? "medium" : "low"}`);
+            if (t.dueISO) meta.push(`due: ${t.dueISO.slice(0, 10)}`);
+            const metaStr = meta.length > 0 ? ` *(${meta.join(", ")})*` : "";
+            lines.push(`- [${check}] ${t.title}${metaStr}`);
+            for (const s of t.subtasks ?? []) {
+              const sc = s.completed ? "x" : " ";
+              lines.push(`    - [${sc}] ${s.title}`);
+            }
+          }
+          lines.push("");
+        }
+        output = lines.join("\n");
+      } else {
+        console.error(chalk.red(`Unknown format: "${opts.format}". Use: json, csv, md`));
+        exitCode = 1;
+      }
+
+      if (exitCode === 0) {
+        if (opts.output) {
+          await writeFile(opts.output, output, "utf-8");
+          process.stderr.write(`✓ Exported ${tasks.length} tasks → ${opts.output}\n`);
+        } else {
+          process.stdout.write(output);
+        }
+      }
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+// ---- import ----
+program
+  .command("import <file>")
+  .description("Import tasks from a JSON or CSV file")
+  .option("--board <id|name>", "Board to import into")
+  .option("--dry-run", "Print preview but do not create tasks")
+  .option("--yes", "Skip confirmation prompt")
+  .action(async (file: string, opts) => {
+    const config = await loadConfig();
+    const boardId = await resolveBoardId(opts.board, config);
+
+    let raw: string;
+    try {
+      raw = await readFile(file, "utf-8");
+    } catch {
+      console.error(chalk.red(`Cannot read file: ${file}`));
+      process.exit(1);
+    }
+
+    type ImportRow = {
+      title: string;
+      note?: string;
+      priority?: 1 | 2 | 3;
+      dueISO?: string;
+      column?: string;
+      subtasks?: string[];
+    };
+
+    let rows: ImportRow[] = [];
+    const ext = file.split(".").pop()?.toLowerCase();
+
+    if (ext === "json") {
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw); } catch {
+        console.error(chalk.red("Invalid JSON file")); process.exit(1);
+      }
+      if (!Array.isArray(parsed)) {
+        console.error(chalk.red("JSON file must be an array of objects")); process.exit(1);
+      }
+      rows = (parsed as Record<string, unknown>[]).map((obj) => ({
+        title: String(obj.title ?? ""),
+        note: obj.note ? String(obj.note) : undefined,
+        priority: [1, 2, 3].includes(Number(obj.priority)) ? Number(obj.priority) as 1 | 2 | 3 : undefined,
+        dueISO: obj.dueISO ? String(obj.dueISO) : undefined,
+        column: obj.column ? String(obj.column) : undefined,
+        subtasks: Array.isArray(obj.subtasks)
+          ? (obj.subtasks as unknown[]).map((s) => typeof s === "string" ? s : (s as Record<string, unknown>).title ? String((s as Record<string, unknown>).title) : "").filter(Boolean)
+          : undefined,
+      }));
+    } else if (ext === "csv") {
+      const csvRows = parseCSV(raw);
+      rows = csvRows.map((r) => ({
+        title: r.title ?? "",
+        note: r.note || undefined,
+        priority: [1, 2, 3].includes(Number(r.priority)) ? Number(r.priority) as 1 | 2 | 3 : undefined,
+        dueISO: r.dueISO || undefined,
+        column: r.column || undefined,
+        subtasks: r.subtasks ? r.subtasks.split("|").map((s) => s.trim()).filter(Boolean) : undefined,
+      }));
+    } else {
+      console.error(chalk.red(`Unsupported file extension: .${ext}. Use .json or .csv`));
+      process.exit(1);
+    }
+
+    // Validate: check for missing titles
+    const invalid = rows.map((r, i) => ({ i, r })).filter(({ r }) => !r.title.trim());
+    if (invalid.length > 0) {
+      console.error(chalk.red(`Invalid rows (missing title): ${invalid.map(({ i }) => i + 1).join(", ")}`));
+      process.exit(1);
+    }
+
+    if (rows.length === 0) {
+      console.log(chalk.dim("No rows to import."));
+      process.exit(0);
+    }
+
+    // Print preview table
+    console.log(chalk.bold(`\nImport preview (${rows.length} tasks):`));
+    console.log(chalk.dim(`  ${"TITLE".padEnd(36)}  ${"PRI".padEnd(4)}  ${"DUE".padEnd(12)}  COLUMN`));
+    for (const r of rows) {
+      const t = (r.title.length > 36 ? r.title.slice(0, 35) + "…" : r.title).padEnd(36);
+      const p = (r.priority ? String(r.priority) : "-").padEnd(4);
+      const d = (r.dueISO ? r.dueISO.slice(0, 10) : "").padEnd(12);
+      const c = r.column ?? "";
+      console.log(`  ${t}  ${p}  ${d}  ${c}`);
+    }
+
+    if (opts.dryRun) {
+      console.log(chalk.dim("\n[dry-run] No tasks created."));
+      process.exit(0);
+    }
+
+    if (!opts.yes) {
+      const { createInterface } = await import("readline");
+      const confirmed = await new Promise<boolean>((resolve) => {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        rl.question("\nProceed? [Y/n] ", (ans: string) => {
+          rl.close();
+          resolve(ans === "" || ans.toLowerCase() === "y");
+        });
+      });
+      if (!confirmed) {
+        console.log("Aborted.");
+        process.exit(0);
+      }
+    }
+
+    const runtime = initRuntime(config);
+    const boardEntry = config.boards.find((b) => b.id === boardId)!;
+    let exitCode = 0;
+    try {
+      // Check existing tasks to detect duplicates
+      const existing = await runtime.listTasks({ boardId, status: "any" });
+      const existingTitles = new Set(existing.map((t) => t.title.toLowerCase()));
+
+      let created = 0;
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        if (existingTitles.has(r.title.toLowerCase())) {
+          console.log(chalk.yellow(`⚠ Skipping duplicate: ${r.title}`));
+          continue;
+        }
+        // Resolve column
+        let colId: string | undefined;
+        if (r.column) {
+          const col = resolveColumn(boardEntry, r.column);
+          if (col) colId = col.id;
+        }
+        const subtasks = (r.subtasks ?? []).map((text) => ({
+          id: crypto.randomUUID(),
+          title: text,
+          completed: false,
+        }));
+        await runtime.createTaskFull({
+          title: r.title,
+          note: r.note ?? "",
+          boardId,
+          dueISO: r.dueISO,
+          priority: r.priority,
+          columnId: colId,
+          subtasks: subtasks.length > 0 ? subtasks : undefined,
+        });
+        created++;
+        console.log(chalk.green(`  [${created}/${rows.length}] ✓ ${r.title}`));
+      }
+      console.log(chalk.green(`✓ Imported ${created}/${rows.length} tasks`));
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+// ---- inbox ----
+const inboxCmd = program
+  .command("inbox")
+  .description("Manage inbox tasks (quick capture and triage)");
+
+inboxCmd
+  .command("list")
+  .description("List inbox tasks (inboxItem: true)")
+  .option("--board <id|name>", "Board to list from")
+  .action(async (opts) => {
+    const config = await loadConfig();
+    const boardId = await resolveBoardId(opts.board, config);
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const tasks = await runtime.listTasks({ boardId, status: "open" });
+      const inboxTasks = tasks.filter((t) => t.inboxItem === true);
+      if (inboxTasks.length === 0) {
+        console.log(chalk.dim("No inbox tasks."));
+      } else {
+        renderTable(inboxTasks, config.trustedNpubs);
+      }
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+inboxCmd
+  .command("add <title>")
+  .description("Capture a task to inbox (inboxItem: true)")
+  .option("--board <id|name>", "Board to add to")
+  .action(async (title: string, opts) => {
+    const config = await loadConfig();
+    const boardId = await resolveBoardId(opts.board, config);
+    const boardEntry = config.boards.find((b) => b.id === boardId)!;
+    if (boardEntry.kind === "compound") {
+      console.error(chalk.red("Cannot add tasks to a compound board."));
+      process.exit(1);
+    }
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      await runtime.createTaskFull({
+        title,
+        note: "",
+        boardId,
+        inboxItem: true,
+      });
+      console.log(chalk.green(`✓ Inbox: ${title}`));
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+inboxCmd
+  .command("triage <taskId>")
+  .description("Triage an inbox task: assign column, priority, due date")
+  .option("--board <id|name>", "Board the task belongs to")
+  .option("--column <id|name>", "Column to assign")
+  .option("--priority <1|2|3>", "Priority")
+  .option("--due <YYYY-MM-DD>", "Due date")
+  .option("--yes", "Apply flags directly without prompting")
+  .action(async (taskId: string, opts) => {
+    validateDue(opts.due);
+    validatePriority(opts.priority);
+    warnShortTaskId(taskId);
+    const config = await loadConfig();
+    const boardId = await resolveBoardId(opts.board, config);
+    const boardEntry = config.boards.find((b) => b.id === boardId)!;
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const task = await runtime.getTask(taskId, boardId);
+      if (!task) {
+        console.error(chalk.red(`Task not found: ${taskId}`));
+        exitCode = 1;
+      } else {
+        // Show task details
+        console.log(chalk.bold(`\nTask: ${task.title}`));
+        if (task.note) console.log(`  Note:     ${task.note}`);
+        if (task.priority) console.log(`  Priority: ${task.priority}`);
+        if (task.dueISO) console.log(`  Due:      ${task.dueISO.slice(0, 10)}`);
+        console.log();
+
+        let colId: string | null = null;
+        let colName: string | null = null;
+        let priority: 1 | 2 | 3 | null = null;
+        let dueISO: string | null = null;
+
+        if (opts.yes) {
+          // Apply flags directly
+          if (opts.column) {
+            const col = resolveColumn(boardEntry, opts.column);
+            if (col) { colId = col.id; colName = col.name; }
+          }
+          if (opts.priority) priority = parseInt(opts.priority, 10) as 1 | 2 | 3;
+          if (opts.due) dueISO = opts.due;
+        } else {
+          const { createInterface } = await import("readline");
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          const ask = (q: string): Promise<string> =>
+            new Promise((resolve) => rl.question(q, (ans: string) => resolve(ans.trim())));
+
+          const currentCol = task.column
+            ? (boardEntry.columns?.find((c) => c.id === task.column)?.name ?? task.column)
+            : "none";
+          const colAns = await ask(`Column [${currentCol}]: `);
+          if (colAns) {
+            const col = resolveColumn(boardEntry, colAns);
+            if (col) { colId = col.id; colName = col.name; }
+            else process.stderr.write(`⚠ Column not found — skipping column change\n`);
+          }
+
+          const priAns = await ask(`Priority [${task.priority ?? "none"}]: `);
+          if (priAns && ["1", "2", "3"].includes(priAns)) {
+            priority = parseInt(priAns, 10) as 1 | 2 | 3;
+          }
+
+          const dueAns = await ask(`Due date [${task.dueISO ? task.dueISO.slice(0, 10) : "none"}]: `);
+          if (dueAns && /^\d{4}-\d{2}-\d{2}$/.test(dueAns)) {
+            dueISO = dueAns;
+          } else if (dueAns) {
+            process.stderr.write(`⚠ Invalid due date format — skipping\n`);
+          }
+
+          rl.close();
+        }
+
+        const patch: Record<string, unknown> = { inboxItem: false };
+        if (colId !== null) patch.columnId = colId;
+        if (priority !== null) patch.priority = priority;
+        if (dueISO !== null) patch.dueISO = dueISO;
+
+        const updated = await runtime.updateTask(taskId, boardId, patch);
+        if (!updated) {
+          console.error(chalk.red("Failed to update task"));
+          exitCode = 1;
+        } else {
+          const parts: string[] = [];
+          if (colName) parts.push(`column: ${colName}`);
+          if (priority) parts.push(`priority: ${priority}`);
+          if (dueISO) parts.push(`due: ${dueISO}`);
+          const detail = parts.length > 0 ? `  → ${parts.join(", ")}` : "";
+          console.log(chalk.green(`✓ Triaged: ${updated.title}${detail}`));
+        }
+      }
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+// ---- board create ----
+boardCmd
+  .command("create <name>")
+  .description("Create and publish a new board")
+  .option("--kind <lists|week>", "Board kind (default: lists)", "lists")
+  .option("--relay <url>", "Relay URL hint (informational)")
+  .action(async (name: string, opts) => {
+    if (!["lists", "week"].includes(opts.kind)) {
+      console.error(chalk.red(`Invalid --kind: "${opts.kind}". Use: lists or week`));
+      process.exit(1);
+    }
+    const kind = opts.kind as "lists" | "week";
+    const config = await loadConfig();
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      let columns: { id: string; name: string }[] = [];
+      if (kind === "lists") {
+        const { createInterface } = await import("readline");
+        const answer = await new Promise<string>((resolve) => {
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          rl.question("Column names (comma-separated, or blank for none): ", (ans: string) => {
+            rl.close();
+            resolve(ans.trim());
+          });
+        });
+        if (answer) {
+          columns = answer.split(",").map((n) => n.trim()).filter(Boolean).map((n) => ({
+            id: crypto.randomUUID(),
+            name: n,
+          }));
+        }
+      }
+      const { boardId } = await runtime.createBoard({ name, kind, columns });
+      console.log(chalk.green(`✓ Created board: ${name}  [id: ${boardId}]  [kind: ${kind}]`));
+      console.log(chalk.dim("  Joined automatically. Run: taskify board sync to confirm."));
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+// ---- assign ----
+program
+  .command("assign <taskId> <npubOrHex>")
+  .description("Assign a task to a user (npub or hex pubkey)")
+  .option("--board <id|name>", "Board the task belongs to")
+  .action(async (taskId: string, npubOrHex: string, opts) => {
+    warnShortTaskId(taskId);
+    const hex = npubOrHexToHex(npubOrHex);
+    const config = await loadConfig();
+    const boardId = await resolveBoardId(opts.board, config);
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const task = await runtime.getTask(taskId, boardId);
+      if (!task) {
+        console.error(chalk.red(`Task not found: ${taskId}`));
+        exitCode = 1;
+      } else {
+        const existing = task.assignees ?? [];
+        if (existing.includes(hex)) {
+          console.log(chalk.dim(`Already assigned: ${npubOrHex}`));
+        } else {
+          const updated = await runtime.updateTask(taskId, boardId, {
+            assignees: [...existing, hex],
+          });
+          if (!updated) {
+            console.error(chalk.red("Failed to update task"));
+            exitCode = 1;
+          } else {
+            console.log(chalk.green(`✓ Assigned to: ${updated.title}`));
+          }
+        }
+      }
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+// ---- unassign ----
+program
+  .command("unassign <taskId> <npubOrHex>")
+  .description("Remove an assignee from a task")
+  .option("--board <id|name>", "Board the task belongs to")
+  .action(async (taskId: string, npubOrHex: string, opts) => {
+    warnShortTaskId(taskId);
+    const hex = npubOrHexToHex(npubOrHex);
+    const config = await loadConfig();
+    const boardId = await resolveBoardId(opts.board, config);
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const task = await runtime.getTask(taskId, boardId);
+      if (!task) {
+        console.error(chalk.red(`Task not found: ${taskId}`));
+        exitCode = 1;
+      } else {
+        const filtered = (task.assignees ?? []).filter((a) => a !== hex);
+        const updated = await runtime.updateTask(taskId, boardId, {
+          assignees: filtered,
+        });
+        if (!updated) {
+          console.error(chalk.red("Failed to update task"));
+          exitCode = 1;
+        } else {
+          console.log(chalk.green(`✓ Unassigned from: ${updated.title}`));
+        }
+      }
     } catch (err) {
       console.error(chalk.red(String(err)));
       exitCode = 1;

@@ -127,6 +127,8 @@ function recordToCache(r: FullTaskRecord): CachedTask {
     recurrence: r.recurrence,
     bounty: r.bounty,
     reminders: r.reminders as string[] | undefined,
+    inboxItem: r.inboxItem,
+    assignees: r.assignees,
   };
 }
 
@@ -154,6 +156,8 @@ function cacheToRecord(t: CachedTask, boardName?: string): FullTaskRecord {
     recurrence: t.recurrence as Recurrence | undefined,
     bounty: t.bounty,
     reminders: t.reminders as ReminderPreset[] | undefined,
+    inboxItem: t.inboxItem,
+    assignees: t.assignees,
   };
 }
 
@@ -181,10 +185,14 @@ export type FullTaskRecord = {
   reminders?: ReminderPreset[];
   column?: string;         // col tag value (column ID)
   sourceBoardId?: string;
+  inboxItem?: boolean;
+  assignees?: string[];    // hex pubkeys
 };
 
 export type ExtendedCreateInput = AgentTaskCreateInput & {
   subtasks?: Subtask[];
+  inboxItem?: boolean;
+  assignees?: string[];
 };
 
 export type NostrRuntime = {
@@ -200,6 +208,7 @@ export type NostrRuntime = {
   syncBoard(boardId: string): Promise<{ kind?: string; columns?: { id: string; name: string }[]; children?: string[] }>;
   createTask(input: AgentTaskCreateInput): Promise<FullTaskRecord>;
   createTaskFull(input: ExtendedCreateInput): Promise<FullTaskRecord>;
+  createBoard(input: { name: string; kind: "lists" | "week"; columns?: { id: string; name: string }[] }): Promise<{ boardId: string }>;
   updateTask(taskId: string, boardId: string, patch: AgentTaskPatchInput): Promise<FullTaskRecord | null>;
   setTaskStatus(taskId: string, status: AgentTaskStatus, boardId: string): Promise<FullTaskRecord | null>;
   deleteTask(taskId: string, boardId: string): Promise<FullTaskRecord | null>;
@@ -256,6 +265,12 @@ async function parseDecryptedEvent(
       subtasks: payload.subtasks ?? undefined,
       bounty: payload.bounty ?? undefined,
       column,
+      inboxItem: payload.inboxItem === true ? true : undefined,
+      assignees: Array.isArray(payload.assignees) && payload.assignees.length > 0
+        ? (payload.assignees as Array<unknown>).map((a) =>
+            typeof a === "string" ? a : (a as Record<string, string>).pubkey ?? "")
+          .filter(Boolean)
+        : undefined,
     };
   } catch {
     return null;
@@ -387,7 +402,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
     async disconnect(): Promise<void> {
       try {
-        ndk.pool?.destroy();
+        (ndk.pool as unknown as { destroy?(): void })?.destroy?.();
       } catch {
         // ignore teardown errors
       }
@@ -511,7 +526,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       await ensureConnected();
       const bTag = boardTagHash(boardId);
       const fetchPromise = ndk.fetchEvents(
-        { kinds: [30300], "#b": [bTag], limit: 1 } as Parameters<typeof ndk.fetchEvents>[0],
+        { kinds: [30300], "#b": [bTag], limit: 1 } as unknown as Parameters<typeof ndk.fetchEvents>[0],
         { closeOnEose: true },
       );
       const timeoutPromise = new Promise<Set<NDKEvent>>((resolve) =>
@@ -638,8 +653,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         documents: null,
         bounty: null,
         subtasks: input.subtasks ?? null,
-        assignees: null,
-        inboxItem: null,
+        assignees: input.assignees ? input.assignees.map((pk) => ({ pubkey: pk })) : null,
+        inboxItem: input.inboxItem === true ? true : null,
       };
       // Resolve column: explicit > week-board today > ""
       let colId = "";
@@ -664,6 +679,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         lastEditedBy: userPubkey,
         subtasks: input.subtasks,
         column: colId || undefined,
+        inboxItem: input.inboxItem === true ? true : undefined,
+        assignees: input.assignees,
       };
       // Update cache with the new task
       const cache = readCache();
@@ -700,6 +717,9 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         ...(patch.note !== undefined ? { note: patch.note ?? "" } : {}),
         ...(patch.dueISO !== undefined ? { dueISO: patch.dueISO ?? "" } : {}),
         ...(patch.priority !== undefined ? { priority: patch.priority ?? null } : {}),
+        ...(patch.inboxItem !== undefined ? { inboxItem: patch.inboxItem } : {}),
+        // Store assignees as {pubkey} objects in Nostr payload for PWA compat
+        ...(patch.assignees !== undefined ? { assignees: patch.assignees.map((pk) => ({ pubkey: pk })) } : {}),
         lastEditedBy: userPubkey,
       };
       const statusTag = event.tags.find((t) => t[0] === "status");
@@ -708,8 +728,21 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const existingColId = colTag?.[1] ?? "";
       const colId = patch.columnId !== undefined ? (patch.columnId ?? "") : existingColId;
       await publishTaskEvent(entry.id, taskId, merged, status, colId);
-      const updated = { ...existing, ...merged };
-      if (patch.columnId !== undefined) (updated as FullTaskRecord).column = colId || undefined;
+      // Build updated FullTaskRecord — keep assignees as string[] (extract pubkeys)
+      const updatedAssignees: string[] | undefined = patch.assignees !== undefined
+        ? patch.assignees
+        : existing.assignees;
+      const updated: FullTaskRecord = {
+        ...existing,
+        title: merged.title ?? existing.title,
+        note: merged.note || undefined,
+        dueISO: merged.dueISO ?? existing.dueISO,
+        priority: merged.priority ?? undefined,
+        inboxItem: merged.inboxItem === true ? true : undefined,
+        assignees: updatedAssignees,
+        lastEditedBy: merged.lastEditedBy,
+      };
+      if (patch.columnId !== undefined) updated.column = colId || undefined;
       // Invalidate cache entry
       const cache = readCache();
       const bc = cache.boards[entry.id];
@@ -932,6 +965,54 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         }
       }
       return results;
+    },
+
+    async createBoard(input: {
+      name: string;
+      kind: "lists" | "week";
+      columns?: { id: string; name: string }[];
+    }): Promise<{ boardId: string }> {
+      await ensureConnected();
+      const boardId = crypto.randomUUID();
+      const { signer } = deriveBoardKeys(boardId);
+      const bTag = boardTagHash(boardId);
+
+      const contentPayload = {
+        name: input.name,
+        kind: input.kind,
+        columns: input.columns ?? [],
+        version: 1,
+      };
+      const encrypted = await encryptContent(boardId, JSON.stringify(contentPayload));
+
+      const event = new NDKEvent(ndk);
+      event.kind = 30300;
+      event.content = encrypted;
+      event.tags = [
+        ["d", boardId],
+        ["b", bTag],
+        ["k", input.kind],
+        ...(input.columns ?? []).map((c): string[] => ["col", c.id, c.name]),
+      ];
+      await event.sign(signer);
+      try {
+        await event.publish();
+      } catch (err) {
+        throw new Error(`Board publish failed: ${String(err)}`);
+      }
+
+      // Auto-join: save to config
+      const cfg = await loadConfig();
+      const newEntry: BoardEntry = {
+        id: boardId,
+        name: input.name,
+        kind: input.kind,
+        columns: input.columns ?? [],
+      };
+      cfg.boards.push(newEntry);
+      await saveConfig(cfg);
+
+      return { boardId };
     },
   };
 }
