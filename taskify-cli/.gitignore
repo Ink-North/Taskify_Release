@@ -1,0 +1,5 @@
+node_modules/
+dist/
+
+# Local dev secrets — never commit
+dev/
