@@ -19,10 +19,10 @@ function normalizeRelays(relays: string[]): string[] {
 }
 
 export class SessionPool {
-  async list(relays: string[], filters: NDKFilter[]): Promise<NostrEvent[]> {
+  async list(relays: string[], filters: NDKFilter[], timeoutMs = 15_000): Promise<NostrEvent[]> {
     const relayList = normalizeRelays(relays);
     const session = await NostrSession.init(relayList);
-    return session.fetchEvents(filters, relayList);
+    return session.fetchEvents(filters, relayList, timeoutMs);
   }
 
   async querySync(
