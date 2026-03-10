@@ -3,6 +3,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { readFile, writeFile } from "fs/promises";
 import { createInterface } from "readline";
+import { createRequire } from "module";
 import { nip19, getPublicKey, generateSecretKey } from "nostr-tools";
 import { loadConfig, saveConfig, saveProfiles, DEFAULT_RELAYS, type ProfileConfig } from "./config.js";
 import { createNostrRuntime, type NostrRuntime } from "./nostrRuntime.js";
@@ -11,11 +12,14 @@ import { zshCompletion, bashCompletion, fishCompletion } from "./completions.js"
 import { readCache, clearCache, CACHE_PATH, CACHE_TTL_MS } from "./taskCache.js";
 import { runOnboarding } from "./onboarding.js";
 
+const require = createRequire(import.meta.url);
+const { version } = require("../package.json");
+
 const program = new Command();
 
 program
   .name("taskify")
-  .version("0.1.0")
+  .version(version)
   .description("Taskify CLI — manage tasks over Nostr")
   .option("-P, --profile <name>", "Use a specific profile for this command (does not change active profile)");
 
@@ -2101,13 +2105,46 @@ profileCmd
 profileCmd
   .command("add <name>")
   .description("Add a new profile (runs mini onboarding for the new identity)")
-  .action(async (name: string) => {
+  .option("--nsec <key>", "Nostr private key (skips interactive prompt)")
+  .option("--relay <url>", "Add a relay (repeatable)", (val: string, acc: string[]) => { acc.push(val); return acc; }, [] as string[])
+  .action(async (name: string, opts: { nsec?: string; relay: string[] }) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.profiles[name]) {
       console.error(chalk.red(`Profile already exists: "${name}"`));
       process.exit(1);
     }
 
+    // Non-interactive mode when --nsec is provided
+    if (opts.nsec !== undefined) {
+      const nsecInput = opts.nsec.trim();
+      if (!nsecInput.startsWith("nsec1")) {
+        console.error(chalk.red("Invalid nsec key"));
+        process.exit(1);
+      }
+      try {
+        nip19.decode(nsecInput);
+      } catch {
+        console.error(chalk.red("Invalid nsec key"));
+        process.exit(1);
+      }
+      const relays = opts.relay.length > 0 ? opts.relay : [...DEFAULT_RELAYS];
+      const newProfile: ProfileConfig = {
+        nsec: nsecInput,
+        relays,
+        boards: [],
+        trustedNpubs: [],
+        securityMode: "moderate",
+        securityEnabled: true,
+        defaultBoard: "Personal",
+        taskReminders: {},
+      };
+      const newProfiles = { ...config.profiles, [name]: newProfile };
+      await saveProfiles(config.activeProfile, newProfiles);
+      console.log(chalk.green(`✓ Profile '${name}' created.`));
+      process.exit(0);
+    }
+
+    // Interactive mode
     console.log();
     console.log(chalk.bold(`Setting up profile: ${name}`));
     console.log();
