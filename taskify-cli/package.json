@@ -4,7 +4,7 @@
   "description": "Nostr-powered task management CLI",
   "type": "module",
   "bin": {
-    "taskify": "./dist/index.js"
+    "taskify": "dist/index.js"
   },
   "scripts": {
     "build": "tsc && node -e \"const fs=require('fs');const f='dist/index.js';let c=fs.readFileSync(f,'utf8');if(c.startsWith('#!'))c=c.slice(c.indexOf('\\n')+1);fs.writeFileSync(f,'#!/usr/bin/env node\\n'+c)\"",
@@ -28,7 +28,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Solife-me/Taskify_Release"
+    "url": "git+https://github.com/Solife-me/Taskify_Release.git"
   },
   "dependencies": {
     "@noble/hashes": "^1.4.0",
