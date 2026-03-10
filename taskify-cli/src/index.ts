@@ -1,13 +1,15 @@
-#!/usr/bin/env node --experimental-strip-types
+#!/usr/bin/env node
 import { Command } from "commander";
 import chalk from "chalk";
 import { readFile, writeFile } from "fs/promises";
+import { createInterface } from "readline";
 import { nip19 } from "nostr-tools";
-import { loadConfig, saveConfig } from "./config.ts";
-import { createNostrRuntime, type NostrRuntime } from "./nostrRuntime.ts";
-import { renderTable, renderTaskCard, renderJson } from "./render.ts";
-import { zshCompletion, bashCompletion, fishCompletion } from "./completions.ts";
-import { readCache, clearCache, CACHE_PATH, CACHE_TTL_MS } from "./taskCache.ts";
+import { loadConfig, saveConfig } from "./config.js";
+import { createNostrRuntime, type NostrRuntime } from "./nostrRuntime.js";
+import { renderTable, renderTaskCard, renderJson } from "./render.js";
+import { zshCompletion, bashCompletion, fishCompletion } from "./completions.js";
+import { readCache, clearCache, CACHE_PATH, CACHE_TTL_MS } from "./taskCache.js";
+import { runOnboarding } from "./onboarding.js";
 
 const program = new Command();
 
@@ -1214,7 +1216,7 @@ agentCmd
     }
 
     const today = new Date().toISOString().slice(0, 10);
-    const { callAI } = await import("./aiClient.ts");
+    const { callAI } = await import("./aiClient.js");
 
     const SYSTEM_PROMPT = `You are a task extraction assistant. Extract fields from the description.
 Return ONLY valid JSON (no markdown, no explanation):
@@ -1347,7 +1349,7 @@ agentCmd
         process.exit(0);
       }
 
-      const { callAI } = await import("./aiClient.ts");
+      const { callAI } = await import("./aiClient.js");
 
       const SYSTEM_PROMPT = `You are a task prioritization assistant. Given open tasks, suggest priority (1=low, 2=medium, 3=high) for each.
 Return ONLY a valid JSON array (no markdown):
@@ -2034,4 +2036,32 @@ program
     }
   });
 
-program.parse(process.argv);
+// ---- setup ----
+program
+  .command("setup")
+  .description("Run the first-run onboarding wizard (re-configure or add a new key)")
+  .action(async () => {
+    const existing = await loadConfig();
+    if (existing.nsec) {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const ans = await new Promise<string>((resolve) => {
+        rl.question(
+          "⚠ You already have a private key configured. This will replace it.\nContinue? [Y/n] ",
+          resolve
+        );
+      });
+      rl.close();
+      if (ans.trim().toLowerCase() === "n") {
+        process.exit(0);
+      }
+    }
+    await runOnboarding();
+  });
+
+// ---- auto-onboarding trigger + parse ----
+const cfg = await loadConfig();
+if (!cfg.nsec && process.argv.length <= 2) {
+  await runOnboarding();
+} else {
+  program.parse(process.argv);
+}

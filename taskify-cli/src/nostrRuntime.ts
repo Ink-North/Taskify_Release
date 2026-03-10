@@ -2,12 +2,12 @@ import NDK, { NDKEvent, NDKPrivateKeySigner, NDKRelayStatus } from "@nostr-dev-k
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { getPublicKey, nip19 } from "nostr-tools";
-import type { ReminderPreset, Recurrence, Subtask } from "./shared/taskTypes.ts";
-import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from "./shared/agentRuntime.ts";
-import type { AgentSecurityConfig } from "./shared/agentSecurity.ts";
-import type { TaskifyConfig, BoardEntry } from "./config.ts";
-import { saveConfig, loadConfig } from "./config.ts";
-import { readCache, writeCache, isCacheFresh, type CachedTask } from "./taskCache.ts";
+import type { ReminderPreset, Recurrence, Subtask } from "./shared/taskTypes.js";
+import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from "./shared/agentRuntime.js";
+import type { AgentSecurityConfig } from "./shared/agentSecurity.js";
+import type { TaskifyConfig, BoardEntry } from "./config.js";
+import { saveConfig, loadConfig } from "./config.js";
+import { readCache, writeCache, isCacheFresh, type CachedTask } from "./taskCache.js";
 
 function nowISO(): string {
   return new Date().toISOString();

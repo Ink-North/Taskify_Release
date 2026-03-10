@@ -1,12 +1,34 @@
 {
-  "name": "taskify-cli",
+  "name": "taskify-nostr",
   "version": "0.1.0",
+  "description": "Nostr-powered task management CLI",
   "type": "module",
   "bin": {
-    "taskify": "./src/index.ts"
+    "taskify": "./dist/index.js"
   },
   "scripts": {
-    "start": "node --experimental-strip-types src/index.ts"
+    "build": "tsc && node -e \"const fs=require('fs');const f='dist/index.js';let c=fs.readFileSync(f,'utf8');if(c.startsWith('#!'))c=c.slice(c.indexOf('\\n')+1);fs.writeFileSync(f,'#!/usr/bin/env node\\n'+c)\"",
+    "prepare": "npm run build",
+    "start": "node dist/index.js",
+    "dev": "node --experimental-strip-types src/index.ts"
+  },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "keywords": [
+    "nostr",
+    "tasks",
+    "cli",
+    "productivity"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Solife-me/Taskify_Release"
   },
   "dependencies": {
     "@noble/hashes": "^1.4.0",
@@ -16,6 +38,7 @@
     "nostr-tools": "^2.16.2"
   },
   "devDependencies": {
-    "@types/node": "^25.4.0"
+    "@types/node": "^25.4.0",
+    "typescript": "^5.9.3"
   }
 }

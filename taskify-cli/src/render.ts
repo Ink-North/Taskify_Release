@@ -1,8 +1,8 @@
 import chalk from "chalk";
-import type { FullTaskRecord } from "./nostrRuntime.ts";
+import type { FullTaskRecord } from "./nostrRuntime.js";
 import { nip19 } from "nostr-tools";
-import { TASK_PRIORITY_MARKS } from "./shared/taskTypes.ts";
-import type { ReminderPreset } from "./shared/taskTypes.ts";
+import { TASK_PRIORITY_MARKS } from "./shared/taskTypes.js";
+import type { ReminderPreset } from "./shared/taskTypes.js";
 
 const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 

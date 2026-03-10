@@ -2,7 +2,7 @@ import { readFile, writeFile } from "fs/promises";
 import { mkdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-import type { ReminderPreset } from "./shared/taskTypes.ts";
+import type { ReminderPreset } from "./shared/taskTypes.js";
 
 export const CONFIG_DIR = join(homedir(), ".taskify-cli");
 export const CONFIG_PATH = join(CONFIG_DIR, "config.json");

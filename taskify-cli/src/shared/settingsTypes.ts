@@ -1,6 +1,6 @@
 // CLI-adapted version of settingsTypes.ts (browser imports removed)
 
-import type { Weekday } from "./taskTypes.ts";
+import type { Weekday } from "./taskTypes.js";
 
 // ---- Stubs for types not needed in CLI ----
 export type AccentPalette = string;
