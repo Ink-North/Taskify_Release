@@ -6,7 +6,7 @@ import type { ReminderPreset, Recurrence, Subtask } from "./shared/taskTypes.js"
 import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from "./shared/agentRuntime.js";
 import type { AgentSecurityConfig } from "./shared/agentSecurity.js";
 import type { TaskifyConfig, BoardEntry } from "./config.js";
-import { saveConfig, loadConfig } from "./config.js";
+import { saveConfig } from "./config.js";
 import { readCache, writeCache, isCacheFresh, type CachedTask } from "./taskCache.js";
 
 function nowISO(): string {
@@ -534,9 +534,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       );
       const events = await Promise.race([fetchPromise, timeoutPromise]);
 
-      // Load fresh config to ensure we have the latest board entry
-      const cfg = await loadConfig();
-      const entry = cfg.boards.find((b) => b.id === boardId);
+      // Use config from closure (avoids extra file read and ensures correct profile)
+      const entry = config.boards.find((b) => b.id === boardId);
       if (!entry) return {};
 
       let kind: string | undefined;
@@ -604,7 +603,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         if (kind) entry.kind = kind as BoardEntry["kind"];
         if (columns && columns.length > 0) entry.columns = columns;
         if (children && children.length > 0) entry.children = children;
-        await saveConfig(cfg);
+        await saveConfig(config);
       }
 
       return { kind, columns, children };
@@ -919,10 +918,9 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
     async remindTask(taskId: string, presets: ReminderPreset[]): Promise<void> {
       // Device-local only — NEVER publish to Nostr
-      const cfg = await loadConfig();
-      if (!cfg.taskReminders) cfg.taskReminders = {};
-      cfg.taskReminders[taskId] = presets;
-      await saveConfig(cfg);
+      if (!config.taskReminders) config.taskReminders = {};
+      config.taskReminders[taskId] = presets;
+      await saveConfig(config);
       process.stderr.write(
         "\x1b[2m  Note: Reminders are device-local and will not sync to other devices\x1b[0m\n",
       );
@@ -933,21 +931,19 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     },
 
     async getAgentSecurityConfig(): Promise<AgentSecurityConfig> {
-      const cfg = await loadConfig();
       return {
-        enabled: cfg.securityEnabled,
-        mode: cfg.securityMode,
-        trustedNpubs: cfg.trustedNpubs,
+        enabled: config.securityEnabled,
+        mode: config.securityMode,
+        trustedNpubs: config.trustedNpubs,
         updatedISO: nowISO(),
       };
     },
 
     async setAgentSecurityConfig(secCfg: AgentSecurityConfig): Promise<AgentSecurityConfig> {
-      const cfg = await loadConfig();
-      cfg.securityEnabled = secCfg.enabled;
-      cfg.securityMode = secCfg.mode;
-      cfg.trustedNpubs = secCfg.trustedNpubs;
-      await saveConfig(cfg);
+      config.securityEnabled = secCfg.enabled;
+      config.securityMode = secCfg.mode;
+      config.trustedNpubs = secCfg.trustedNpubs;
+      await saveConfig(config);
       return secCfg;
     },
 
@@ -1002,15 +998,14 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       }
 
       // Auto-join: save to config
-      const cfg = await loadConfig();
       const newEntry: BoardEntry = {
         id: boardId,
         name: input.name,
         kind: input.kind,
         columns: input.columns ?? [],
       };
-      cfg.boards.push(newEntry);
-      await saveConfig(cfg);
+      config.boards.push(newEntry);
+      await saveConfig(config);
 
       return { boardId };
     },

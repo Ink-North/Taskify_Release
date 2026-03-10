@@ -3,8 +3,8 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { readFile, writeFile } from "fs/promises";
 import { createInterface } from "readline";
-import { nip19 } from "nostr-tools";
-import { loadConfig, saveConfig } from "./config.js";
+import { nip19, getPublicKey, generateSecretKey } from "nostr-tools";
+import { loadConfig, saveConfig, saveProfiles, DEFAULT_RELAYS, type ProfileConfig } from "./config.js";
 import { createNostrRuntime, type NostrRuntime } from "./nostrRuntime.js";
 import { renderTable, renderTaskCard, renderJson } from "./render.js";
 import { zshCompletion, bashCompletion, fishCompletion } from "./completions.js";
@@ -16,7 +16,8 @@ const program = new Command();
 program
   .name("taskify")
   .version("0.1.0")
-  .description("Taskify CLI — manage tasks over Nostr");
+  .description("Taskify CLI — manage tasks over Nostr")
+  .option("-P, --profile <name>", "Use a specific profile for this command (does not change active profile)");
 
 // ---- Validation helpers ----
 
@@ -99,7 +100,7 @@ boardCmd
   .command("list")
   .description("List all configured boards")
   .action(async () => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.boards.length === 0) {
       console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
     } else {
@@ -121,7 +122,7 @@ boardCmd
     if (!UUID_RE.test(boardId)) {
       console.warn(chalk.yellow(`Warning: "${boardId}" does not look like a UUID.`));
     }
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const existing = config.boards.find((b) => b.id === boardId);
     if (existing) {
       console.log(chalk.dim(`Already on board ${existing.name} (${boardId})`));
@@ -152,7 +153,7 @@ boardCmd
   .command("sync [boardId]")
   .description("Sync board metadata (kind, columns) from Nostr")
   .action(async (boardId?: string) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.boards.length === 0) {
       console.error(chalk.red("No boards configured."));
       process.exit(1);
@@ -177,7 +178,7 @@ boardCmd
           const meta = await runtime.syncBoard(entry.id);
           const colCount = meta.columns?.length ?? 0;
           const kindStr = meta.kind ?? "unknown";
-          const reloadedEntry = (await loadConfig()).boards.find((b) => b.id === entry.id);
+          const reloadedEntry = (await loadConfig(program.opts().profile as string | undefined)).boards.find((b) => b.id === entry.id);
           const childrenCount = reloadedEntry?.children?.length ?? 0;
           const childrenStr = kindStr === "compound" ? `, children: ${childrenCount}` : "";
           console.log(chalk.green(`✓ Synced: ${entry.name} (kind: ${kindStr}, columns: ${colCount}${childrenStr})`));
@@ -196,7 +197,7 @@ boardCmd
   .command("leave <boardId>")
   .description("Remove a board from config")
   .action(async (boardId: string) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const before = config.boards.length;
     config.boards = config.boards.filter((b) => b.id !== boardId);
     if (config.boards.length === before) {
@@ -212,7 +213,7 @@ boardCmd
   .command("columns")
   .description("Show cached columns for all configured boards")
   .action(async () => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.boards.length === 0) {
       console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
       process.exit(0);
@@ -235,7 +236,7 @@ boardCmd
   .command("children <board>")
   .description("List children of a compound board")
   .action(async (boardArg: string) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const entry =
       config.boards.find((b) => b.id === boardArg) ??
       config.boards.find((b) => b.name.toLowerCase() === boardArg.toLowerCase());
@@ -268,7 +269,7 @@ program
   .command("boards")
   .description("List configured boards (alias for: board list)")
   .action(async () => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.boards.length === 0) {
       console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
     } else {
@@ -335,7 +336,7 @@ program
   .option("--no-cache", "Do not fall back to stale cache if relay returns empty")
   .option("--json", "Output as JSON")
   .action(async (opts) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
@@ -396,7 +397,7 @@ program
   .option("--json", "Output raw task fields as JSON")
   .action(async (taskId: string, opts) => {
     warnShortTaskId(taskId);
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
@@ -426,7 +427,7 @@ program
   .option("--board <id|name>", "Limit to a specific board")
   .option("--json", "Output as JSON")
   .action(async (query: string, opts) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
@@ -474,7 +475,7 @@ program
       );
       process.exit(1);
     }
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
@@ -520,7 +521,7 @@ program
   .action(async (title: string, opts) => {
     validateDue(opts.due);
     validatePriority(opts.priority);
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const boardEntry = config.boards.find((b) => b.id === boardId)!;
 
@@ -595,7 +596,7 @@ program
   .option("--json", "Output updated task as JSON")
   .action(async (taskId: string, opts) => {
     warnShortTaskId(taskId);
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
@@ -626,7 +627,7 @@ program
   .option("--json", "Output updated task as JSON")
   .action(async (taskId: string, opts) => {
     warnShortTaskId(taskId);
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
@@ -658,7 +659,7 @@ program
   .option("--json", "Output deleted task as JSON")
   .action(async (taskId: string, opts) => {
     warnShortTaskId(taskId);
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
@@ -726,7 +727,7 @@ program
       process.exit(1);
     }
     warnShortTaskId(taskId);
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
@@ -777,7 +778,7 @@ program
     warnShortTaskId(taskId);
     validateDue(opts.due);
     validatePriority(opts.priority);
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
@@ -823,7 +824,7 @@ trust
   .command("add <npub>")
   .description("Add a trusted npub")
   .action(async (npub: string) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (!config.trustedNpubs.includes(npub)) {
       config.trustedNpubs.push(npub);
     }
@@ -836,7 +837,7 @@ trust
   .command("remove <npub>")
   .description("Remove a trusted npub")
   .action(async (npub: string) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     config.trustedNpubs = config.trustedNpubs.filter((n) => n !== npub);
     await saveConfig(config);
     console.log(chalk.green("✓ Removed"));
@@ -847,7 +848,7 @@ trust
   .command("list")
   .description("List trusted npubs")
   .action(async () => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.trustedNpubs.length === 0) {
       console.log(chalk.dim("No trusted npubs."));
     } else {
@@ -865,7 +866,7 @@ relayCmd
   .command("status")
   .description("Show connection status of relays in the NDK pool")
   .action(async () => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
@@ -894,7 +895,7 @@ relayCmd
   .command("list")
   .description("Show configured relays with live connection check")
   .action(async () => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.relays.length === 0) {
       console.log(chalk.dim("No relays configured."));
       process.exit(0);
@@ -915,7 +916,7 @@ relayCmd
   .command("add <url>")
   .description("Add a relay URL to config")
   .action(async (url: string) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (!config.relays.includes(url)) {
       config.relays.push(url);
       await saveConfig(config);
@@ -930,7 +931,7 @@ relayCmd
   .command("remove <url>")
   .description("Remove a relay URL from config")
   .action(async (url: string) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const before = config.relays.length;
     config.relays = config.relays.filter((r) => r !== url);
     if (config.relays.length === before) {
@@ -958,7 +959,7 @@ cacheCmd
   .command("status")
   .description("Show per-board cache age and task count")
   .action(async () => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const cache = readCache();
     const now = Date.now();
     if (Object.keys(cache.boards).length === 0) {
@@ -1007,7 +1008,7 @@ configSet
       console.error(chalk.red(`Invalid nsec: must start with "nsec1".`));
       process.exit(1);
     }
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     config.nsec = nsec;
     await saveConfig(config);
     console.log(chalk.green("✓ nsec saved"));
@@ -1018,7 +1019,7 @@ configSet
   .command("relay <url>")
   .description("Add a relay URL")
   .action(async (url: string) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (!config.relays.includes(url)) {
       config.relays.push(url);
     }
@@ -1063,7 +1064,7 @@ configCmd
   .command("show")
   .description("Show current config")
   .action(async () => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const display = {
       ...config,
       nsec: config.nsec ? "nsec1****" : undefined,
@@ -1133,7 +1134,7 @@ agentConfigCmd
   .command("set-key <key>")
   .description("Set the AI API key")
   .action(async (key: string) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (!config.agent) config.agent = {};
     config.agent.apiKey = key;
     await saveConfig(config);
@@ -1145,7 +1146,7 @@ agentConfigCmd
   .command("set-model <model>")
   .description("Set the AI model")
   .action(async (model: string) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (!config.agent) config.agent = {};
     config.agent.model = model;
     await saveConfig(config);
@@ -1157,7 +1158,7 @@ agentConfigCmd
   .command("set-url <url>")
   .description("Set the AI base URL (OpenAI-compatible)")
   .action(async (url: string) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     if (!config.agent) config.agent = {};
     config.agent.baseUrl = url;
     await saveConfig(config);
@@ -1169,7 +1170,7 @@ agentConfigCmd
   .command("show")
   .description("Show current agent config (masks API key)")
   .action(async () => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const ag = config.agent ?? {};
     const rawKey = ag.apiKey ?? process.env.TASKIFY_AGENT_API_KEY ?? "";
     let maskedKey = "(not set)";
@@ -1193,7 +1194,7 @@ agentCmd
   .option("--dry-run", "Show extracted fields without creating")
   .option("--json", "Output created task as JSON")
   .action(async (description: string, opts) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const apiKey = config.agent?.apiKey ?? process.env.TASKIFY_AGENT_API_KEY ?? "";
     if (!apiKey) {
       console.error(chalk.red("No AI API key configured. Run: taskify agent config set-key <key>"));
@@ -1331,7 +1332,7 @@ agentCmd
   .option("--dry-run", "Show suggestions without applying")
   .option("--json", "Output suggestions as JSON")
   .action(async (opts) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const apiKey = config.agent?.apiKey ?? process.env.TASKIFY_AGENT_API_KEY ?? "";
     if (!apiKey) {
       console.error(chalk.red("No AI API key configured. Run: taskify agent config set-key <key>"));
@@ -1502,7 +1503,7 @@ program
   .option("--status <open|done|any>", "Status filter (default: open)", "open")
   .option("--output <file>", "Write to file instead of stdout")
   .action(async (opts) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
@@ -1601,7 +1602,7 @@ program
   .option("--dry-run", "Print preview but do not create tasks")
   .option("--yes", "Skip confirmation prompt")
   .action(async (file: string, opts) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
 
     let raw: string;
@@ -1758,7 +1759,7 @@ inboxCmd
   .description("List inbox tasks (inboxItem: true)")
   .option("--board <id|name>", "Board to list from")
   .action(async (opts) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
@@ -1784,7 +1785,7 @@ inboxCmd
   .description("Capture a task to inbox (inboxItem: true)")
   .option("--board <id|name>", "Board to add to")
   .action(async (title: string, opts) => {
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const boardEntry = config.boards.find((b) => b.id === boardId)!;
     if (boardEntry.kind === "compound") {
@@ -1822,7 +1823,7 @@ inboxCmd
     validateDue(opts.due);
     validatePriority(opts.priority);
     warnShortTaskId(taskId);
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const boardEntry = config.boards.find((b) => b.id === boardId)!;
     const runtime = initRuntime(config);
@@ -1923,7 +1924,7 @@ boardCmd
       process.exit(1);
     }
     const kind = opts.kind as "lists" | "week";
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
@@ -1964,7 +1965,7 @@ program
   .action(async (taskId: string, npubOrHex: string, opts) => {
     warnShortTaskId(taskId);
     const hex = npubOrHexToHex(npubOrHex);
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
@@ -2006,7 +2007,7 @@ program
   .action(async (taskId: string, npubOrHex: string, opts) => {
     warnShortTaskId(taskId);
     const hex = npubOrHexToHex(npubOrHex);
-    const config = await loadConfig();
+    const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
@@ -2036,18 +2037,277 @@ program
     }
   });
 
+// ---- Helper: readline queue (handles piped stdin correctly) ----
+function makeLineQueue(rl: ReturnType<typeof createInterface>): (prompt: string) => Promise<string> {
+  const lineQueue: string[] = [];
+  const waiters: ((line: string) => void)[] = [];
+  rl.on("line", (line: string) => {
+    if (waiters.length > 0) {
+      waiters.shift()!(line);
+    } else {
+      lineQueue.push(line);
+    }
+  });
+  return (prompt: string) => {
+    process.stdout.write(prompt);
+    return new Promise<string>((resolve) => {
+      if (lineQueue.length > 0) {
+        resolve(lineQueue.shift()!);
+      } else {
+        waiters.push(resolve);
+      }
+    });
+  };
+}
+
+// ---- profile command group ----
+const profileCmd = program
+  .command("profile")
+  .description("Manage named Nostr identity profiles");
+
+// Helper to get npub string from nsec
+function nsecToNpub(nsec: string): string | null {
+  try {
+    const decoded = nip19.decode(nsec);
+    if (decoded.type === "nsec") {
+      const pk = getPublicKey(decoded.data as Uint8Array);
+      return nip19.npubEncode(pk);
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+profileCmd
+  .command("list")
+  .description("List all profiles (► marks active)")
+  .action(async () => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    for (const [name, profile] of Object.entries(config.profiles)) {
+      const isActive = name === config.activeProfile;
+      const marker = isActive ? "►" : " ";
+      let npubStr = "(no key)";
+      if (profile.nsec) {
+        const npub = nsecToNpub(profile.nsec);
+        if (npub) npubStr = npub.slice(0, 12) + "..." + npub.slice(-4);
+      }
+      const boardCount = profile.boards?.length ?? 0;
+      console.log(
+        `  ${marker} ${name.padEnd(14)} ${npubStr.padEnd(22)} ${boardCount} board${boardCount !== 1 ? "s" : ""}`,
+      );
+    }
+    process.exit(0);
+  });
+
+profileCmd
+  .command("add <name>")
+  .description("Add a new profile (runs mini onboarding for the new identity)")
+  .action(async (name: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    if (config.profiles[name]) {
+      console.error(chalk.red(`Profile already exists: "${name}"`));
+      process.exit(1);
+    }
+
+    console.log();
+    console.log(chalk.bold(`Setting up profile: ${name}`));
+    console.log();
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const ask = makeLineQueue(rl);
+
+    // Key setup
+    const hasKey = await ask("Do you have a Nostr private key (nsec)? [Y/n] ");
+    let nsec: string | undefined;
+
+    if (hasKey.trim().toLowerCase() !== "n") {
+      while (true) {
+        const input = (await ask("Paste your nsec: ")).trim();
+        if (input.startsWith("nsec1")) {
+          try {
+            nip19.decode(input);
+            nsec = input;
+            break;
+          } catch { /* invalid */ }
+        }
+        console.log("Invalid nsec. Try again or press Ctrl+C to abort.");
+      }
+    } else {
+      const sk = generateSecretKey();
+      const pk = getPublicKey(sk);
+      nsec = nip19.nsecEncode(sk);
+      const npub = nip19.npubEncode(pk);
+      console.log();
+      console.log("✓ Generated new Nostr identity");
+      console.log(`  npub: ${npub}`);
+      console.log(`  nsec: ${nsec}  ← KEEP THIS SECRET — it is your password`);
+      console.log();
+      console.log("Save this nsec somewhere safe. It cannot be recovered if lost.");
+      const cont = await ask("Continue? [Y/n] ");
+      if (cont.trim().toLowerCase() === "n") {
+        rl.close();
+        process.exit(0);
+      }
+    }
+
+    // Relays setup
+    console.log();
+    let relays = [...DEFAULT_RELAYS];
+    const useDefaults = await ask("Use default relays? [Y/n] ");
+    if (useDefaults.trim().toLowerCase() === "n") {
+      relays = [];
+      while (true) {
+        const relay = (await ask("Add relay URL (blank to finish): ")).trim();
+        if (!relay) break;
+        relays.push(relay);
+      }
+      if (relays.length === 0) relays = [...DEFAULT_RELAYS];
+    }
+
+    rl.close();
+
+    const newProfile: ProfileConfig = {
+      nsec,
+      relays,
+      boards: [],
+      trustedNpubs: [],
+      securityMode: "moderate",
+      securityEnabled: true,
+      defaultBoard: "Personal",
+      taskReminders: {},
+    };
+
+    const newProfiles = { ...config.profiles, [name]: newProfile };
+    await saveProfiles(config.activeProfile, newProfiles);
+    console.log();
+    console.log(chalk.green(`✓ Profile '${name}' created. Run: taskify profile use ${name}`));
+    process.exit(0);
+  });
+
+profileCmd
+  .command("use <name>")
+  .description("Switch the active profile")
+  .action(async (name: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    if (!config.profiles[name]) {
+      console.error(
+        chalk.red(`Profile not found: "${name}". Available: ${Object.keys(config.profiles).join(", ")}`),
+      );
+      process.exit(1);
+    }
+    await saveProfiles(name, config.profiles);
+    console.log(chalk.green(`✓ Switched to profile: ${name}`));
+    process.exit(0);
+  });
+
+profileCmd
+  .command("show [name]")
+  .description("Show profile details (defaults to active profile)")
+  .action(async (name?: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const profileName = name ?? config.activeProfile;
+    const profile = config.profiles[profileName];
+    if (!profile) {
+      console.error(
+        chalk.red(`Profile not found: "${profileName}". Available: ${Object.keys(config.profiles).join(", ")}`),
+      );
+      process.exit(1);
+    }
+    const isActive = profileName === config.activeProfile;
+
+    console.log(chalk.bold(`Profile: ${profileName}${isActive ? "  ◄ active" : ""}`));
+
+    let npubStr = "(no key)";
+    if (profile.nsec) {
+      const npub = nsecToNpub(profile.nsec);
+      if (npub) npubStr = npub;
+    }
+    const maskedNsec = profile.nsec ? profile.nsec.slice(0, 8) + "..." : "(not set)";
+
+    console.log(`  nsec:         ${maskedNsec}`);
+    console.log(`  npub:         ${npubStr}`);
+    console.log(`  relays:       ${(profile.relays ?? []).join(", ")}`);
+    console.log(`  boards:       ${profile.boards?.length ?? 0}`);
+    console.log(`  trustedNpubs: ${profile.trustedNpubs?.length ?? 0}`);
+    process.exit(0);
+  });
+
+profileCmd
+  .command("remove <name>")
+  .description("Remove a profile")
+  .option("--force", "Skip confirmation prompt")
+  .action(async (name: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    if (!config.profiles[name]) {
+      console.error(chalk.red(`Profile not found: "${name}"`));
+      process.exit(1);
+    }
+    if (name === config.activeProfile) {
+      console.error(
+        chalk.red(`Cannot remove active profile: "${name}". Switch first with: taskify profile use <other>`),
+      );
+      process.exit(1);
+    }
+    if (Object.keys(config.profiles).length === 1) {
+      console.error(chalk.red("Cannot remove the only profile."));
+      process.exit(1);
+    }
+
+    if (!opts.force) {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const confirmed = await new Promise<boolean>((resolve) => {
+        rl.question(`Remove profile '${name}'? [y/N] `, (ans: string) => {
+          rl.close();
+          resolve(ans.toLowerCase() === "y");
+        });
+      });
+      if (!confirmed) {
+        console.log("Aborted.");
+        process.exit(0);
+      }
+    }
+
+    const { [name]: _removed, ...rest } = config.profiles;
+    await saveProfiles(config.activeProfile, rest);
+    console.log(chalk.green(`✓ Profile '${name}' removed.`));
+    process.exit(0);
+  });
+
+profileCmd
+  .command("rename <old> <new>")
+  .description("Rename a profile")
+  .action(async (oldName: string, newName: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    if (!config.profiles[oldName]) {
+      console.error(chalk.red(`Profile not found: "${oldName}"`));
+      process.exit(1);
+    }
+    if (config.profiles[newName]) {
+      console.error(chalk.red(`Profile already exists: "${newName}"`));
+      process.exit(1);
+    }
+    const { [oldName]: profileData, ...rest } = config.profiles;
+    const newProfiles = { ...rest, [newName]: profileData };
+    const newActive = config.activeProfile === oldName ? newName : config.activeProfile;
+    await saveProfiles(newActive, newProfiles);
+    console.log(chalk.green(`✓ Renamed profile '${oldName}' → '${newName}'`));
+    process.exit(0);
+  });
+
 // ---- setup ----
 program
   .command("setup")
-  .description("Run the first-run onboarding wizard (re-configure or add a new key)")
-  .action(async () => {
-    const existing = await loadConfig();
+  .description("Run the first-run onboarding wizard (re-configure a profile)")
+  .option("--profile <name>", "Profile to configure (defaults to active profile)")
+  .action(async (opts) => {
+    // --profile on setup subcommand takes precedence over global --profile
+    const targetProfile = opts.profile ?? (program.opts().profile as string | undefined);
+    const existing = await loadConfig(targetProfile);
     if (existing.nsec) {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
       const ans = await new Promise<string>((resolve) => {
         rl.question(
-          "⚠ You already have a private key configured. This will replace it.\nContinue? [Y/n] ",
-          resolve
+          `⚠ Profile "${existing.activeProfile}" already has a private key. This will replace it.\nContinue? [Y/n] `,
+          resolve,
         );
       });
       rl.close();
@@ -2055,12 +2315,14 @@ program
         process.exit(0);
       }
     }
-    await runOnboarding();
+    await runOnboarding(targetProfile ?? existing.activeProfile);
   });
 
 // ---- auto-onboarding trigger + parse ----
-const cfg = await loadConfig();
-if (!cfg.nsec && process.argv.length <= 2) {
+const cfg = await loadConfig(program.opts().profile as string | undefined);
+// Trigger onboarding if no profiles have an nsec and no command was given
+const hasAnyNsec = Object.values(cfg.profiles).some((p) => p.nsec);
+if (!hasAnyNsec && process.argv.length <= 2) {
   await runOnboarding();
 } else {
   program.parse(process.argv);

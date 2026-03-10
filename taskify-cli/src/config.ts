@@ -16,7 +16,8 @@ export type BoardEntry = {
   children?: string[];
 };
 
-export type TaskifyConfig = {
+// Per-profile configuration (stored inside profiles.*)
+export type ProfileConfig = {
   nsec?: string;
   relays: string[];
   defaultBoard: string;
@@ -33,13 +34,27 @@ export type TaskifyConfig = {
   };
 };
 
-const DEFAULT_CONFIG: TaskifyConfig = {
-  relays: [
-    "wss://relay.damus.io",
-    "wss://nos.lol",
-    "wss://relay.snort.social",
-    "wss://relay.primal.net",
-  ],
+// What gets stored on disk (new multi-profile format)
+type StoredConfig = {
+  activeProfile: string;
+  profiles: Record<string, ProfileConfig>;
+};
+
+// What loadConfig() returns: flat profile fields + metadata
+export type TaskifyConfig = ProfileConfig & {
+  activeProfile: string;
+  profiles: Record<string, ProfileConfig>;
+};
+
+export const DEFAULT_RELAYS = [
+  "wss://relay.damus.io",
+  "wss://nos.lol",
+  "wss://relay.snort.social",
+  "wss://relay.primal.net",
+];
+
+const DEFAULT_PROFILE: ProfileConfig = {
+  relays: [...DEFAULT_RELAYS],
   defaultBoard: "Personal",
   trustedNpubs: [],
   securityMode: "moderate",
@@ -48,22 +63,118 @@ const DEFAULT_CONFIG: TaskifyConfig = {
   taskReminders: {},
 };
 
-export async function loadConfig(): Promise<TaskifyConfig> {
-  let cfg: TaskifyConfig;
-  try {
-    const raw = await readFile(CONFIG_PATH, "utf-8");
-    cfg = { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
-  } catch {
-    cfg = { ...DEFAULT_CONFIG };
-  }
-  if (process.env.TASKIFY_NSEC) {
-    cfg.nsec = process.env.TASKIFY_NSEC;
-    process.stderr.write("\x1b[2m(using TASKIFY_NSEC from env)\x1b[0m\n");
-  }
-  return cfg;
+function profileDefaults(partial: Partial<ProfileConfig>): ProfileConfig {
+  return {
+    ...DEFAULT_PROFILE,
+    ...partial,
+    relays: partial.relays && partial.relays.length > 0 ? partial.relays : [...DEFAULT_RELAYS],
+    taskReminders: partial.taskReminders ?? {},
+    trustedNpubs: partial.trustedNpubs ?? [],
+    boards: partial.boards ?? [],
+  };
 }
 
+export async function loadConfig(profileName?: string): Promise<TaskifyConfig> {
+  let stored: StoredConfig;
+
+  try {
+    const raw = await readFile(CONFIG_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+
+    // Migration: detect old flat format (has nsec or relays at top level, no profiles key)
+    if (!parsed.profiles && (parsed.nsec !== undefined || Array.isArray(parsed.relays))) {
+      const profile = profileDefaults(parsed as Partial<ProfileConfig>);
+      stored = {
+        activeProfile: "default",
+        profiles: { default: profile },
+      };
+      // Save migrated config
+      mkdirSync(CONFIG_DIR, { recursive: true });
+      await writeFile(CONFIG_PATH, JSON.stringify(stored, null, 2), "utf-8");
+      process.stderr.write("✓ Config migrated to multi-profile format\n");
+    } else if (parsed.profiles && parsed.activeProfile) {
+      stored = parsed as unknown as StoredConfig;
+    } else {
+      // New empty or unrecognized config
+      stored = {
+        activeProfile: "default",
+        profiles: { default: { ...DEFAULT_PROFILE } },
+      };
+    }
+  } catch {
+    stored = {
+      activeProfile: "default",
+      profiles: { default: { ...DEFAULT_PROFILE } },
+    };
+  }
+
+  // Determine which profile to use
+  const resolvedProfileName = profileName ?? stored.activeProfile;
+  const profile = stored.profiles[resolvedProfileName];
+
+  if (!profile) {
+    throw new Error(
+      `Profile not found: "${resolvedProfileName}". Available: ${Object.keys(stored.profiles).join(", ")}`,
+    );
+  }
+
+  const merged = profileDefaults(profile);
+
+  // TASKIFY_NSEC env var overrides nsec for any profile
+  if (process.env.TASKIFY_NSEC) {
+    merged.nsec = process.env.TASKIFY_NSEC;
+    process.stderr.write("\x1b[2m(using TASKIFY_NSEC from env)\x1b[0m\n");
+  }
+
+  return {
+    ...merged,
+    activeProfile: stored.activeProfile,
+    profiles: stored.profiles,
+  };
+}
+
+// Updates the active profile from flat cfg fields, then saves
 export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
   mkdirSync(CONFIG_DIR, { recursive: true });
-  await writeFile(CONFIG_PATH, JSON.stringify(cfg, null, 2), "utf-8");
+  const profileData: ProfileConfig = {
+    nsec: cfg.nsec,
+    relays: cfg.relays,
+    defaultBoard: cfg.defaultBoard,
+    trustedNpubs: cfg.trustedNpubs,
+    securityMode: cfg.securityMode,
+    securityEnabled: cfg.securityEnabled,
+    boards: cfg.boards,
+    taskReminders: cfg.taskReminders,
+    agent: cfg.agent,
+  };
+  const stored: StoredConfig = {
+    activeProfile: cfg.activeProfile,
+    profiles: {
+      ...cfg.profiles,
+      [cfg.activeProfile]: profileData,
+    },
+  };
+  await writeFile(CONFIG_PATH, JSON.stringify(stored, null, 2), "utf-8");
+}
+
+// Save the raw profiles structure (for profile management commands — does NOT rewrite active profile from flat fields)
+export async function saveProfiles(
+  activeProfile: string,
+  profiles: Record<string, ProfileConfig>,
+): Promise<void> {
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  await writeFile(CONFIG_PATH, JSON.stringify({ activeProfile, profiles }, null, 2), "utf-8");
+}
+
+export function getActiveProfile(cfg: TaskifyConfig): ProfileConfig {
+  return cfg.profiles[cfg.activeProfile] ?? { ...DEFAULT_PROFILE };
+}
+
+export async function setActiveProfile(cfg: TaskifyConfig, name: string): Promise<void> {
+  await saveProfiles(name, cfg.profiles);
+}
+
+export function resolveProfile(cfg: TaskifyConfig, name?: string): ProfileConfig {
+  const profileName = name ?? cfg.activeProfile;
+  return cfg.profiles[profileName] ?? { ...DEFAULT_PROFILE };
 }

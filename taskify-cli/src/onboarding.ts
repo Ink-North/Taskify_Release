@@ -1,13 +1,37 @@
 #!/usr/bin/env node
 import * as readline from "readline";
 import { generateSecretKey, getPublicKey, nip19 } from "nostr-tools";
-import { loadConfig, saveConfig } from "./config.js";
+import { loadConfig, saveProfiles, type ProfileConfig } from "./config.js";
 
-function ask(rl: readline.Interface, question: string): Promise<string> {
-  return new Promise((resolve) => rl.question(question, resolve));
+// Queue-based readline helper that works correctly with piped stdin
+function makeLineQueue(rl: readline.Interface): (prompt: string) => Promise<string> {
+  const lineQueue: string[] = [];
+  const waiters: ((line: string) => void)[] = [];
+  rl.on("line", (line: string) => {
+    if (waiters.length > 0) {
+      waiters.shift()!(line);
+    } else {
+      lineQueue.push(line);
+    }
+  });
+  return (prompt: string) => {
+    process.stdout.write(prompt);
+    return new Promise<string>((resolve) => {
+      if (lineQueue.length > 0) {
+        resolve(lineQueue.shift()!);
+      } else {
+        waiters.push(resolve);
+      }
+    });
+  };
 }
 
-export async function runOnboarding(): Promise<void> {
+/**
+ * Run the onboarding wizard.
+ * @param profileName - If provided, save to this profile name (re-configure).
+ *                      If not provided, ask the user for a profile name.
+ */
+export async function runOnboarding(profileName?: string): Promise<void> {
   console.log();
   console.log("┌─────────────────────────────────────────┐");
   console.log("│  Welcome to taskify-nostr! 🦉           │");
@@ -19,21 +43,30 @@ export async function runOnboarding(): Promise<void> {
     input: process.stdin,
     output: process.stdout,
   });
+  const ask = makeLineQueue(rl);
 
-  const cfg = await loadConfig();
+  const DEFAULT_RELAYS = [
+    "wss://relay.damus.io",
+    "wss://nos.lol",
+    "wss://relay.snort.social",
+    "wss://relay.primal.net",
+  ];
+
+  let nsec: string | undefined;
+  let relays: string[] = [...DEFAULT_RELAYS];
 
   // Step 1 — Private key
   console.log("Step 1 — Private key");
-  const hasKey = await ask(rl, "Do you have a Nostr private key (nsec)? [Y/n] ");
+  const hasKey = await ask("Do you have a Nostr private key (nsec)? [Y/n] ");
 
   if (hasKey.trim().toLowerCase() !== "n") {
     // User has a key
-    let nsec = "";
     while (true) {
-      nsec = (await ask(rl, "Paste your nsec: ")).trim();
-      if (nsec.startsWith("nsec1")) {
+      const input = (await ask("Paste your nsec: ")).trim();
+      if (input.startsWith("nsec1")) {
         try {
-          nip19.decode(nsec);
+          nip19.decode(input);
+          nsec = input;
           break;
         } catch {
           // invalid
@@ -41,12 +74,11 @@ export async function runOnboarding(): Promise<void> {
       }
       console.log("Invalid nsec. Try again or press Ctrl+C to abort.");
     }
-    cfg.nsec = nsec;
   } else {
     // Generate new keypair
     const sk = generateSecretKey();
     const pk = getPublicKey(sk);
-    const nsec = nip19.nsecEncode(sk);
+    nsec = nip19.nsecEncode(sk);
     const npub = nip19.npubEncode(pk);
     console.log();
     console.log("✓ Generated new Nostr identity");
@@ -54,48 +86,75 @@ export async function runOnboarding(): Promise<void> {
     console.log(`  nsec: ${nsec}  ← KEEP THIS SECRET — it is your password`);
     console.log();
     console.log("Save this nsec somewhere safe. It cannot be recovered if lost.");
-    const cont = await ask(rl, "Continue? [Y/n] ");
+    const cont = await ask("Continue? [Y/n] ");
     if (cont.trim().toLowerCase() === "n") {
       rl.close();
       process.exit(0);
     }
-    cfg.nsec = nsec;
   }
 
   // Step 2 — Default board
   console.log();
   console.log("Step 2 — Default board");
-  const joinBoard = await ask(rl, "Do you want to join an existing board? [y/N] ");
+  const joinBoard = await ask("Do you want to join an existing board? [y/N] ");
+  let defaultBoard = "Personal";
   if (joinBoard.trim().toLowerCase() === "y") {
-    const boardId = (await ask(rl, "Board ID (Nostr event id): ")).trim();
+    const boardId = (await ask("Board ID (Nostr event id): ")).trim();
     if (boardId) {
-      cfg.defaultBoard = boardId;
+      defaultBoard = boardId;
     }
   }
 
   // Step 3 — Relays
   console.log();
   console.log("Step 3 — Relays");
-  const configRelays = await ask(rl, "Configure relays? Default relays will be used if skipped. [y/N] ");
+  const configRelays = await ask("Configure relays? Default relays will be used if skipped. [y/N] ");
   if (configRelays.trim().toLowerCase() === "y") {
-    const relays: string[] = [];
+    const customRelays: string[] = [];
     while (true) {
-      const relay = (await ask(rl, "Add relay URL (blank to finish): ")).trim();
+      const relay = (await ask("Add relay URL (blank to finish): ")).trim();
       if (!relay) break;
-      relays.push(relay);
+      customRelays.push(relay);
     }
-    if (relays.length > 0) {
-      cfg.relays = relays;
+    if (customRelays.length > 0) {
+      relays = customRelays;
     }
+  }
+
+  // Step 4 — Profile name (only when not re-configuring an existing profile)
+  let resolvedProfileName = profileName;
+  if (!resolvedProfileName) {
+    console.log();
+    console.log("Step 4 — Profile name");
+    const nameInput = (await ask("What should we name this profile? [default] ")).trim();
+    resolvedProfileName = nameInput || "default";
   }
 
   rl.close();
 
-  await saveConfig(cfg);
+  // Load full config to preserve other profiles
+  const fullCfg = await loadConfig();
+  const existingProfile = fullCfg.profiles[resolvedProfileName];
 
-  // Step 4 — Done
+  const newProfile: ProfileConfig = {
+    nsec,
+    relays,
+    boards: existingProfile?.boards ?? [],
+    trustedNpubs: existingProfile?.trustedNpubs ?? [],
+    securityMode: existingProfile?.securityMode ?? "moderate",
+    securityEnabled: existingProfile?.securityEnabled ?? true,
+    defaultBoard,
+    taskReminders: existingProfile?.taskReminders ?? {},
+    agent: existingProfile?.agent,
+  };
+
+  const newProfiles = { ...fullCfg.profiles, [resolvedProfileName]: newProfile };
+  await saveProfiles(resolvedProfileName, newProfiles);
+
+  // Done
   console.log();
-  console.log("✓ Setup complete! Run `taskify boards` to see your boards.");
+  console.log(`✓ Setup complete! Profile: "${resolvedProfileName}"`);
+  console.log("  Run `taskify boards` to see your boards.");
   console.log("  Run `taskify --help` to explore all commands.");
   console.log();
 }
