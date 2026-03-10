@@ -1,6 +1,6 @@
 {
   "name": "taskify-nostr",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Nostr-powered task management CLI",
   "type": "module",
   "bin": {
