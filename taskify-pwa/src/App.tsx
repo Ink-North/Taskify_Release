@@ -2613,7 +2613,7 @@ function taskTimeValue(task: Task): number | null {
 }
 
 function taskWeekday(task: Task): Weekday | null {
-  return weekdayFromISO(task.dueISO);
+  return weekdayFromISO(task.dueISO, task.dueTimeZone);
 }
 
 function calendarAnchorFrom(dateStr?: string | null) {
