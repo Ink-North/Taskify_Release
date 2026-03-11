@@ -1,5 +1,5 @@
-import { toNpub } from "./nostr.ts";
-import { getAgentIdempotencyStore } from "./agentIdempotency.ts";
+import { toNpub } from "./nostr.js";
+import { getAgentIdempotencyStore } from "./agentIdempotency.js";
 import {
   addTrustedNpub,
   annotateTrust,
@@ -9,14 +9,14 @@ import {
   removeTrustedNpub,
   summarizeTrustCounts,
   type AgentSecurityConfig,
-} from "./agentSecurity.ts";
+} from "./agentSecurity.js";
 import {
   getAgentRuntime,
   type AgentTaskRecord,
   type AgentTaskCreateInput,
   type AgentTaskPatchInput,
   type AgentTaskStatus,
-} from "./agentRuntime.ts";
+} from "./agentRuntime.js";
 
 type AgentErrorCode =
   | "PARSE_JSON"
