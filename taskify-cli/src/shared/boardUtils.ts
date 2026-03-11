@@ -1,4 +1,4 @@
-import type { Task, Board, CalendarEvent, Recurrence, Weekday } from "./taskTypes.ts";
+import type { Task, Board, CalendarEvent, Recurrence, Weekday } from "./taskTypes.js";
 import {
   isoDatePart,
   parseDateKey,
@@ -7,8 +7,8 @@ import {
   formatDateKeyFromParts,
   isoFromDateTime,
   normalizeTimeZone,
-} from "./dateUtils.ts";
-import type { Settings } from "./settingsTypes.ts";
+} from "./dateUtils.js";
+import type { Settings } from "./settingsTypes.js";
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 

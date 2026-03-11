@@ -197,6 +197,50 @@ Adding tasks to a compound board directly is not allowed — use a child board i
 
 ---
 
+## Multiple profiles
+
+Each agent or user can have their own named Nostr identity:
+
+```bash
+# List profiles
+taskify profile list
+
+# Add a new identity
+taskify profile add ink
+
+# Switch active profile
+taskify profile use ink
+
+# Use a profile for one command without switching
+taskify list --profile cody --board "Dev"
+
+# Show profile details
+taskify profile show
+
+# Rename a profile
+taskify profile rename ink writer
+
+# Remove a profile (cannot remove the active one)
+taskify profile remove old-profile --force
+```
+
+Profiles store separate nsec, relays, boards, and trusted npubs.
+The active profile is used by default for all commands.
+Use `--profile <name>` (`-P <name>`) on any command to use a different profile without switching.
+
+### Profile commands
+
+| Command | Options | Description |
+|---|---|---|
+| `profile list` | | List all profiles (► marks active) |
+| `profile add <name>` | | Add a new profile (mini onboarding) |
+| `profile use <name>` | | Switch active profile |
+| `profile show [name]` | | Show profile details (defaults to active) |
+| `profile remove <name>` | `--force` | Remove a profile |
+| `profile rename <old> <new>` | | Rename a profile |
+
+---
+
 ## Example output
 
 ### `taskify list`

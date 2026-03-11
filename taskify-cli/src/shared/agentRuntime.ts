@@ -1,4 +1,4 @@
-import type { AgentSecurityConfig } from "./agentSecurity.ts";
+import type { AgentSecurityConfig } from "./agentSecurity.js";
 
 export type AgentTaskRecord = {
   id: string;

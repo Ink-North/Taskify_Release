@@ -1,7 +1,7 @@
-import type { Task, Recurrence } from "./taskTypes.ts";
-import type { TaskPriority } from "./taskTypes.ts";
-import { isoDatePart, isoTimePartUtc, startOfDay } from "./dateUtils.ts";
-import { revealsOnDueDate, isFrequentRecurrence } from "./boardUtils.ts";
+import type { Task, Recurrence } from "./taskTypes.js";
+import type { TaskPriority } from "./taskTypes.js";
+import { isoDatePart, isoTimePartUtc, startOfDay } from "./dateUtils.js";
+import { revealsOnDueDate, isFrequentRecurrence } from "./boardUtils.js";
 
 // ---- Priority normalization ----
 
