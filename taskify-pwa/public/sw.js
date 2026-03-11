@@ -11,7 +11,7 @@ self.addEventListener('activate', (event) => {
 });
 
 const CACHE_PREFIX = 'taskify-cache-';
-const CACHE = `${CACHE_PREFIX}v5`;
+const CACHE = `${CACHE_PREFIX}v6`;
 const CONFIG_CACHE = `${CACHE_PREFIX}config`;
 const DEFAULT_WORKER_BASE_URL = self.location.origin;
 let workerBaseUrl = DEFAULT_WORKER_BASE_URL;
@@ -32,13 +32,22 @@ self.addEventListener('fetch', (event) => {
       const cached = await cache.match(event.request);
       const cachedForCompare = cached ? cached.clone() : null;
 
-      // Network-first for app shell/document requests so installed PWAs pick up updates quickly.
+      // Fast app-shell loading: race network briefly, then fall back to cache.
+      // This keeps startup snappy while still refreshing cached HTML when network is available.
       if (isDocumentRequest(event.request)) {
+        if (cached) {
+          const networkAttempt = fetchAndUpdateCache(cache, event.request, cachedForCompare)
+            .then((response) => response || cached)
+            .catch(() => cached);
+          const timeoutFallback = wait(700).then(() => cached);
+          const winner = await Promise.race([networkAttempt, timeoutFallback]);
+          event.waitUntil(networkAttempt.catch(() => undefined));
+          return winner;
+        }
         try {
           const networkResponse = await fetchAndUpdateCache(cache, event.request, cachedForCompare);
           if (networkResponse) return networkResponse;
         } catch {}
-        if (cached) return cached;
         return new Response(null, { status: 504, statusText: 'Gateway Timeout' });
       }
 
