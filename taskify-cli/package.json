@@ -10,7 +10,8 @@
     "build": "tsc && node -e \"const fs=require('fs');const f='dist/index.js';let c=fs.readFileSync(f,'utf8');if(c.startsWith('#!'))c=c.slice(c.indexOf('\\n')+1);fs.writeFileSync(f,'#!/usr/bin/env node\\n'+c)\"",
     "prepare": "npm run build",
     "start": "node dist/index.js",
-    "dev": "node --experimental-strip-types src/index.ts"
+    "dev": "node --experimental-strip-types src/index.ts",
+    "test": "node --test --experimental-strip-types tests/*.test.ts"
   },
   "files": [
     "dist/",

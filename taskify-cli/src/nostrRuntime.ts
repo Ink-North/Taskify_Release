@@ -8,6 +8,7 @@ import type { AgentSecurityConfig } from "./shared/agentSecurity.js";
 import type { TaskifyConfig, BoardEntry } from "./config.js";
 import { saveConfig } from "./config.js";
 import { readCache, writeCache, isCacheFresh, type CachedTask } from "./taskCache.js";
+import { pickBestBoardMeta } from "./shared/boardMeta.js";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -205,7 +206,7 @@ export type NostrRuntime = {
     refresh?: boolean;
     noCache?: boolean;
   }): Promise<FullTaskRecord[]>;
-  syncBoard(boardId: string): Promise<{ kind?: string; columns?: { id: string; name: string }[]; children?: string[] }>;
+  syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }>;
   createTask(input: AgentTaskCreateInput): Promise<FullTaskRecord>;
   createTaskFull(input: ExtendedCreateInput): Promise<FullTaskRecord>;
   createBoard(input: { name: string; kind: "lists" | "week"; columns?: { id: string; name: string }[] }): Promise<{ boardId: string }>;
@@ -522,11 +523,11 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       return records;
     },
 
-    async syncBoard(boardId: string): Promise<{ kind?: string; columns?: { id: string; name: string }[]; children?: string[] }> {
+    async syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }> {
       await ensureConnected();
       const bTag = boardTagHash(boardId);
       const fetchPromise = ndk.fetchEvents(
-        { kinds: [30300], "#b": [bTag], limit: 1 } as unknown as Parameters<typeof ndk.fetchEvents>[0],
+        { kinds: [30300], "#b": [bTag], limit: 25 } as unknown as Parameters<typeof ndk.fetchEvents>[0],
         { closeOnEose: true },
       );
       const timeoutPromise = new Promise<Set<NDKEvent>>((resolve) =>
@@ -538,75 +539,44 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const entry = config.boards.find((b) => b.id === boardId);
       if (!entry) return {};
 
+      let name: string | undefined;
       let kind: string | undefined;
       let columns: { id: string; name: string }[] | undefined;
       let children: string[] | undefined;
 
       if (events.size > 0) {
-        const [event] = events;
-        const kTag = event.tags.find((t) => t[0] === "k");
-        if (kTag?.[1]) kind = kTag[1];
+        const eventLikes: Array<{ tags: string[][]; content: string; created_at?: number }> = [];
 
-        const colTags = event.tags.filter((t) => t[0] === "col" && t[1] && t[2]);
-        if (colTags.length > 0) {
-          columns = colTags.map((t) => ({ id: t[1], name: t[2] }));
-        }
-
-        // Check for "ch" tags
-        const chTags = event.tags.filter((t) => t[0] === "ch" && t[1]);
-        if (chTags.length > 0) {
-          children = chTags.map((t) => t[1]);
-        }
-
-        // Try to decrypt content for additional columns and kind (fallback)
-        try {
-          if (event.content) {
-            const plaintext = await decryptContent(boardId, event.content);
-            const parsed = JSON.parse(plaintext);
-
-            // Extract kind from content if not found in tags
-            if (!kind && parsed.kind) {
-              kind = String(parsed.kind);
-            }
-
-            // Extract columns from content
-            if (Array.isArray(parsed.columns)) {
-              const contentCols: { id: string; name: string }[] = parsed.columns
-                .filter(
-                  (c: unknown) =>
-                    c && typeof c === "object" && "id" in (c as object) && "name" in (c as object),
-                )
-                .map((c: { id: string; name: string }) => ({ id: String(c.id), name: String(c.name) }));
-
-              // Merge with tag-discovered columns (deduplicate by id)
-              const merged = [...(columns ?? [])];
-              for (const cc of contentCols) {
-                if (!merged.find((m) => m.id === cc.id)) {
-                  merged.push(cc);
-                }
-              }
-              if (merged.length > 0) columns = merged;
-            }
-
-            // Extract children from content
-            if (Array.isArray(parsed.children)) {
-              const contentChildren = (parsed.children as unknown[]).filter((c): c is string => typeof c === "string");
-              const mergedChildren = [...(children ?? [])];
-              for (const cc of contentChildren) {
-                if (!mergedChildren.includes(cc)) mergedChildren.push(cc);
-              }
-              if (mergedChildren.length > 0) children = mergedChildren;
+        for (const event of events) {
+          let content = event.content ?? "";
+          if (content) {
+            try {
+              content = await decryptContent(boardId, content);
+            } catch {
+              // Non-fatal: keep original content (may be plaintext/JSON, or unusable encrypted payload)
             }
           }
-        } catch { /* non-fatal — content may not be in expected format */ }
+          eventLikes.push({
+            tags: event.tags ?? [],
+            content,
+            created_at: event.created_at,
+          });
+        }
 
+        const meta = pickBestBoardMeta(eventLikes, boardId);
+        name = meta.name;
+        kind = meta.kind;
+        columns = meta.columns;
+        children = meta.children;
+
+        if (name) entry.name = name;
         if (kind) entry.kind = kind as BoardEntry["kind"];
         if (columns && columns.length > 0) entry.columns = columns;
         if (children && children.length > 0) entry.children = children;
         await saveConfig(config);
       }
 
-      return { kind, columns, children };
+      return { name, kind, columns, children };
     },
 
     async createTask(input: AgentTaskCreateInput): Promise<FullTaskRecord> {
