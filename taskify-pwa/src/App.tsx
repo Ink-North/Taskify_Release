@@ -124,6 +124,7 @@ import {
   ensureWeekRecurrencesForCurrentWeek,
   tasksInSameSeries,
 } from "./lib/app/weekRecurrenceDomain";
+import { isoForWeekdayLocal, startOfWeekLocal } from "./lib/app/weekBoardDate";
 import {
   TASKIFY_CALENDAR_EVENT_KIND,
   TASKIFY_CALENDAR_VIEW_KIND,
@@ -3525,12 +3526,7 @@ function isoForWeekday(
   target: Weekday,
   options: { base?: Date; weekStart?: Weekday } = {}
 ): string {
-  const { base = new Date(), weekStart = 0 } = options;
-  const anchor = startOfWeek(base, weekStart);
-  const anchorDay = anchor.getDay() as Weekday;
-  const offset = ((target - anchorDay) % 7 + 7) % 7;
-  const day = startOfDay(new Date(anchor.getTime() + offset * 86400000));
-  return day.toISOString();
+  return isoForWeekdayLocal(target, options);
 }
 
 function isoForToday(base = new Date()): string {
@@ -3780,12 +3776,7 @@ function isVisibleNow(t: Task, now = new Date()): boolean {
 }
 
 function startOfWeek(d: Date, weekStart: Weekday): Date {
-  const sd = startOfDay(d);
-  const current = sd.getDay() as Weekday;
-  const ws = (weekStart === 1 || weekStart === 6) ? weekStart : 0; // only Mon(1)/Sat(6)/Sun(0)
-  let diff = current - ws;
-  if (diff < 0) diff += 7;
-  return new Date(sd.getTime() - diff * 86400000);
+  return startOfWeekLocal(d, weekStart);
 }
 
 /** Decide when the next instance should re-appear (hiddenUntilISO). */
