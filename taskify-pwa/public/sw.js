@@ -12,7 +12,7 @@ self.addEventListener('activate', (event) => {
 });
 
 const CACHE_PREFIX = 'taskify-cache-';
-const CACHE = `${CACHE_PREFIX}v4`;
+const CACHE = `${CACHE_PREFIX}v6`;
 const CONFIG_CACHE = `${CACHE_PREFIX}config`;
 const DEFAULT_WORKER_BASE_URL = self.location.origin;
 let workerBaseUrl = DEFAULT_WORKER_BASE_URL;
@@ -34,6 +34,26 @@ self.addEventListener('fetch', (event) => {
       const cached = await cache.match(event.request);
       const cachedForCompare = cached ? cached.clone() : null;
 
+      // Fast app-shell loading: race network briefly, then fall back to cache.
+      // This keeps startup snappy while still refreshing cached HTML when network is available.
+      if (isDocumentRequest(event.request)) {
+        if (cached) {
+          const networkAttempt = fetchAndUpdateCache(cache, event.request, cachedForCompare)
+            .then((response) => response || cached)
+            .catch(() => cached);
+          const timeoutFallback = wait(700).then(() => cached);
+          const winner = await Promise.race([networkAttempt, timeoutFallback]);
+          event.waitUntil(networkAttempt.catch(() => undefined));
+          return winner;
+        }
+        try {
+          const networkResponse = await fetchAndUpdateCache(cache, event.request, cachedForCompare);
+          if (networkResponse) return networkResponse;
+        } catch {}
+        return new Response(null, { status: 504, statusText: 'Gateway Timeout' });
+      }
+
+      // Stale-while-revalidate for static/data requests.
       const fetchPromise = fetchAndUpdateCache(cache, event.request, cachedForCompare);
 
       if (cached) {
@@ -101,17 +121,19 @@ async function fetchAndUpdateCache(cache, request, cachedResponse) {
   }
 }
 
-async function shouldNotifyUpdate(request, cachedResponse, networkResponse) {
-  if (!cachedResponse) return false;
-
+function isDocumentRequest(request) {
   const destination = request.destination;
   const acceptHeader = request.headers.get('accept') || '';
-  const isDocumentRequest =
+  return (
     request.mode === 'navigate' ||
     destination === 'document' ||
-    acceptHeader.includes('text/html');
+    acceptHeader.includes('text/html')
+  );
+}
 
-  if (!isDocumentRequest) return false;
+async function shouldNotifyUpdate(request, cachedResponse, networkResponse) {
+  if (!cachedResponse) return false;
+  if (!isDocumentRequest(request)) return false;
 
   const cachedEtag = cachedResponse.headers.get('etag');
   const networkEtag = networkResponse.headers.get('etag');
