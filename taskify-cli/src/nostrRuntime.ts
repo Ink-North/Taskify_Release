@@ -645,6 +645,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       if (boards.length === 0) return null;
 
       await ensureConnected();
+      const matches: FullEventRecord[] = [];
       for (const board of boards) {
         const resolvedId = await resolveTaskId(board.id, eventId);
         if (!resolvedId) continue;
@@ -653,9 +654,14 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         const [evt] = events;
         const parsed = await parseDecryptedCalendarEvent(evt, board.id, board.name);
         if (!parsed || parsed.deleted) continue;
-        return parsed;
+        matches.push(parsed);
       }
-      return null;
+
+      if (matches.length === 0) return null;
+      if (!boardId && matches.length > 1) {
+        throw new Error(`Event id matches multiple boards; specify --board (matches: ${matches.map((m) => m.boardName ?? m.boardId).join(", ")})`);
+      }
+      return matches[0];
     },
 
     async createEvent(input): Promise<FullEventRecord> {
