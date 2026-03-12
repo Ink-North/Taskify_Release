@@ -41,3 +41,25 @@ test("createActivityEntry captures field-level changes", () => {
   assert.equal(entry.changes.length, 1);
   assert.equal(entry.changes[0]?.field, "startISO");
 });
+
+test("CLI activity/comment wrappers enforce shared core validation", () => {
+  assert.throws(() =>
+    createCommentEntry({
+      entityType: "task",
+      entityId: " ",
+      text: "hello",
+      actorPubkey: "npub_test",
+      source: "cli",
+    }),
+  );
+
+  assert.throws(() =>
+    createActivityEntry({
+      entityType: "event",
+      entityId: "evt-1",
+      action: "updated",
+      actorPubkey: " ",
+      source: "cli",
+    }),
+  );
+});
