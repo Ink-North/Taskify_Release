@@ -288,6 +288,51 @@ const WEEK_DAY_MAP: Record<string, number> = {
   mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6,
 };
 
+// ---- event command group (scaffold; implementation follows in subsequent commits) ----
+const eventCmd = program
+  .command("event")
+  .description("Manage calendar events");
+
+eventCmd
+  .command("list")
+  .description("List events")
+  .action(() => {
+    console.error(chalk.red("event list is not implemented yet"));
+    process.exit(1);
+  });
+
+eventCmd
+  .command("add <title>")
+  .description("Create an event")
+  .action(() => {
+    console.error(chalk.red("event add is not implemented yet"));
+    process.exit(1);
+  });
+
+eventCmd
+  .command("show <eventId>")
+  .description("Show event details")
+  .action(() => {
+    console.error(chalk.red("event show is not implemented yet"));
+    process.exit(1);
+  });
+
+eventCmd
+  .command("update <eventId>")
+  .description("Update an event")
+  .action(() => {
+    console.error(chalk.red("event update is not implemented yet"));
+    process.exit(1);
+  });
+
+eventCmd
+  .command("delete <eventId>")
+  .description("Delete an event")
+  .action(() => {
+    console.error(chalk.red("event delete is not implemented yet"));
+    process.exit(1);
+  });
+
 /** Resolve a week-board day name to the ISO date for that day in the current week (Mon-based). */
 function resolveWeekDayToISO(dayKey: string): string {
   const offset = WEEK_DAY_MAP[dayKey];
