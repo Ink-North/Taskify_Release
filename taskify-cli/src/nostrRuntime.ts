@@ -13,6 +13,8 @@ import {
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarEventPayload,
   normalizeCalendarMutationPayload,
+  encryptToBoard,
+  decryptFromBoard,
 } from "taskify-core";
 
 function nowISO(): string {
@@ -42,38 +44,12 @@ function deriveBoardKeys(boardId: string): {
   return { sk, skHex, pk, signer: new NDKPrivateKeySigner(skHex) };
 }
 
-async function deriveAESKey(boardId: string): Promise<CryptoKey> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(boardId),
-  );
-  return crypto.subtle.importKey(
-    "raw",
-    digest,
-    { name: "AES-GCM" },
-    false,
-    ["encrypt", "decrypt"],
-  );
-}
-
 async function encryptContent(boardId: string, plaintext: string): Promise<string> {
-  const key = await deriveAESKey(boardId);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const pt = new TextEncoder().encode(plaintext);
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, pt);
-  const result = new Uint8Array(12 + ct.byteLength);
-  result.set(iv, 0);
-  result.set(new Uint8Array(ct), 12);
-  return Buffer.from(result).toString("base64");
+  return encryptToBoard(boardId, plaintext);
 }
 
 async function decryptContent(boardId: string, data: string): Promise<string> {
-  const key = await deriveAESKey(boardId);
-  const bytes = Buffer.from(data, "base64");
-  const iv = bytes.subarray(0, 12);
-  const ct = bytes.subarray(12);
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return new TextDecoder().decode(pt);
+  return decryptFromBoard(boardId, data);
 }
 
 function getUserPubkeyHex(config: TaskifyConfig): string | undefined {
