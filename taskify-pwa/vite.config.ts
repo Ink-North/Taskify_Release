@@ -14,6 +14,7 @@ const walletVendors = [
 export default defineConfig({
   plugins: [react()],
   resolve: {
+    preserveSymlinks: true,
     alias: {
       buffer: "buffer",
       process: "process/browser",
