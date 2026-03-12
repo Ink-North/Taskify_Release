@@ -289,7 +289,7 @@ const WEEK_DAY_MAP: Record<string, number> = {
   mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6,
 };
 
-// ---- event command group (scaffold; implementation follows in subsequent commits) ----
+// ---- event command group ----
 const eventCmd = program
   .command("event")
   .description("Manage calendar events");
