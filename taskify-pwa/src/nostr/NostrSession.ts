@@ -10,15 +10,7 @@ import { RelayInfoCache, type RelayLimits } from "./RelayInfoCache";
 import { RelayHealthTracker } from "./RelayHealth";
 import { RelayAuthManager } from "./RelayAuth";
 import type { RelayInfo } from "./RelayInfoCache";
-
-function normalizeRelays(relays: string[]): string[] {
-  const set = new Set(
-    relays
-      .map((r) => (typeof r === "string" ? r.trim() : ""))
-      .filter(Boolean),
-  );
-  return Array.from(set).sort();
-}
+import { normalizeRelayUrls } from "taskify-runtime-nostr";
 
 export class NostrSession {
   private static singleton: NostrSession | null = null;
@@ -72,7 +64,7 @@ export class NostrSession {
   }
 
   static async init(relays: string[]): Promise<NostrSession> {
-    const normalized = normalizeRelays(relays);
+    const normalized = normalizeRelayUrls(relays);
     if (!this.singleton) {
       this.singleton = new NostrSession(normalized);
       await this.singleton.ensureRelays(normalized);
@@ -104,7 +96,7 @@ export class NostrSession {
   }
 
   private async buildRelaySet(relayUrls?: string[]): Promise<NDKRelaySet | undefined> {
-    const relays = normalizeRelays(relayUrls || Array.from(this.knownRelays));
+    const relays = normalizeRelayUrls(relayUrls || Array.from(this.knownRelays));
     if (!relays.length) return undefined;
     await this.ensureRelays(relays);
     const relayObjects = new Set<NDKRelay>();
@@ -123,7 +115,7 @@ export class NostrSession {
   }
 
   private async ensureRelays(relays: string[]): Promise<void> {
-    const list = normalizeRelays(relays);
+    const list = normalizeRelayUrls(relays);
     for (const relay of list) {
       this.primeRelayInfo(relay);
       if (this.knownRelays.has(relay)) continue;
@@ -160,7 +152,7 @@ export class NostrSession {
   }
 
   private resolveRelayLimit(relayUrls: string[]): Promise<number> {
-    const relays = normalizeRelays(relayUrls);
+    const relays = normalizeRelayUrls(relayUrls);
     relays.forEach((relay) => this.primeRelayInfo(relay));
     const limits: RelayLimits = this.relayInfoCache.getLimits(relays);
     return Promise.resolve(limits.maxLimit);
