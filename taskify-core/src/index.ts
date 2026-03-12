@@ -6,3 +6,4 @@ export * from "./calendarProtocol.js";
 export * from "./calendarDecode.js";
 export * from "./weekDate.js";
 export * from "./weekRecurrence.js";
+export * from "./reminderUtils.js";
