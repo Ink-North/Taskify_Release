@@ -1,11 +1,22 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { hexToBytes } from "@noble/hashes/utils";
 import { nip44 } from "nostr-tools";
-import { normalizeCalendarEventPayload } from "taskify-core";
+import {
+  normalizeCalendarEventPayload,
+  TASKIFY_CALENDAR_EVENT_KIND,
+  TASKIFY_CALENDAR_VIEW_KIND,
+  TASKIFY_CALENDAR_RSVP_KIND,
+  calendarAddress,
+  parseCalendarAddress,
+} from "taskify-core";
 
-export const TASKIFY_CALENDAR_EVENT_KIND = 30310;
-export const TASKIFY_CALENDAR_VIEW_KIND = 30311;
-export const TASKIFY_CALENDAR_RSVP_KIND = 30312;
+export {
+  TASKIFY_CALENDAR_EVENT_KIND,
+  TASKIFY_CALENDAR_VIEW_KIND,
+  TASKIFY_CALENDAR_RSVP_KIND,
+  calendarAddress,
+  parseCalendarAddress,
+} from "taskify-core";
 
 export type CalendarRsvpStatus = "accepted" | "declined" | "tentative";
 export type CalendarRsvpFb = "free" | "busy";
@@ -170,24 +181,6 @@ function normalizeInviteTokens(value: unknown): Record<string, string> | undefin
   return Object.keys(out).length ? out : undefined;
 }
 
-export function calendarAddress(kind: number, pubkey: string, d: string): string {
-  return `${kind}:${pubkey}:${d}`;
-}
-
-export function parseCalendarAddress(coord: string): { kind: number; pubkey: string; d: string } | null {
-  if (typeof coord !== "string") return null;
-  const trimmed = coord.trim();
-  if (!trimmed) return null;
-  const parts = trimmed.split(":");
-  if (parts.length < 3) return null;
-  const kind = Number(parts[0]);
-  if (!Number.isFinite(kind)) return null;
-  const pubkey = (parts[1] || "").toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(pubkey)) return null;
-  const d = parts.slice(2).join(":").trim();
-  if (!d) return null;
-  return { kind, pubkey, d };
-}
 
 export function generateEventKey(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
