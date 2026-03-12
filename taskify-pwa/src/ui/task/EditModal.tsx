@@ -1,6 +1,7 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { nip19 } from "nostr-tools";
+import { normalizeTaskAssignmentStatus } from "taskify-core";
 
 // Sub-sheet components
 import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
@@ -183,12 +184,6 @@ function normalizeAssigneePubkey(value: string | null | undefined): string | nul
   return /^[0-9a-f]{64}$/.test(raw) ? raw : null;
 }
 
-function normalizeAssigneeStatus(value: unknown): TaskAssignee["status"] | undefined {
-  if (value === "pending" || value === "accepted" || value === "declined" || value === "tentative") return value;
-  if (value === "maybe") return "tentative";
-  return undefined;
-}
-
 function normalizeAssigneeList(value: Task["assignees"] | undefined): TaskAssignee[] {
   if (!Array.isArray(value)) return [];
   const normalized: TaskAssignee[] = [];
@@ -198,7 +193,7 @@ function normalizeAssigneeList(value: Task["assignees"] | undefined): TaskAssign
     if (!pubkey || seen.has(pubkey)) return;
     seen.add(pubkey);
     const relay = typeof assignee?.relay === "string" ? assignee.relay.trim() : "";
-    const status = normalizeAssigneeStatus(assignee?.status);
+    const status = normalizeTaskAssignmentStatus(assignee?.status) as TaskAssignee["status"] | undefined;
     const respondedAtRaw = Number(assignee?.respondedAt);
     const respondedAt = Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
     normalized.push({

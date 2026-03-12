@@ -6,3 +6,9 @@ export function normalizeRelayList(value) {
         .filter(Boolean);
     return relays.length ? Array.from(new Set(relays)) : undefined;
 }
+export function normalizeRelayListSorted(value) {
+    const normalized = normalizeRelayList(value);
+    if (!normalized?.length)
+        return undefined;
+    return [...normalized].sort();
+}

@@ -6,7 +6,17 @@ import { createPortal } from "react-dom";
 import { QRCodeCanvas } from "qrcode.react";
 import QrScannerLib from "qr-scanner";
 import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
-import { normalizeCalendarDeleteMutationPayload, normalizeCalendarMutationPayload } from "taskify-core";
+import {
+  normalizeCalendarDeleteMutationPayload,
+  normalizeCalendarMutationPayload,
+  normalizeRelayListSorted,
+  parseBoardSharePayload,
+  normalizeNip05,
+  compressedToRawHex,
+  contactInitials,
+  contactVerifiedNip05 as contactVerifiedNip05Core,
+  normalizeTaskAssignmentStatus,
+} from "taskify-core";
 const loadCashuWalletModal = () => import("./components/CashuWalletModal");
 const CashuWalletModal = lazy(loadCashuWalletModal);
 import {
@@ -231,28 +241,6 @@ const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
 
 type ScanResult = QrScannerLib.ScanResult;
 
-type BoardSharePayload = {
-  boardId: string;
-  boardName?: string;
-  relaysCsv?: string;
-};
-
-function parseBoardSharePayload(raw: string): BoardSharePayload | null {
-  const trimmed = (raw || "").trim();
-  if (!trimmed) return null;
-  const envelope = parseShareEnvelope(trimmed);
-  if (envelope?.item?.type === "board") {
-    const relaysCsv = envelope.item.relays?.length ? envelope.item.relays.join(",") : undefined;
-    return {
-      boardId: envelope.item.boardId,
-      boardName: envelope.item.boardName || undefined,
-      relaysCsv,
-    };
-  }
-  if (!BOARD_ID_REGEX.test(trimmed)) return null;
-  return { boardId: trimmed };
-}
-
 /* ================= Types ================= */
 type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6; // 0=Sun
 type DayChoice = Weekday | string; // string = custom list columnId
@@ -401,25 +389,6 @@ type CalendarRsvpEnvelope = {
   inviteToken?: string;
 };
 
-function normalizeNip05(value?: string | null): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-  const atIndex = trimmed.indexOf("@");
-  if (atIndex <= 0 || atIndex === trimmed.length - 1) return null;
-  const name = trimmed.slice(0, atIndex).trim().toLowerCase();
-  const domain = trimmed.slice(atIndex + 1).trim().toLowerCase();
-  if (!name || !domain) return null;
-  return `${name}@${domain}`;
-}
-
-function compressedToRawHex(value: string): string {
-  if (typeof value !== "string") return value;
-  if (/^(02|03)[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
-  if (/^0x[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
-  if (/^[0-9a-fA-F]{64}$/.test(value)) return value.toLowerCase();
-  return value;
-}
-
 function normalizeNostrPubkeyHex(value: string | null | undefined): string | null {
   const trimmed = (value || "").trim();
   if (!trimmed) return null;
@@ -433,14 +402,6 @@ function normalizeAgentPubkey(value: unknown): string | undefined {
   return normalizeNostrPubkeyHex(value) ?? undefined;
 }
 
-function normalizeTaskAssigneeStatus(value: unknown): TaskAssigneeStatus | undefined {
-  if (value === "pending" || value === "accepted" || value === "declined" || value === "tentative") {
-    return value;
-  }
-  if (value === "maybe") return "tentative";
-  return undefined;
-}
-
 function normalizeTaskAssignees(value: unknown): TaskAssignee[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const normalized: TaskAssignee[] = [];
@@ -451,7 +412,7 @@ function normalizeTaskAssignees(value: unknown): TaskAssignee[] | undefined {
     if (!pubkey || seen.has(pubkey)) return;
     seen.add(pubkey);
     const relay = typeof (entry as any).relay === "string" ? (entry as any).relay.trim() : "";
-    const status = normalizeTaskAssigneeStatus((entry as any).status);
+    const status = normalizeTaskAssignmentStatus((entry as any).status) as TaskAssigneeStatus | undefined;
     const respondedAtRaw = Number((entry as any).respondedAt);
     const respondedAt =
       Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
@@ -527,29 +488,15 @@ function loadNip05Cache(): Record<string, Nip05CheckState> {
 }
 
 function contactVerifiedNip05(contact: Contact, cache: Record<string, Nip05CheckState>): string | null {
-  if (!contact?.id) return null;
-  const nip05 = contact.nip05?.trim();
-  const npub = contact.npub?.trim();
-  if (!nip05 || !npub) return null;
-  const normalizedNip05 = normalizeNip05(nip05);
-  const normalizedNpub = normalizeNostrPubkey(npub);
-  if (!normalizedNip05 || !normalizedNpub) return null;
-  const entry = cache[contact.id];
-  if (!entry || entry.status !== "valid") return null;
-  const cachedNip05 = normalizeNip05(entry.nip05);
-  const cachedHex = (entry.npub || "").toLowerCase();
-  const contactHex = compressedToRawHex(normalizedNpub).toLowerCase();
-  if (!cachedNip05 || cachedNip05 !== normalizedNip05) return null;
-  if (!cachedHex || cachedHex !== contactHex) return null;
-  return nip05 || entry.nip05;
-}
-
-function contactInitials(value: string): string {
-  const trimmed = (value || "").trim();
-  if (!trimmed) return "?";
-  const parts = trimmed.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  const normalizedNpub = normalizeNostrPubkey(contact.npub || "");
+  return contactVerifiedNip05Core(
+    {
+      id: contact.id,
+      nip05: contact.nip05,
+      npub: normalizedNpub || contact.npub,
+    },
+    cache,
+  );
 }
 
 function VerifiedBadgeIcon(props: React.SVGProps<SVGSVGElement>) {
@@ -6993,14 +6940,10 @@ export default function App() {
     return next;
   }, []);
   const [nostrRefresh, setNostrRefresh] = useState(0);
-  const normalizeRelayList = useCallback((relays: string[] | null | undefined) => {
-    const normalized = Array.isArray(relays)
-      ? relays.map((r) => (typeof r === "string" ? r.trim() : "")).filter(Boolean)
-      : [];
-    const unique = Array.from(new Set(normalized));
-    unique.sort();
-    return unique;
-  }, []);
+  const normalizeRelayList = useCallback(
+    (relays: string[] | null | undefined) => normalizeRelayListSorted(relays) ?? [],
+    [],
+  );
 
   const sanitizeSettingsForBackup = useCallback(
     (raw: Settings | Record<string, unknown>): Partial<Settings> =>
