@@ -22,3 +22,8 @@ test("event update/delete support optional board resolution", () => {
   assert.match(CLI_SOURCE, /runtime\.deleteEvent\(eventId,\s*boardId\)/);
   assert.match(CLI_SOURCE, /const boardId = opts\.board \? await resolveBoardId\(opts\.board, config\) : undefined;/);
 });
+
+test("event delete supports json output", () => {
+  assert.match(CLI_SOURCE, /\.command\("delete\s*<eventId>"\)[\s\S]*?\.option\("--json",\s*"Output as JSON"\)/);
+  assert.match(CLI_SOURCE, /if \(opts\.json\) renderJson\(deleted\);/);
+});

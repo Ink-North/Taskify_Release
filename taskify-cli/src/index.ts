@@ -449,6 +449,7 @@ eventCmd
   .command("delete <eventId>")
   .description("Delete an event")
   .option("--board <id|name>", "Board the event belongs to (optional; scans all if omitted)")
+  .option("--json", "Output as JSON")
   .action(async (eventId: string, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
@@ -459,7 +460,8 @@ eventCmd
         console.error(chalk.red(`Event not found: ${eventId}`));
         process.exit(1);
       }
-      console.log(chalk.green(`✓ Deleted event: ${deleted.title}`));
+      if (opts.json) renderJson(deleted);
+      else console.log(chalk.green(`✓ Deleted event: ${deleted.title}`));
       process.exit(0);
     } catch (err) {
       console.error(chalk.red(String(err)));
