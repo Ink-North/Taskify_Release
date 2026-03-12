@@ -16,3 +16,9 @@ test("event command group registers expected CRUD subcommands", () => {
   assert.match(CLI_SOURCE, /eventCmd[\s\S]*?\.command\("update\s*<eventId>"\)/);
   assert.match(CLI_SOURCE, /eventCmd[\s\S]*?\.command\("delete\s*<eventId>"\)/);
 });
+
+test("event update/delete support optional board resolution", () => {
+  assert.match(CLI_SOURCE, /runtime\.updateEvent\(eventId,\s*boardId,/);
+  assert.match(CLI_SOURCE, /runtime\.deleteEvent\(eventId,\s*boardId\)/);
+  assert.match(CLI_SOURCE, /const boardId = opts\.board \? await resolveBoardId\(opts\.board, config\) : undefined;/);
+});

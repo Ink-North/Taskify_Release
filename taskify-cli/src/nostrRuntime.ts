@@ -243,8 +243,8 @@ export type NostrRuntime = {
     endTzid?: string;
     description?: string;
   }): Promise<FullEventRecord>;
-  updateEvent(eventId: string, boardId: string, patch: Partial<Pick<FullEventRecord, "title" | "startDate" | "endDate" | "startISO" | "endISO" | "startTzid" | "endTzid" | "description">>): Promise<FullEventRecord | null>;
-  deleteEvent(eventId: string, boardId: string): Promise<FullEventRecord | null>;
+  updateEvent(eventId: string, boardId: string | undefined, patch: Partial<Pick<FullEventRecord, "title" | "startDate" | "endDate" | "startISO" | "endISO" | "startTzid" | "endTzid" | "description">>): Promise<FullEventRecord | null>;
+  deleteEvent(eventId: string, boardId: string | undefined): Promise<FullEventRecord | null>;
   syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }>;
   createTask(input: AgentTaskCreateInput): Promise<FullTaskRecord>;
   createTaskFull(input: ExtendedCreateInput): Promise<FullTaskRecord>;
@@ -697,18 +697,34 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       };
     },
 
-    async updateEvent(eventId: string, boardId: string, patch): Promise<FullEventRecord | null> {
+    async updateEvent(eventId: string, boardId: string | undefined, patch): Promise<FullEventRecord | null> {
       await ensureConnected();
-      const entry = resolveBoardEntry(config, boardId);
-      if (!entry) return null;
-      const resolvedId = await resolveTaskId(entry.id, eventId);
-      if (!resolvedId) return null;
-      const events = await fetchBoardEvents(entry.id, resolvedId);
-      if (events.size === 0) return null;
-      const [evt] = events;
-      const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
-      if (!existing || existing.deleted) return null;
+      const boards = boardId
+        ? (() => {
+            const entry = resolveBoardEntry(config, boardId);
+            return entry ? [entry] : [];
+          })()
+        : [...config.boards];
+      if (boards.length === 0) return null;
 
+      const matches: Array<{ entry: (typeof boards)[number]; resolvedId: string; existing: FullEventRecord }> = [];
+      for (const entry of boards) {
+        const resolvedId = await resolveTaskId(entry.id, eventId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardEvents(entry.id, resolvedId);
+        if (events.size === 0) continue;
+        const [evt] = events;
+        const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
+        if (!existing || existing.deleted) continue;
+        matches.push({ entry, resolvedId, existing });
+      }
+
+      if (matches.length === 0) return null;
+      if (!boardId && matches.length > 1) {
+        throw new Error(`Event id matches multiple boards; specify --board (matches: ${matches.map((m) => m.entry.name).join(", ")})`);
+      }
+
+      const { entry, resolvedId, existing } = matches[0];
       const payload = normalizeCalendarMutationPayload(
         {
           title: patch.title ?? existing.title,
@@ -743,17 +759,34 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       };
     },
 
-    async deleteEvent(eventId: string, boardId: string): Promise<FullEventRecord | null> {
+    async deleteEvent(eventId: string, boardId: string | undefined): Promise<FullEventRecord | null> {
       await ensureConnected();
-      const entry = resolveBoardEntry(config, boardId);
-      if (!entry) return null;
-      const resolvedId = await resolveTaskId(entry.id, eventId);
-      if (!resolvedId) return null;
-      const events = await fetchBoardEvents(entry.id, resolvedId);
-      if (events.size === 0) return null;
-      const [evt] = events;
-      const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
-      if (!existing) return null;
+      const boards = boardId
+        ? (() => {
+            const entry = resolveBoardEntry(config, boardId);
+            return entry ? [entry] : [];
+          })()
+        : [...config.boards];
+      if (boards.length === 0) return null;
+
+      const matches: Array<{ entry: (typeof boards)[number]; resolvedId: string; existing: FullEventRecord }> = [];
+      for (const entry of boards) {
+        const resolvedId = await resolveTaskId(entry.id, eventId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardEvents(entry.id, resolvedId);
+        if (events.size === 0) continue;
+        const [evt] = events;
+        const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
+        if (!existing || existing.deleted) continue;
+        matches.push({ entry, resolvedId, existing });
+      }
+
+      if (matches.length === 0) return null;
+      if (!boardId && matches.length > 1) {
+        throw new Error(`Event id matches multiple boards; specify --board (matches: ${matches.map((m) => m.entry.name).join(", ")})`);
+      }
+
+      const { entry, resolvedId, existing } = matches[0];
       const payload = normalizeCalendarDeleteMutationPayload(
         {
           title: existing.title,

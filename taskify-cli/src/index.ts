@@ -406,7 +406,7 @@ eventCmd
 eventCmd
   .command("update <eventId>")
   .description("Update an event")
-  .option("--board <id|name>", "Board the event belongs to")
+  .option("--board <id|name>", "Board the event belongs to (optional; scans all if omitted)")
   .option("--title <text>", "Update title")
   .option("--description <text>", "Update description")
   .option("--start-date <YYYY-MM-DD>", "Update date event start")
@@ -417,9 +417,9 @@ eventCmd
   .option("--json", "Output as JSON")
   .action(async (eventId: string, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
-    const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     try {
+      const boardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
       const updated = await runtime.updateEvent(eventId, boardId, {
         title: opts.title,
         description: opts.description,
@@ -448,12 +448,12 @@ eventCmd
 eventCmd
   .command("delete <eventId>")
   .description("Delete an event")
-  .option("--board <id|name>", "Board the event belongs to")
+  .option("--board <id|name>", "Board the event belongs to (optional; scans all if omitted)")
   .action(async (eventId: string, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
-    const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     try {
+      const boardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
       const deleted = await runtime.deleteEvent(eventId, boardId);
       if (!deleted) {
         console.error(chalk.red(`Event not found: ${eventId}`));
