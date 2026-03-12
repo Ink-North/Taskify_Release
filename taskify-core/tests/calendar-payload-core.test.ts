@@ -25,3 +25,25 @@ test("normalizeCalendarEventPayload allows deleted payload with minimal fields",
   assert.ok(out);
   assert.equal(out?.deleted, true);
 });
+
+test("normalizeCalendarEventPayload drops non-increasing date end", () => {
+  const out = normalizeCalendarEventPayload({
+    kind: "date",
+    title: "All day",
+    startDate: "2026-03-12",
+    endDate: "2026-03-12",
+  });
+  assert.ok(out);
+  assert.equal(out?.endDate, undefined);
+});
+
+test("normalizeCalendarEventPayload drops non-increasing timed end", () => {
+  const out = normalizeCalendarEventPayload({
+    kind: "time",
+    title: "Meeting",
+    startISO: "2026-03-12T14:00:00.000Z",
+    endISO: "2026-03-12T14:00:00.000Z",
+  });
+  assert.ok(out);
+  assert.equal(out?.endISO, undefined);
+});

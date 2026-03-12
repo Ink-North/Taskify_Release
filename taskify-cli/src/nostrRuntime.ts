@@ -700,7 +700,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
       if (!existing || existing.deleted) return null;
 
-      const payload = {
+      const merged = {
         title: patch.title ?? existing.title,
         kind: existing.kind,
         startDate: patch.startDate ?? existing.startDate,
@@ -710,22 +710,26 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         startTzid: patch.startTzid ?? existing.startTzid,
         endTzid: patch.endTzid ?? existing.endTzid,
         description: patch.description ?? existing.description,
-        createdAt: existing.createdAt ? existing.createdAt * 1000 : Date.now(),
       };
-      await publishTaskEvent(entry.id, resolvedId, payload, "open", "");
+      const payload = normalizeCalendarEventPayload(merged);
+      if (!payload) return null;
+      await publishTaskEvent(entry.id, resolvedId, {
+        ...payload,
+        createdAt: existing.createdAt ? existing.createdAt * 1000 : Date.now(),
+      }, "open", "");
       return {
         id: resolvedId,
         boardId: entry.id,
         boardName: entry.name,
-        title: String(payload.title ?? ""),
-        kind: existing.kind,
-        startDate: payload.startDate as string | undefined,
-        endDate: payload.endDate as string | undefined,
-        startISO: payload.startISO as string | undefined,
-        endISO: payload.endISO as string | undefined,
-        startTzid: payload.startTzid as string | undefined,
-        endTzid: payload.endTzid as string | undefined,
-        description: payload.description as string | undefined,
+        title: payload.title ?? "",
+        kind: payload.kind === "time" ? "time" : "date",
+        startDate: payload.startDate,
+        endDate: payload.endDate,
+        startISO: payload.startISO,
+        endISO: payload.endISO,
+        startTzid: payload.startTzid,
+        endTzid: payload.endTzid,
+        description: payload.description,
         createdAt: existing.createdAt,
         updatedAt: nowISO(),
       };

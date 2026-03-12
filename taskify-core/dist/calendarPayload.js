@@ -65,5 +65,16 @@ export function normalizeCalendarEventPayload(raw) {
         if (payload.kind === "time" && !payload.startISO)
             return null;
     }
+    // PWA-aligned range guards
+    if (payload.kind === "date" && payload.startDate && payload.endDate && payload.endDate <= payload.startDate) {
+        delete payload.endDate;
+    }
+    if (payload.kind === "time" && payload.startISO && payload.endISO) {
+        const startMs = Date.parse(payload.startISO);
+        const endMs = Date.parse(payload.endISO);
+        if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) {
+            delete payload.endISO;
+        }
+    }
     return payload;
 }
