@@ -64,7 +64,7 @@ Build `taskify-core` into the single shared domain/protocol layer consumed by bo
 **Tests**
 - fixtures for task/board/contact edge cases
 
-### Wave 3: Share + backup contracts
+### Wave 3: Share + backup contracts ✅ (completed on `feat/core-wave3-share-backup`)
 **Source candidates**
 - `taskify-pwa/src/lib/shareInbox.ts` (envelope contracts only)
 - `taskify-pwa/src/lib/app/nostrBackupDomain.ts`

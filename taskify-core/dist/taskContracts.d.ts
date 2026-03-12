@@ -35,8 +35,6 @@ export type InboxSender = {
     npub?: string;
 };
 export type InboxItemStatus = "pending" | "accepted" | "declined" | "tentative" | "deleted" | "read";
-export type SharedContactPayload = Record<string, unknown>;
-export type SharedTaskPayload = Record<string, unknown>;
 export type TaskDocument = Record<string, unknown>;
 export type InboxItem = {
     type: "board";
@@ -49,14 +47,14 @@ export type InboxItem = {
     dmEventId?: string;
 } | {
     type: "contact";
-    contact: SharedContactPayload;
+    contact: Record<string, unknown>;
     sender: InboxSender;
     receivedAt: string;
     status?: InboxItemStatus;
     dmEventId?: string;
 } | {
     type: "task";
-    task: SharedTaskPayload;
+    task: Record<string, unknown>;
     sender: InboxSender;
     receivedAt: string;
     status?: InboxItemStatus;
