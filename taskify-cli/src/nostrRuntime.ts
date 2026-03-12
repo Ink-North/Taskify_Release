@@ -658,7 +658,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       await ensureConnected();
       const id = crypto.randomUUID();
       const now = Date.now();
-      const payload = {
+      const normalized = normalizeCalendarEventPayload({
         title: input.title,
         kind: input.kind,
         startDate: input.startDate,
@@ -668,21 +668,27 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         startTzid: input.startTzid,
         endTzid: input.endTzid,
         description: input.description,
+      });
+      if (!normalized) {
+        throw new Error("Invalid event payload");
+      }
+      const payload = {
+        ...normalized,
         createdAt: now,
       };
       await publishTaskEvent(input.boardId, id, payload, "open", "");
       return {
         id,
         boardId: input.boardId,
-        title: input.title,
-        kind: input.kind,
-        startDate: input.startDate,
-        endDate: input.endDate,
-        startISO: input.startISO,
-        endISO: input.endISO,
-        startTzid: input.startTzid,
-        endTzid: input.endTzid,
-        description: input.description,
+        title: normalized.title ?? "",
+        kind: normalized.kind === "time" ? "time" : "date",
+        startDate: normalized.startDate,
+        endDate: normalized.endDate,
+        startISO: normalized.startISO,
+        endISO: normalized.endISO,
+        startTzid: normalized.startTzid,
+        endTzid: normalized.endTzid,
+        description: normalized.description,
         createdAt: Math.floor(now / 1000),
         updatedAt: new Date(now).toISOString(),
       };
