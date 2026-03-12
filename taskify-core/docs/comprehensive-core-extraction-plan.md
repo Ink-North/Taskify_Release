@@ -50,7 +50,7 @@ Build `taskify-core` into the single shared domain/protocol layer consumed by bo
 - PWA + CLI build and tests pass
 - No behavior change in event CRUD and parsing semantics
 
-### Wave 2: Task/board/contact contracts
+### Wave 2: Task/board/contact contracts ✅ (completed on `feat/core-wave2-contracts`)
 **Source candidates**
 - `taskify-pwa/src/domains/tasks/taskTypes.ts`
 - `taskify-pwa/src/domains/tasks/taskUtils.ts`
