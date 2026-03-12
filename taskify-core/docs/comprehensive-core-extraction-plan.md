@@ -24,7 +24,7 @@ Build `taskify-core` into the single shared domain/protocol layer consumed by bo
 
 ## Extraction Waves
 
-### Wave 1 (Start Here): Calendar protocol/domain parity
+### Wave 1 (Start Here): Calendar protocol/domain parity ✅ (completed in branch sequence)
 **Source candidates**
 - `taskify-pwa/src/lib/privateCalendar.ts` (pure protocol layer only)
 - `taskify-pwa/src/lib/app/weekRecurrenceDomain.ts`
