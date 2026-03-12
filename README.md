@@ -49,6 +49,10 @@ Taskify_Release/
 │   ├── public/                # Static assets, PWA manifest
 │   └── package.json           # PWA dependencies (React 19, NDK, Cashu, nostr-tools)
 │
+├── taskify-core/              # Shared pure domain contracts/normalizers/utilities
+├── taskify-runtime-nostr/     # Shared Nostr runtime transport/orchestration modules
+├── taskify-cli/               # CLI surface built on shared core/runtime packages
+│
 ├── worker/                    # Cloudflare Worker (push, reminders, backups, static assets)
 │   ├── src/index.ts           # Worker entry — all backend logic in one file
 │   └── migrations/            # D1 SQL migrations

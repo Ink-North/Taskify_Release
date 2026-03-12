@@ -8,7 +8,7 @@ Minimize drift across CLI and PWA by centralizing shared behavior, while keeping
 ### `taskify-core` (pure domain)
 Use for platform-agnostic business/domain logic only:
 - contracts and payload normalization
-- calendar/task/share/backup domain rules
+- calendar/task/share/contact/backup domain rules
 - pure parsing/validation helpers
 - pure crypto primitives and deterministic transforms
 
@@ -22,7 +22,8 @@ Must not own:
 Use for Nostr runtime orchestration shared by multiple apps:
 - board key derivation manager
 - relay URL normalization
-- (future) session/publisher/subscription orchestration extracted from PWA
+- session/publisher/subscription orchestration extracted from PWA
+- relay auth/health/info cache and runtime composition primitives
 
 Must not own:
 - PWA-only UX/state wiring
