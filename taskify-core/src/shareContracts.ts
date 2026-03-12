@@ -96,7 +96,7 @@ function normalizeRelayList(list?: string[] | null): string[] | undefined {
   return relays.length ? Array.from(new Set(relays)) : undefined;
 }
 
-function normalizeTaskDueISO(value: unknown): string | undefined {
+export function normalizeTaskDueISO(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   if (!trimmed) return undefined;
@@ -105,7 +105,7 @@ function normalizeTaskDueISO(value: unknown): string | undefined {
   return parsed.toISOString();
 }
 
-function normalizeTaskTimeZone(value: unknown): string | undefined {
+export function normalizeTaskTimeZone(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   if (!trimmed) return undefined;
@@ -117,7 +117,7 @@ function normalizeTaskTimeZone(value: unknown): string | undefined {
   }
 }
 
-function normalizeTaskPriority(value: unknown): number | undefined {
+export function normalizeTaskPriority(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
     const rounded = Math.round(value);
     if (rounded >= 1 && rounded <= 3) return rounded;
@@ -131,7 +131,7 @@ function normalizeTaskPriority(value: unknown): number | undefined {
   return undefined;
 }
 
-function normalizeTaskReminders(value: unknown): Array<string | number> | undefined {
+export function normalizeTaskReminders(value: unknown): Array<string | number> | undefined {
   if (!Array.isArray(value)) return undefined;
   const reminders: Array<string | number> = [];
   value.forEach((entry) => {
@@ -145,7 +145,7 @@ function normalizeTaskReminders(value: unknown): Array<string | number> | undefi
   return reminders.length ? reminders : undefined;
 }
 
-function normalizeTaskSubtasks(value: unknown): SharedTaskPayload["subtasks"] | undefined {
+export function normalizeTaskSubtasks(value: unknown): SharedTaskPayload["subtasks"] | undefined {
   if (!Array.isArray(value)) return undefined;
   const subtasks = value
     .map((entry) => {
@@ -159,20 +159,20 @@ function normalizeTaskSubtasks(value: unknown): SharedTaskPayload["subtasks"] | 
   return subtasks.length ? subtasks : undefined;
 }
 
-function normalizeTaskRecurrence(value: unknown): SharedTaskPayload["recurrence"] | undefined {
+export function normalizeTaskRecurrence(value: unknown): SharedTaskPayload["recurrence"] | undefined {
   if (!value || typeof value !== "object") return undefined;
   const rawType = (value as any).type;
   if (typeof rawType !== "string" || !rawType.trim()) return undefined;
   return { ...(value as any), type: rawType.trim() };
 }
 
-function normalizeTaskId(value: unknown): string | undefined {
+export function normalizeTaskId(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed || undefined;
 }
 
-function normalizeTaskAssignmentStatus(value: unknown): "pending" | "accepted" | "declined" | "tentative" | undefined {
+export function normalizeTaskAssignmentStatus(value: unknown): "pending" | "accepted" | "declined" | "tentative" | undefined {
   if (value === "pending" || value === "accepted" || value === "declined" || value === "tentative") return value;
   if (value === "maybe") return "tentative";
   return undefined;
@@ -186,7 +186,7 @@ function toRawHexPubkey(value: string): string | null {
   return null;
 }
 
-function normalizeTaskAssignees(value: unknown): SharedTaskPayload["assignees"] | undefined {
+export function normalizeTaskAssignees(value: unknown): SharedTaskPayload["assignees"] | undefined {
   if (!Array.isArray(value)) return undefined;
   const assignees: NonNullable<SharedTaskPayload["assignees"]> = [];
   const seen = new Set<string>();
@@ -204,18 +204,18 @@ function normalizeTaskAssignees(value: unknown): SharedTaskPayload["assignees"] 
   return assignees.length ? assignees : undefined;
 }
 
-function normalizeTaskAssignmentFlag(value: unknown): boolean | undefined {
+export function normalizeTaskAssignmentFlag(value: unknown): boolean | undefined {
   if (typeof value !== "boolean") return undefined;
   return value;
 }
 
-function normalizeTaskAssignmentResponseStatus(value: unknown): SharedTaskAssignmentResponsePayload["status"] | undefined {
+export function normalizeTaskAssignmentResponseStatus(value: unknown): SharedTaskAssignmentResponsePayload["status"] | undefined {
   if (value === "accepted" || value === "declined" || value === "tentative") return value;
   if (value === "maybe") return "tentative";
   return undefined;
 }
 
-function normalizeTaskAssignmentResponseTime(value: unknown): string | undefined {
+export function normalizeTaskAssignmentResponseTime(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   if (!trimmed) return undefined;
