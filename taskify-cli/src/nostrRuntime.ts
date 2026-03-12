@@ -9,6 +9,7 @@ import type { TaskifyConfig, BoardEntry } from "./config.js";
 import { saveConfig } from "./config.js";
 import { readCache, writeCache, isCacheFresh, type CachedTask } from "./taskCache.js";
 import { pickBestBoardMeta } from "./shared/boardMeta.js";
+import { normalizeCalendarEventPayload } from "taskify-core";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -323,36 +324,39 @@ async function parseDecryptedCalendarEvent(
   const entityTag = event.tags.find((t) => t[0] === "entity");
   try {
     const plaintext = await decryptContent(boardId, event.content);
-    const payload = JSON.parse(plaintext) as Record<string, unknown>;
+    const raw = JSON.parse(plaintext) as Record<string, unknown>;
     const dTag = event.tags.find((t) => t[0] === "d");
     const id = dTag?.[1] ?? "";
     if (!id) return null;
 
     const inferredEvent =
       entityTag?.[1] === "event" ||
-      payload.kind === "date" ||
-      payload.kind === "time" ||
-      typeof payload.startDate === "string" ||
-      typeof payload.startISO === "string";
+      raw.kind === "date" ||
+      raw.kind === "time" ||
+      typeof raw.startDate === "string" ||
+      typeof raw.startISO === "string";
     if (!inferredEvent) return null;
 
+    const payload = normalizeCalendarEventPayload(raw);
+    if (!payload) return null;
     const kind = payload.kind === "time" ? "time" : "date";
+
     return {
       id,
       boardId,
       boardName,
-      title: (payload.title as string) ?? "",
+      title: payload.title ?? "",
       kind,
-      startDate: typeof payload.startDate === "string" ? payload.startDate : undefined,
-      endDate: typeof payload.endDate === "string" ? payload.endDate : undefined,
-      startISO: typeof payload.startISO === "string" ? payload.startISO : undefined,
-      endISO: typeof payload.endISO === "string" ? payload.endISO : undefined,
-      startTzid: typeof payload.startTzid === "string" ? payload.startTzid : undefined,
-      endTzid: typeof payload.endTzid === "string" ? payload.endTzid : undefined,
-      description: typeof payload.description === "string" ? payload.description : undefined,
+      startDate: payload.startDate,
+      endDate: payload.endDate,
+      startISO: payload.startISO,
+      endISO: payload.endISO,
+      startTzid: payload.startTzid,
+      endTzid: payload.endTzid,
+      description: payload.description,
       createdAt: event.created_at,
       updatedAt: event.created_at ? new Date(event.created_at * 1000).toISOString() : undefined,
-      deleted: statusVal === "deleted",
+      deleted: statusVal === "deleted" || payload.deleted === true,
     };
   } catch {
     return null;
