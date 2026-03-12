@@ -4,6 +4,7 @@ import { LS_LIGHTNING_CONTACTS } from "../localStorageKeys";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../storage/taskifyDb";
 import { normalizeNostrPubkey } from "./nostr";
+import { normalizeRelayList } from "taskify-core";
 
 export type ContactProfile = {
   username?: string;
@@ -94,14 +95,6 @@ function normalizeUsername(value: unknown): string | undefined {
 function normalizeStringOrNull(value: unknown): string | undefined {
   const normalized = normalizeString(value).trim();
   return normalized ? normalized : undefined;
-}
-
-function normalizeRelayList(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const relays = value
-    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-    .filter(Boolean);
-  return relays.length ? Array.from(new Set(relays)) : undefined;
 }
 
 export function makeContactId(): string {

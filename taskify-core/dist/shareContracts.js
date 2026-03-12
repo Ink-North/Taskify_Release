@@ -18,7 +18,7 @@ function normalizeRelayList(list) {
     const relays = list.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean);
     return relays.length ? Array.from(new Set(relays)) : undefined;
 }
-function normalizeTaskDueISO(value) {
+export function normalizeTaskDueISO(value) {
     if (typeof value !== "string")
         return undefined;
     const trimmed = value.trim();
@@ -29,7 +29,7 @@ function normalizeTaskDueISO(value) {
         return undefined;
     return parsed.toISOString();
 }
-function normalizeTaskTimeZone(value) {
+export function normalizeTaskTimeZone(value) {
     if (typeof value !== "string")
         return undefined;
     const trimmed = value.trim();
@@ -43,7 +43,7 @@ function normalizeTaskTimeZone(value) {
         return undefined;
     }
 }
-function normalizeTaskPriority(value) {
+export function normalizeTaskPriority(value) {
     if (typeof value === "number" && Number.isFinite(value)) {
         const rounded = Math.round(value);
         if (rounded >= 1 && rounded <= 3)
@@ -59,7 +59,7 @@ function normalizeTaskPriority(value) {
     }
     return undefined;
 }
-function normalizeTaskReminders(value) {
+export function normalizeTaskReminders(value) {
     if (!Array.isArray(value))
         return undefined;
     const reminders = [];
@@ -75,7 +75,7 @@ function normalizeTaskReminders(value) {
     });
     return reminders.length ? reminders : undefined;
 }
-function normalizeTaskSubtasks(value) {
+export function normalizeTaskSubtasks(value) {
     if (!Array.isArray(value))
         return undefined;
     const subtasks = value
@@ -91,7 +91,7 @@ function normalizeTaskSubtasks(value) {
         .filter((entry) => !!entry);
     return subtasks.length ? subtasks : undefined;
 }
-function normalizeTaskRecurrence(value) {
+export function normalizeTaskRecurrence(value) {
     if (!value || typeof value !== "object")
         return undefined;
     const rawType = value.type;
@@ -99,13 +99,13 @@ function normalizeTaskRecurrence(value) {
         return undefined;
     return { ...value, type: rawType.trim() };
 }
-function normalizeTaskId(value) {
+export function normalizeTaskId(value) {
     if (typeof value !== "string")
         return undefined;
     const trimmed = value.trim();
     return trimmed || undefined;
 }
-function normalizeTaskAssignmentStatus(value) {
+export function normalizeTaskAssignmentStatus(value) {
     if (value === "pending" || value === "accepted" || value === "declined" || value === "tentative")
         return value;
     if (value === "maybe")
@@ -122,7 +122,7 @@ function toRawHexPubkey(value) {
         return trimmed;
     return null;
 }
-function normalizeTaskAssignees(value) {
+export function normalizeTaskAssignees(value) {
     if (!Array.isArray(value))
         return undefined;
     const assignees = [];
@@ -142,19 +142,19 @@ function normalizeTaskAssignees(value) {
     });
     return assignees.length ? assignees : undefined;
 }
-function normalizeTaskAssignmentFlag(value) {
+export function normalizeTaskAssignmentFlag(value) {
     if (typeof value !== "boolean")
         return undefined;
     return value;
 }
-function normalizeTaskAssignmentResponseStatus(value) {
+export function normalizeTaskAssignmentResponseStatus(value) {
     if (value === "accepted" || value === "declined" || value === "tentative")
         return value;
     if (value === "maybe")
         return "tentative";
     return undefined;
 }
-function normalizeTaskAssignmentResponseTime(value) {
+export function normalizeTaskAssignmentResponseTime(value) {
     if (typeof value !== "string")
         return undefined;
     const trimmed = value.trim();

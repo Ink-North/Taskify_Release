@@ -5,3 +5,6 @@ export * from "./PublishCoordinator.js";
 export * from "./CursorStore.js";
 export * from "./SubscriptionManager.js";
 export * from "./RuntimeNostrSession.js";
+export * from "./RelayHealth.js";
+export * from "./RelayInfoCache.js";
+export * from "./RelayAuth.js";
