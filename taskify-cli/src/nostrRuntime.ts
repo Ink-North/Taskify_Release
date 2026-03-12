@@ -9,7 +9,7 @@ import type { TaskifyConfig, BoardEntry } from "./config.js";
 import { saveConfig } from "./config.js";
 import { readCache, writeCache, isCacheFresh, type CachedTask } from "./taskCache.js";
 import { pickBestBoardMeta } from "./shared/boardMeta.js";
-import { normalizeCalendarEventPayload } from "taskify-core";
+import { normalizeCalendarEventPayload, normalizeCalendarMutationPayload } from "taskify-core";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -658,37 +658,36 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       await ensureConnected();
       const id = crypto.randomUUID();
       const now = Date.now();
-      const normalized = normalizeCalendarEventPayload({
-        title: input.title,
-        kind: input.kind,
-        startDate: input.startDate,
-        endDate: input.endDate,
-        startISO: input.startISO,
-        endISO: input.endISO,
-        startTzid: input.startTzid,
-        endTzid: input.endTzid,
-        description: input.description,
-      });
-      if (!normalized) {
+      const payload = normalizeCalendarMutationPayload(
+        {
+          title: input.title,
+          kind: input.kind,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          startISO: input.startISO,
+          endISO: input.endISO,
+          startTzid: input.startTzid,
+          endTzid: input.endTzid,
+          description: input.description,
+        },
+        now,
+      );
+      if (!payload) {
         throw new Error("Invalid event payload");
       }
-      const payload = {
-        ...normalized,
-        createdAt: now,
-      };
       await publishTaskEvent(input.boardId, id, payload, "open", "");
       return {
         id,
         boardId: input.boardId,
-        title: normalized.title ?? "",
-        kind: normalized.kind === "time" ? "time" : "date",
-        startDate: normalized.startDate,
-        endDate: normalized.endDate,
-        startISO: normalized.startISO,
-        endISO: normalized.endISO,
-        startTzid: normalized.startTzid,
-        endTzid: normalized.endTzid,
-        description: normalized.description,
+        title: payload.title ?? "",
+        kind: payload.kind === "time" ? "time" : "date",
+        startDate: payload.startDate,
+        endDate: payload.endDate,
+        startISO: payload.startISO,
+        endISO: payload.endISO,
+        startTzid: payload.startTzid,
+        endTzid: payload.endTzid,
+        description: payload.description,
         createdAt: Math.floor(now / 1000),
         updatedAt: new Date(now).toISOString(),
       };
@@ -706,23 +705,22 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
       if (!existing || existing.deleted) return null;
 
-      const merged = {
-        title: patch.title ?? existing.title,
-        kind: existing.kind,
-        startDate: patch.startDate ?? existing.startDate,
-        endDate: patch.endDate ?? existing.endDate,
-        startISO: patch.startISO ?? existing.startISO,
-        endISO: patch.endISO ?? existing.endISO,
-        startTzid: patch.startTzid ?? existing.startTzid,
-        endTzid: patch.endTzid ?? existing.endTzid,
-        description: patch.description ?? existing.description,
-      };
-      const payload = normalizeCalendarEventPayload(merged);
+      const payload = normalizeCalendarMutationPayload(
+        {
+          title: patch.title ?? existing.title,
+          kind: existing.kind,
+          startDate: patch.startDate ?? existing.startDate,
+          endDate: patch.endDate ?? existing.endDate,
+          startISO: patch.startISO ?? existing.startISO,
+          endISO: patch.endISO ?? existing.endISO,
+          startTzid: patch.startTzid ?? existing.startTzid,
+          endTzid: patch.endTzid ?? existing.endTzid,
+          description: patch.description ?? existing.description,
+        },
+        existing.createdAt ? existing.createdAt * 1000 : Date.now(),
+      );
       if (!payload) return null;
-      await publishTaskEvent(entry.id, resolvedId, {
-        ...payload,
-        createdAt: existing.createdAt ? existing.createdAt * 1000 : Date.now(),
-      }, "open", "");
+      await publishTaskEvent(entry.id, resolvedId, payload, "open", "");
       return {
         id: resolvedId,
         boardId: entry.id,
