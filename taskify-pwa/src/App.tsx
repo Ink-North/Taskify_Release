@@ -6,7 +6,11 @@ import { createPortal } from "react-dom";
 import { QRCodeCanvas } from "qrcode.react";
 import QrScannerLib from "qr-scanner";
 import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
-import { normalizeCalendarDeleteMutationPayload, normalizeCalendarMutationPayload } from "taskify-core";
+import {
+  normalizeCalendarDeleteMutationPayload,
+  normalizeCalendarMutationPayload,
+  normalizeRelayListSorted,
+} from "taskify-core";
 const loadCashuWalletModal = () => import("./components/CashuWalletModal");
 const CashuWalletModal = lazy(loadCashuWalletModal);
 import {
@@ -6993,14 +6997,10 @@ export default function App() {
     return next;
   }, []);
   const [nostrRefresh, setNostrRefresh] = useState(0);
-  const normalizeRelayList = useCallback((relays: string[] | null | undefined) => {
-    const normalized = Array.isArray(relays)
-      ? relays.map((r) => (typeof r === "string" ? r.trim() : "")).filter(Boolean)
-      : [];
-    const unique = Array.from(new Set(normalized));
-    unique.sort();
-    return unique;
-  }, []);
+  const normalizeRelayList = useCallback(
+    (relays: string[] | null | undefined) => normalizeRelayListSorted(relays) ?? [],
+    [],
+  );
 
   const sanitizeSettingsForBackup = useCallback(
     (raw: Settings | Record<string, unknown>): Partial<Settings> =>

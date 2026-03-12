@@ -345,11 +345,5 @@ function toRelayList(input: unknown): string[] {
   } else if (input && typeof input === "object" && (input as any)[Symbol.iterator]) {
     candidates = Array.from(input as Iterable<unknown>);
   }
-  return Array.from(
-    new Set(
-      candidates
-        .map((r) => (typeof r === "string" ? r.trim() : ""))
-        .filter(Boolean),
-    ),
-  );
+  return normalizeRelayList(candidates) ?? [];
 }
