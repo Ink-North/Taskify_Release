@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeCalendarMutationPayload } from "../dist/mutationContracts.js";
+import {
+  normalizeCalendarDeleteMutationPayload,
+  normalizeCalendarMutationPayload,
+} from "../dist/mutationContracts.js";
 
 test("normalizeCalendarMutationPayload returns normalized payload with createdAt", () => {
   const out = normalizeCalendarMutationPayload(
@@ -26,4 +29,18 @@ test("normalizeCalendarMutationPayload returns null for invalid event payload", 
     123456,
   );
   assert.equal(out, null);
+});
+
+test("normalizeCalendarDeleteMutationPayload marks deleted and preserves minimal fields", () => {
+  const out = normalizeCalendarDeleteMutationPayload(
+    {
+      kind: "time",
+      title: "Standup",
+      startISO: "2026-03-12T15:00:00.000Z",
+    },
+    123456,
+  );
+  assert.ok(out);
+  assert.equal(out?.deleted, true);
+  assert.equal(out?.createdAt, 123456);
 });

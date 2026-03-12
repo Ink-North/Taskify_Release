@@ -27,3 +27,16 @@ export function normalizeCalendarMutationPayload(
     createdAt: createdAtMs,
   };
 }
+
+export function normalizeCalendarDeleteMutationPayload(
+  input: CalendarMutationInput,
+  createdAtMs: number,
+): CalendarMutationResult | null {
+  const normalized = normalizeCalendarEventPayload({ ...input, deleted: true });
+  if (!normalized) return null;
+  return {
+    ...normalized,
+    deleted: true,
+    createdAt: createdAtMs,
+  };
+}

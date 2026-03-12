@@ -14,3 +14,4 @@ export type CalendarMutationResult = CalendarNormalizedPayload & {
     createdAt: number;
 };
 export declare function normalizeCalendarMutationPayload(input: CalendarMutationInput, createdAtMs: number): CalendarMutationResult | null;
+export declare function normalizeCalendarDeleteMutationPayload(input: CalendarMutationInput, createdAtMs: number): CalendarMutationResult | null;

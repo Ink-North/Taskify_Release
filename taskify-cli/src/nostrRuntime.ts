@@ -9,7 +9,11 @@ import type { TaskifyConfig, BoardEntry } from "./config.js";
 import { saveConfig } from "./config.js";
 import { readCache, writeCache, isCacheFresh, type CachedTask } from "./taskCache.js";
 import { pickBestBoardMeta } from "./shared/boardMeta.js";
-import { normalizeCalendarEventPayload, normalizeCalendarMutationPayload } from "taskify-core";
+import {
+  normalizeCalendarDeleteMutationPayload,
+  normalizeCalendarEventPayload,
+  normalizeCalendarMutationPayload,
+} from "taskify-core";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -750,18 +754,22 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const [evt] = events;
       const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
       if (!existing) return null;
-      await publishTaskEvent(entry.id, resolvedId, {
-        title: existing.title,
-        kind: existing.kind,
-        startDate: existing.startDate,
-        endDate: existing.endDate,
-        startISO: existing.startISO,
-        endISO: existing.endISO,
-        startTzid: existing.startTzid,
-        endTzid: existing.endTzid,
-        description: existing.description,
-        createdAt: existing.createdAt ? existing.createdAt * 1000 : Date.now(),
-      }, "deleted", "");
+      const payload = normalizeCalendarDeleteMutationPayload(
+        {
+          title: existing.title,
+          kind: existing.kind,
+          startDate: existing.startDate,
+          endDate: existing.endDate,
+          startISO: existing.startISO,
+          endISO: existing.endISO,
+          startTzid: existing.startTzid,
+          endTzid: existing.endTzid,
+          description: existing.description,
+        },
+        existing.createdAt ? existing.createdAt * 1000 : Date.now(),
+      );
+      if (!payload) return null;
+      await publishTaskEvent(entry.id, resolvedId, payload, "deleted", "");
       return { ...existing, deleted: true };
     },
 
