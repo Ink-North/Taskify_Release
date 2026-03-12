@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { QRCodeCanvas } from "qrcode.react";
 import QrScannerLib from "qr-scanner";
 import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
+import { normalizeCalendarDeleteMutationPayload, normalizeCalendarMutationPayload } from "taskify-core";
 const loadCashuWalletModal = () => import("./components/CashuWalletModal");
 const CashuWalletModal = lazy(loadCashuWalletModal);
 import {
@@ -12238,9 +12239,40 @@ export default function App() {
     };
     if (createdBy) base.createdBy = createdBy;
     if (lastEditedBy) base.lastEditedBy = lastEditedBy;
+    const normalized = deleted
+      ? normalizeCalendarDeleteMutationPayload(
+          {
+            title: event.title || "Untitled",
+            kind: event.kind,
+            startDate: event.kind === "date" ? event.startDate : undefined,
+            endDate: event.kind === "date" ? event.endDate : undefined,
+            startISO: event.kind === "time" ? event.startISO : undefined,
+            endISO: event.kind === "time" ? event.endISO : undefined,
+            startTzid: event.kind === "time" ? event.startTzid : undefined,
+            endTzid: event.kind === "time" ? event.endTzid : undefined,
+            description: event.description,
+          },
+          Date.now(),
+        )
+      : normalizeCalendarMutationPayload(
+          {
+            title: event.title || "Untitled",
+            kind: event.kind,
+            startDate: event.kind === "date" ? event.startDate : undefined,
+            endDate: event.kind === "date" ? event.endDate : undefined,
+            startISO: event.kind === "time" ? event.startISO : undefined,
+            endISO: event.kind === "time" ? event.endISO : undefined,
+            startTzid: event.kind === "time" ? event.startTzid : undefined,
+            endTzid: event.kind === "time" ? event.endTzid : undefined,
+            description: event.description,
+          },
+          Date.now(),
+        );
+    if (!normalized) return null;
     if (deleted) return base;
-    base.kind = event.kind;
-    base.title = event.title || "Untitled";
+
+    base.kind = normalized.kind;
+    base.title = normalized.title || "Untitled";
     if (event.summary) base.summary = event.summary;
     if (event.description) base.description = event.description;
     if (event.documents?.length) base.documents = event.documents;
@@ -12251,24 +12283,19 @@ export default function App() {
     if (event.hashtags?.length) base.hashtags = event.hashtags;
     if (event.references?.length) base.references = event.references;
     if (event.inviteTokens && Object.keys(event.inviteTokens).length) base.inviteTokens = event.inviteTokens;
-    if (event.kind === "date") {
-      const startDate = isDateKey(event.startDate) ? event.startDate : isoDatePart(new Date().toISOString());
-      base.startDate = startDate;
-      const normalizedEnd = event.endDate && isDateKey(event.endDate) ? event.endDate : "";
-      if (normalizedEnd && normalizedEnd > startDate) base.endDate = normalizedEnd;
+
+    if (normalized.kind === "date") {
+      if (!normalized.startDate) return null;
+      base.startDate = normalized.startDate;
+      if (normalized.endDate) base.endDate = normalized.endDate;
       return base;
     }
-    const startMs = Date.parse(event.startISO);
-    if (Number.isNaN(startMs)) return null;
-    base.startISO = new Date(startMs).toISOString();
-    if (event.endISO) {
-      const endMs = Date.parse(event.endISO);
-      if (!Number.isNaN(endMs) && endMs > startMs) base.endISO = new Date(endMs).toISOString();
-    }
-    const startTzid = normalizeTimeZone(event.startTzid) ?? undefined;
-    const endTzid = normalizeTimeZone(event.endTzid) ?? undefined;
-    if (startTzid) base.startTzid = startTzid;
-    if (endTzid) base.endTzid = endTzid;
+
+    if (!normalized.startISO) return null;
+    base.startISO = normalized.startISO;
+    if (normalized.endISO) base.endISO = normalized.endISO;
+    if (normalized.startTzid) base.startTzid = normalized.startTzid;
+    if (normalized.endTzid) base.endTzid = normalized.endTzid;
     return base;
   };
 
@@ -12283,9 +12310,40 @@ export default function App() {
     };
     if (createdBy) base.createdBy = createdBy;
     if (lastEditedBy) base.lastEditedBy = lastEditedBy;
+    const normalized = deleted
+      ? normalizeCalendarDeleteMutationPayload(
+          {
+            title: event.title || "Untitled",
+            kind: event.kind,
+            startDate: event.kind === "date" ? event.startDate : undefined,
+            endDate: event.kind === "date" ? event.endDate : undefined,
+            startISO: event.kind === "time" ? event.startISO : undefined,
+            endISO: event.kind === "time" ? event.endISO : undefined,
+            startTzid: event.kind === "time" ? event.startTzid : undefined,
+            endTzid: event.kind === "time" ? event.endTzid : undefined,
+            description: event.description,
+          },
+          Date.now(),
+        )
+      : normalizeCalendarMutationPayload(
+          {
+            title: event.title || "Untitled",
+            kind: event.kind,
+            startDate: event.kind === "date" ? event.startDate : undefined,
+            endDate: event.kind === "date" ? event.endDate : undefined,
+            startISO: event.kind === "time" ? event.startISO : undefined,
+            endISO: event.kind === "time" ? event.endISO : undefined,
+            startTzid: event.kind === "time" ? event.startTzid : undefined,
+            endTzid: event.kind === "time" ? event.endTzid : undefined,
+            description: event.description,
+          },
+          Date.now(),
+        );
+    if (!normalized) return null;
     if (deleted) return base;
-    base.kind = event.kind;
-    base.title = event.title || "Untitled";
+
+    base.kind = normalized.kind;
+    base.title = normalized.title || "Untitled";
     if (event.summary) base.summary = event.summary;
     if (event.description) base.description = event.description;
     if (event.documents?.length) base.documents = event.documents;
@@ -12294,24 +12352,19 @@ export default function App() {
     if (event.geohash) base.geohash = event.geohash;
     if (event.hashtags?.length) base.hashtags = event.hashtags;
     if (event.references?.length) base.references = event.references;
-    if (event.kind === "date") {
-      const startDate = isDateKey(event.startDate) ? event.startDate : isoDatePart(new Date().toISOString());
-      base.startDate = startDate;
-      const normalizedEnd = event.endDate && isDateKey(event.endDate) ? event.endDate : "";
-      if (normalizedEnd && normalizedEnd > startDate) base.endDate = normalizedEnd;
+
+    if (normalized.kind === "date") {
+      if (!normalized.startDate) return null;
+      base.startDate = normalized.startDate;
+      if (normalized.endDate) base.endDate = normalized.endDate;
       return base;
     }
-    const startMs = Date.parse(event.startISO);
-    if (Number.isNaN(startMs)) return null;
-    base.startISO = new Date(startMs).toISOString();
-    if (event.endISO) {
-      const endMs = Date.parse(event.endISO);
-      if (!Number.isNaN(endMs) && endMs > startMs) base.endISO = new Date(endMs).toISOString();
-    }
-    const startTzid = normalizeTimeZone(event.startTzid) ?? undefined;
-    const endTzid = normalizeTimeZone(event.endTzid) ?? undefined;
-    if (startTzid) base.startTzid = startTzid;
-    if (endTzid) base.endTzid = endTzid;
+
+    if (!normalized.startISO) return null;
+    base.startISO = normalized.startISO;
+    if (normalized.endISO) base.endISO = normalized.endISO;
+    if (normalized.startTzid) base.startTzid = normalized.startTzid;
+    if (normalized.endTzid) base.endTzid = normalized.endTzid;
     return base;
   };
 

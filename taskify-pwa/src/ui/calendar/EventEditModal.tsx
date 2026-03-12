@@ -1,6 +1,7 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { nip19 } from "nostr-tools";
+import { normalizeCalendarEventPayload } from "taskify-core";
 
 // Sub-sheet components
 import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
@@ -801,26 +802,51 @@ function EventEditModal({
     };
 
     if (allDay) {
-      const start = startDate;
-      const end = endDate && endDate > start ? endDate : undefined;
-      return { ...base, kind: "date", startDate: start, ...(end ? { endDate: end } : {}) };
+      const core = normalizeCalendarEventPayload({
+        kind: "date",
+        title: normalizedTitle,
+        startDate,
+        endDate,
+      });
+      if (!core) return { ...base, kind: "date", startDate } as CalendarEvent;
+      return {
+        ...base,
+        kind: "date",
+        startDate: core.startDate || startDate,
+        ...(core.endDate ? { endDate: core.endDate } : {}),
+      };
     }
 
     const normalizedStartTz = normalizeTimeZone(startTzid) ?? systemTimeZone;
     const normalizedEndTz = normalizeTimeZone(endTzid) ?? normalizedStartTz;
     const startISO = isoFromDateTime(startDate, startTime || "09:00", normalizedStartTz);
     const endISO = isoFromDateTime(endDate || startDate, endTime || "10:00", normalizedEndTz);
-    const startMs = Date.parse(startISO);
-    const endMs = Date.parse(endISO);
-    const finalEndISO = !Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs ? endISO : undefined;
+
+    const core = normalizeCalendarEventPayload({
+      kind: "time",
+      title: normalizedTitle,
+      startISO,
+      endISO,
+      startTzid: normalizedStartTz,
+      endTzid: normalizedEndTz,
+    });
+    if (!core) {
+      return {
+        ...base,
+        kind: "time",
+        startISO,
+        ...(normalizedStartTz ? { startTzid: normalizedStartTz } : {}),
+        ...(normalizedEndTz ? { endTzid: normalizedEndTz } : {}),
+      } as CalendarEvent;
+    }
 
     return {
       ...base,
       kind: "time",
-      startISO,
-      ...(finalEndISO ? { endISO: finalEndISO } : {}),
-      ...(normalizedStartTz ? { startTzid: normalizedStartTz } : {}),
-      ...(normalizedEndTz ? { endTzid: normalizedEndTz } : {}),
+      startISO: core.startISO || startISO,
+      ...(core.endISO ? { endISO: core.endISO } : {}),
+      ...(core.startTzid ? { startTzid: core.startTzid } : {}),
+      ...(core.endTzid ? { endTzid: core.endTzid } : {}),
     };
   };
 

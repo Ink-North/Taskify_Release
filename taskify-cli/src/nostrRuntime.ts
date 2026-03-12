@@ -9,6 +9,11 @@ import type { TaskifyConfig, BoardEntry } from "./config.js";
 import { saveConfig } from "./config.js";
 import { readCache, writeCache, isCacheFresh, type CachedTask } from "./taskCache.js";
 import { pickBestBoardMeta } from "./shared/boardMeta.js";
+import {
+  normalizeCalendarDeleteMutationPayload,
+  normalizeCalendarEventPayload,
+  normalizeCalendarMutationPayload,
+} from "taskify-core";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -196,6 +201,24 @@ export type ExtendedCreateInput = AgentTaskCreateInput & {
   assignees?: string[];
 };
 
+export type FullEventRecord = {
+  id: string;
+  boardId: string;
+  boardName?: string;
+  title: string;
+  kind: "date" | "time";
+  startDate?: string;
+  endDate?: string;
+  startISO?: string;
+  endISO?: string;
+  startTzid?: string;
+  endTzid?: string;
+  description?: string;
+  createdAt?: number;
+  updatedAt?: string;
+  deleted?: boolean;
+};
+
 export type NostrRuntime = {
   getDefaultBoardId(): string | null;
   disconnect(): Promise<void>;
@@ -206,6 +229,22 @@ export type NostrRuntime = {
     refresh?: boolean;
     noCache?: boolean;
   }): Promise<FullTaskRecord[]>;
+  listEvents(options: { boardId?: string }): Promise<FullEventRecord[]>;
+  getEvent(eventId: string, boardId?: string): Promise<FullEventRecord | null>;
+  createEvent(input: {
+    boardId: string;
+    title: string;
+    kind: "date" | "time";
+    startDate?: string;
+    endDate?: string;
+    startISO?: string;
+    endISO?: string;
+    startTzid?: string;
+    endTzid?: string;
+    description?: string;
+  }): Promise<FullEventRecord>;
+  updateEvent(eventId: string, boardId: string | undefined, patch: Partial<Pick<FullEventRecord, "title" | "startDate" | "endDate" | "startISO" | "endISO" | "startTzid" | "endTzid" | "description">>): Promise<FullEventRecord | null>;
+  deleteEvent(eventId: string, boardId: string | undefined): Promise<FullEventRecord | null>;
   syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }>;
   createTask(input: AgentTaskCreateInput): Promise<FullTaskRecord>;
   createTaskFull(input: ExtendedCreateInput): Promise<FullTaskRecord>;
@@ -272,6 +311,56 @@ async function parseDecryptedEvent(
             typeof a === "string" ? a : (a as Record<string, string>).pubkey ?? "")
           .filter(Boolean)
         : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function parseDecryptedCalendarEvent(
+  event: NDKEvent,
+  boardId: string,
+  boardName?: string,
+): Promise<FullEventRecord | null> {
+  if (!validateEventCompat(event)) return null;
+  const statusTag = event.tags.find((t) => t[0] === "status");
+  const statusVal = statusTag?.[1] ?? "open";
+  const entityTag = event.tags.find((t) => t[0] === "entity");
+  try {
+    const plaintext = await decryptContent(boardId, event.content);
+    const raw = JSON.parse(plaintext) as Record<string, unknown>;
+    const dTag = event.tags.find((t) => t[0] === "d");
+    const id = dTag?.[1] ?? "";
+    if (!id) return null;
+
+    const inferredEvent =
+      entityTag?.[1] === "event" ||
+      raw.kind === "date" ||
+      raw.kind === "time" ||
+      typeof raw.startDate === "string" ||
+      typeof raw.startISO === "string";
+    if (!inferredEvent) return null;
+
+    const payload = normalizeCalendarEventPayload(raw);
+    if (!payload) return null;
+    const kind = payload.kind === "time" ? "time" : "date";
+
+    return {
+      id,
+      boardId,
+      boardName,
+      title: payload.title ?? "",
+      kind,
+      startDate: payload.startDate,
+      endDate: payload.endDate,
+      startISO: payload.startISO,
+      endISO: payload.endISO,
+      startTzid: payload.startTzid,
+      endTzid: payload.endTzid,
+      description: payload.description,
+      createdAt: event.created_at,
+      updatedAt: event.created_at ? new Date(event.created_at * 1000).toISOString() : undefined,
+      deleted: statusVal === "deleted" || payload.deleted === true,
     };
   } catch {
     return null;
@@ -521,6 +610,206 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       writeCache(cache);
       records.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
       return records;
+    },
+
+    async listEvents({ boardId }: { boardId?: string }): Promise<FullEventRecord[]> {
+      const boards = boardId
+        ? (() => {
+            const entry = resolveBoardEntry(config, boardId);
+            return entry ? [entry] : [];
+          })()
+        : [...config.boards];
+      if (boards.length === 0) return [];
+
+      await ensureConnected();
+      const out: FullEventRecord[] = [];
+      for (const board of boards) {
+        const events = await fetchBoardEvents(board.id);
+        for (const evt of events) {
+          const parsed = await parseDecryptedCalendarEvent(evt, board.id, board.name);
+          if (!parsed || parsed.deleted) continue;
+          out.push(parsed);
+        }
+      }
+      out.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+      return out;
+    },
+
+    async getEvent(eventId: string, boardId?: string): Promise<FullEventRecord | null> {
+      const boards = boardId
+        ? (() => {
+            const entry = resolveBoardEntry(config, boardId);
+            return entry ? [entry] : [];
+          })()
+        : [...config.boards];
+      if (boards.length === 0) return null;
+
+      await ensureConnected();
+      const matches: FullEventRecord[] = [];
+      for (const board of boards) {
+        const resolvedId = await resolveTaskId(board.id, eventId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardEvents(board.id, resolvedId);
+        if (events.size === 0) continue;
+        const [evt] = events;
+        const parsed = await parseDecryptedCalendarEvent(evt, board.id, board.name);
+        if (!parsed || parsed.deleted) continue;
+        matches.push(parsed);
+      }
+
+      if (matches.length === 0) return null;
+      if (!boardId && matches.length > 1) {
+        throw new Error(`Event id matches multiple boards; specify --board (matches: ${matches.map((m) => m.boardName ?? m.boardId).join(", ")})`);
+      }
+      return matches[0];
+    },
+
+    async createEvent(input): Promise<FullEventRecord> {
+      await ensureConnected();
+      const id = crypto.randomUUID();
+      const now = Date.now();
+      const payload = normalizeCalendarMutationPayload(
+        {
+          title: input.title,
+          kind: input.kind,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          startISO: input.startISO,
+          endISO: input.endISO,
+          startTzid: input.startTzid,
+          endTzid: input.endTzid,
+          description: input.description,
+        },
+        now,
+      );
+      if (!payload) {
+        throw new Error("Invalid event payload");
+      }
+      await publishTaskEvent(input.boardId, id, payload, "open", "");
+      return {
+        id,
+        boardId: input.boardId,
+        title: payload.title ?? "",
+        kind: payload.kind === "time" ? "time" : "date",
+        startDate: payload.startDate,
+        endDate: payload.endDate,
+        startISO: payload.startISO,
+        endISO: payload.endISO,
+        startTzid: payload.startTzid,
+        endTzid: payload.endTzid,
+        description: payload.description,
+        createdAt: Math.floor(now / 1000),
+        updatedAt: new Date(now).toISOString(),
+      };
+    },
+
+    async updateEvent(eventId: string, boardId: string | undefined, patch): Promise<FullEventRecord | null> {
+      await ensureConnected();
+      const boards = boardId
+        ? (() => {
+            const entry = resolveBoardEntry(config, boardId);
+            return entry ? [entry] : [];
+          })()
+        : [...config.boards];
+      if (boards.length === 0) return null;
+
+      const matches: Array<{ entry: (typeof boards)[number]; resolvedId: string; existing: FullEventRecord }> = [];
+      for (const entry of boards) {
+        const resolvedId = await resolveTaskId(entry.id, eventId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardEvents(entry.id, resolvedId);
+        if (events.size === 0) continue;
+        const [evt] = events;
+        const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
+        if (!existing || existing.deleted) continue;
+        matches.push({ entry, resolvedId, existing });
+      }
+
+      if (matches.length === 0) return null;
+      if (!boardId && matches.length > 1) {
+        throw new Error(`Event id matches multiple boards; specify --board (matches: ${matches.map((m) => m.entry.name).join(", ")})`);
+      }
+
+      const { entry, resolvedId, existing } = matches[0];
+      const payload = normalizeCalendarMutationPayload(
+        {
+          title: patch.title ?? existing.title,
+          kind: existing.kind,
+          startDate: patch.startDate ?? existing.startDate,
+          endDate: patch.endDate ?? existing.endDate,
+          startISO: patch.startISO ?? existing.startISO,
+          endISO: patch.endISO ?? existing.endISO,
+          startTzid: patch.startTzid ?? existing.startTzid,
+          endTzid: patch.endTzid ?? existing.endTzid,
+          description: patch.description ?? existing.description,
+        },
+        existing.createdAt ? existing.createdAt * 1000 : Date.now(),
+      );
+      if (!payload) return null;
+      await publishTaskEvent(entry.id, resolvedId, payload, "open", "");
+      return {
+        id: resolvedId,
+        boardId: entry.id,
+        boardName: entry.name,
+        title: payload.title ?? "",
+        kind: payload.kind === "time" ? "time" : "date",
+        startDate: payload.startDate,
+        endDate: payload.endDate,
+        startISO: payload.startISO,
+        endISO: payload.endISO,
+        startTzid: payload.startTzid,
+        endTzid: payload.endTzid,
+        description: payload.description,
+        createdAt: existing.createdAt,
+        updatedAt: nowISO(),
+      };
+    },
+
+    async deleteEvent(eventId: string, boardId: string | undefined): Promise<FullEventRecord | null> {
+      await ensureConnected();
+      const boards = boardId
+        ? (() => {
+            const entry = resolveBoardEntry(config, boardId);
+            return entry ? [entry] : [];
+          })()
+        : [...config.boards];
+      if (boards.length === 0) return null;
+
+      const matches: Array<{ entry: (typeof boards)[number]; resolvedId: string; existing: FullEventRecord }> = [];
+      for (const entry of boards) {
+        const resolvedId = await resolveTaskId(entry.id, eventId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardEvents(entry.id, resolvedId);
+        if (events.size === 0) continue;
+        const [evt] = events;
+        const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
+        if (!existing || existing.deleted) continue;
+        matches.push({ entry, resolvedId, existing });
+      }
+
+      if (matches.length === 0) return null;
+      if (!boardId && matches.length > 1) {
+        throw new Error(`Event id matches multiple boards; specify --board (matches: ${matches.map((m) => m.entry.name).join(", ")})`);
+      }
+
+      const { entry, resolvedId, existing } = matches[0];
+      const payload = normalizeCalendarDeleteMutationPayload(
+        {
+          title: existing.title,
+          kind: existing.kind,
+          startDate: existing.startDate,
+          endDate: existing.endDate,
+          startISO: existing.startISO,
+          endISO: existing.endISO,
+          startTzid: existing.startTzid,
+          endTzid: existing.endTzid,
+          description: existing.description,
+        },
+        existing.createdAt ? existing.createdAt * 1000 : Date.now(),
+      );
+      if (!payload) return null;
+      await publishTaskEvent(entry.id, resolvedId, payload, "deleted", "");
+      return { ...existing, deleted: true };
     },
 
     async syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }> {

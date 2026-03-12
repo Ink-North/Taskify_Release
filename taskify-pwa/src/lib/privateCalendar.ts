@@ -1,6 +1,7 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { hexToBytes } from "@noble/hashes/utils";
 import { nip44 } from "nostr-tools";
+import { normalizeCalendarEventPayload } from "taskify-core";
 
 export const TASKIFY_CALENDAR_EVENT_KIND = 30310;
 export const TASKIFY_CALENDAR_VIEW_KIND = 30311;
@@ -323,22 +324,15 @@ export function parseCalendarCanonicalPayload(raw: unknown): CalendarCanonicalPa
   if (participants) payload.participants = participants;
   const inviteTokens = normalizeInviteTokens((raw as any).inviteTokens);
   if (inviteTokens) payload.inviteTokens = inviteTokens;
-  const startDate = normalizeString((raw as any).startDate);
-  if (startDate) payload.startDate = startDate;
-  const endDate = normalizeString((raw as any).endDate);
-  if (endDate) payload.endDate = endDate;
-  const startISO = normalizeString((raw as any).startISO);
-  if (startISO) payload.startISO = startISO;
-  const endISO = normalizeString((raw as any).endISO);
-  if (endISO) payload.endISO = endISO;
-  const startTzid = normalizeString((raw as any).startTzid);
-  if (startTzid) payload.startTzid = startTzid;
-  const endTzid = normalizeString((raw as any).endTzid);
-  if (endTzid) payload.endTzid = endTzid;
-  if (!deleted) {
-    if (payload.kind === "date" && !payload.startDate) return null;
-    if (payload.kind === "time" && !payload.startISO) return null;
-  }
+
+  const core = normalizeCalendarEventPayload(raw);
+  if (!core) return null;
+  if (core.startDate) payload.startDate = core.startDate;
+  if (core.endDate) payload.endDate = core.endDate;
+  if (core.startISO) payload.startISO = core.startISO;
+  if (core.endISO) payload.endISO = core.endISO;
+  if (core.startTzid) payload.startTzid = core.startTzid;
+  if (core.endTzid) payload.endTzid = core.endTzid;
   return payload;
 }
 
@@ -382,22 +376,15 @@ export function parseCalendarViewPayload(raw: unknown): CalendarViewPayload | nu
   if (hashtags) payload.hashtags = hashtags;
   const references = normalizeStringArray((raw as any).references);
   if (references) payload.references = references;
-  const startDate = normalizeString((raw as any).startDate);
-  if (startDate) payload.startDate = startDate;
-  const endDate = normalizeString((raw as any).endDate);
-  if (endDate) payload.endDate = endDate;
-  const startISO = normalizeString((raw as any).startISO);
-  if (startISO) payload.startISO = startISO;
-  const endISO = normalizeString((raw as any).endISO);
-  if (endISO) payload.endISO = endISO;
-  const startTzid = normalizeString((raw as any).startTzid);
-  if (startTzid) payload.startTzid = startTzid;
-  const endTzid = normalizeString((raw as any).endTzid);
-  if (endTzid) payload.endTzid = endTzid;
-  if (!deleted) {
-    if (payload.kind === "date" && !payload.startDate) return null;
-    if (payload.kind === "time" && !payload.startISO) return null;
-  }
+
+  const core = normalizeCalendarEventPayload(raw);
+  if (!core) return null;
+  if (core.startDate) payload.startDate = core.startDate;
+  if (core.endDate) payload.endDate = core.endDate;
+  if (core.startISO) payload.startISO = core.startISO;
+  if (core.endISO) payload.endISO = core.endISO;
+  if (core.startTzid) payload.startTzid = core.startTzid;
+  if (core.endTzid) payload.endTzid = core.endTzid;
   return payload;
 }
 
