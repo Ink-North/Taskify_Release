@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { nip19 } from "nostr-tools";
-import { normalizeCalendarEventPayload } from "taskify-core";
+import { normalizeCalendarEventPayload, normalizeDelimitedValues, normalizeLocationList } from "taskify-core";
 
 // Sub-sheet components
 import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
@@ -738,29 +738,13 @@ function EventEditModal({
     setEndTime(isoTimePart(nextEnd, safeEndTzid));
   }, [allDay, endDate, endTime, safeEndTzid, safeStartTzid, startDate, startTime]);
 
-  const normalizeHashtags = (raw: string): string[] | undefined => {
-    const parts = raw
-      .split(/[,\n]+/g)
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .map((value) => (value.startsWith("#") ? value.slice(1) : value));
-    const unique = Array.from(new Set(parts));
-    return unique.length ? unique : undefined;
-  };
+  const normalizeHashtags = (raw: string): string[] | undefined =>
+    normalizeDelimitedValues(raw, /[,\n]+/g, { stripPrefix: "#" });
 
-  const normalizeReferences = (raw: string): string[] | undefined => {
-    const lines = raw
-      .split(/\n+/g)
-      .map((value) => value.trim())
-      .filter(Boolean);
-    const unique = Array.from(new Set(lines));
-    return unique.length ? unique : undefined;
-  };
+  const normalizeReferences = (raw: string): string[] | undefined =>
+    normalizeDelimitedValues(raw, /\n+/g);
 
-  const normalizeLocations = (list: string[]): string[] | undefined => {
-    const out = list.map((value) => value.trim()).filter(Boolean);
-    return out.length ? out : undefined;
-  };
+  const normalizeLocations = (list: string[]): string[] | undefined => normalizeLocationList(list);
 
   const buildDraft = (): CalendarEvent => {
     const boardId = selectedBoardId;

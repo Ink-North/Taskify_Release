@@ -10,6 +10,7 @@ import {
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
   normalizeRelayListSorted,
+  parseBoardSharePayload,
 } from "taskify-core";
 const loadCashuWalletModal = () => import("./components/CashuWalletModal");
 const CashuWalletModal = lazy(loadCashuWalletModal);
@@ -234,28 +235,6 @@ const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS = 1;
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
 
 type ScanResult = QrScannerLib.ScanResult;
-
-type BoardSharePayload = {
-  boardId: string;
-  boardName?: string;
-  relaysCsv?: string;
-};
-
-function parseBoardSharePayload(raw: string): BoardSharePayload | null {
-  const trimmed = (raw || "").trim();
-  if (!trimmed) return null;
-  const envelope = parseShareEnvelope(trimmed);
-  if (envelope?.item?.type === "board") {
-    const relaysCsv = envelope.item.relays?.length ? envelope.item.relays.join(",") : undefined;
-    return {
-      boardId: envelope.item.boardId,
-      boardName: envelope.item.boardName || undefined,
-      relaysCsv,
-    };
-  }
-  if (!BOARD_ID_REGEX.test(trimmed)) return null;
-  return { boardId: trimmed };
-}
 
 /* ================= Types ================= */
 type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6; // 0=Sun
