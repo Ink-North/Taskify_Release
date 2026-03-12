@@ -14,3 +14,4 @@ export * from "./shareContracts.js";
 export * from "./backupContracts.js";
 export * from "./nostrPrimitives.js";
 export * from "./boardCrypto.js";
+export * from "./relayNormalize.js";

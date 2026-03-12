@@ -16,6 +16,7 @@ import {
   type SharedTaskPayload,
   type SharedCalendarEventInvitePayload,
   type SharedTaskAssignmentResponsePayload,
+  normalizeRelayList,
 } from "taskify-core";
 import { TASKIFY_CALENDAR_EVENT_KIND, TASKIFY_CALENDAR_VIEW_KIND, parseCalendarAddress } from "./privateCalendar";
 import { NostrSession } from "../nostr/NostrSession";
@@ -123,14 +124,6 @@ function serializeTaskAssignmentShareEnvelope(payload: ShareEnvelope): string {
     `${SHARE_ENVELOPE_EMBED_MARKER} ${encodeBase64UrlUtf8(json)}`,
   );
   return lines.join("\n");
-}
-
-function normalizeRelayList(list?: string[] | null): string[] | undefined {
-  if (!Array.isArray(list)) return undefined;
-  const relays = list
-    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-    .filter(Boolean);
-  return relays.length ? Array.from(new Set(relays)) : undefined;
 }
 
 function normalizeTaskDueISO(value: unknown): string | undefined {
