@@ -23,6 +23,7 @@
     "jszip": "^3.10.1",
     "nostr-tools": "^2.16.2",
     "taskify-core": "file:../taskify-core",
+    "taskify-runtime-nostr": "file:../taskify-runtime-nostr",
     "pdfjs-dist": "^4.7.76",
     "process": "^0.11.10",
     "qr-scanner": "^1.4.2",

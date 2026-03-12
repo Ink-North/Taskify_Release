@@ -1,6 +1,6 @@
 export * from "./activityLog.js";
 export { buildCalendarEventDraft } from "./events.js";
-export type { CalendarEvent as DraftCalendarEvent } from "./events.js";
+export type { CalendarEvent as DraftCalendarEvent, BuildCalendarEventDraftInput } from "./events.js";
 export * from "./calendarPayload.js";
 export * from "./mutationContracts.js";
 export * from "./calendarProtocol.js";

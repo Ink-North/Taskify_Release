@@ -1,7 +1,6 @@
-import NDK, { NDKEvent, NDKPrivateKeySigner, NDKRelayStatus } from "@nostr-dev-kit/ndk";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex } from "@noble/hashes/utils";
+import NDK, { NDKEvent, NDKRelayStatus } from "@nostr-dev-kit/ndk";
 import { getPublicKey, nip19 } from "nostr-tools";
+import { boardTagHash, deriveBoardKeyPair } from "taskify-runtime-nostr";
 import type { ReminderPreset, Recurrence, Subtask } from "./shared/taskTypes.js";
 import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from "./shared/agentRuntime.js";
 import type { AgentSecurityConfig } from "./shared/agentSecurity.js";
@@ -22,27 +21,6 @@ function nowISO(): string {
 }
 
 // ---- Internal helpers (not exported) ----
-
-function boardTagHash(boardId: string): string {
-  return bytesToHex(sha256(new TextEncoder().encode(boardId)));
-}
-
-function deriveBoardKeys(boardId: string): {
-  sk: Uint8Array;
-  skHex: string;
-  pk: string;
-  signer: NDKPrivateKeySigner;
-} {
-  const label = new TextEncoder().encode("taskify-board-nostr-key-v1");
-  const id = new TextEncoder().encode(boardId);
-  const material = new Uint8Array(label.length + id.length);
-  material.set(label, 0);
-  material.set(id, label.length);
-  const sk = sha256(material);
-  const skHex = bytesToHex(sk);
-  const pk = getPublicKey(sk);
-  return { sk, skHex, pk, signer: new NDKPrivateKeySigner(skHex) };
-}
 
 async function encryptContent(boardId: string, plaintext: string): Promise<string> {
   return encryptToBoard(boardId, plaintext);
@@ -438,7 +416,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     status: "open" | "done" | "deleted",
     colId: string = "",
   ): Promise<NDKEvent> {
-    const { signer } = deriveBoardKeys(boardId);
+    const { signer } = deriveBoardKeyPair(boardId);
     const bTag = boardTagHash(boardId);
     const encrypted = await encryptContent(boardId, JSON.stringify(payload));
     const event = new NDKEvent(ndk);
@@ -1050,7 +1028,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       await publishTaskEvent(entry.id, taskId, rawPayload, "deleted", colId);
 
       // Step 2: publish NIP-09 kind 5 deletion request (matches PWA's publishTaskDeletionRequest)
-      const boardKeys = deriveBoardKeys(entry.id);
+      const boardKeys = deriveBoardKeyPair(entry.id);
       const aTag = `30301:${boardKeys.pk}:${taskId}`;
       try {
         const nip09Event = new NDKEvent(ndk);
@@ -1205,7 +1183,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     }): Promise<{ boardId: string }> {
       await ensureConnected();
       const boardId = crypto.randomUUID();
-      const { signer } = deriveBoardKeys(boardId);
+      const { signer } = deriveBoardKeyPair(boardId);
       const bTag = boardTagHash(boardId);
 
       const contentPayload = {
