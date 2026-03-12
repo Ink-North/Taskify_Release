@@ -6,6 +6,7 @@ self.addEventListener('activate', (event) => {
     (async () => {
       await clearOldCaches();
       await self.clients.claim();
+      activatedAt = Date.now();
     })(),
   );
 });
@@ -17,6 +18,7 @@ const DEFAULT_WORKER_BASE_URL = self.location.origin;
 let workerBaseUrl = DEFAULT_WORKER_BASE_URL;
 let workerBaseUrlReady = restoreWorkerBaseUrl();
 const notifiedClients = new Set();
+let activatedAt = 0;
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
@@ -162,10 +164,16 @@ async function shouldNotifyUpdate(request, cachedResponse, networkResponse) {
     console.warn('SW compare failed', err);
   }
 
-  return true;
+  // Default to false — if we can't determine whether an update occurred,
+  // suppress the notification to avoid false-positive reload prompts.
+  return false;
 }
 
 async function notifyClientsAboutUpdate() {
+  // Suppress notification during the first 5 seconds after activation to avoid
+  // false-positive update prompts triggered by stale-while-revalidate on initial load.
+  if (activatedAt && Date.now() - activatedAt < 5000) return;
+
   const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   await Promise.all(
     clientList.map((client) => {

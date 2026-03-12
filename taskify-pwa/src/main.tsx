@@ -4,6 +4,21 @@ import './index.css'
 
 const root = createRoot(document.getElementById('root')!);
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
+    promise
+      .then((value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
 async function bootstrapApp(): Promise<void> {
   const [{ default: process }, { Buffer }] = await Promise.all([
     import('process'),
@@ -26,10 +41,14 @@ async function bootstrapApp(): Promise<void> {
     import('./storage/storageBootstrap'),
   ]);
 
+  const storagePromise = initializeStorageBoundaries();
+  let storageTimedOut = false;
   try {
-    await initializeStorageBoundaries();
-  } catch {
-    // ignore; app can still run with in-memory fallbacks
+    // Guard against occasional startup hangs in storage bootstrap.
+    await withTimeout(storagePromise, 1500);
+  } catch (err) {
+    console.warn('Storage bootstrap fallback (continuing with in-memory behavior)', err);
+    storageTimedOut = true;
   }
 
   const [
@@ -61,8 +80,27 @@ async function bootstrapApp(): Promise<void> {
   );
 
   setupServiceWorkers();
+
+  // If IDB timed out but eventually succeeds, reload once so components pick up
+  // the real data instead of showing empty state for the entire session.
+  if (storageTimedOut) {
+    storagePromise
+      .then(() => {
+        const RELOAD_KEY = 'taskify_storage_late_reload';
+        try {
+          const last = Number(sessionStorage.getItem(RELOAD_KEY) || '0');
+          if (Date.now() - last > 10_000) {
+            sessionStorage.setItem(RELOAD_KEY, String(Date.now()));
+            window.location.reload();
+          }
+        } catch {}
+      })
+      .catch(() => {});
+  }
 }
-void bootstrapApp().catch(() => undefined);
+void bootstrapApp().catch((err) => {
+  console.error('Taskify bootstrap failed', err);
+});
 
 async function cleanupDevServiceWorkers() {
   try {

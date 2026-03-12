@@ -1,5 +1,5 @@
 import JSZip from "jszip";
-import { read, utils } from "xlsx";
+import readXlsxFile from "read-excel-file/browser";
 
 export type TaskDocumentKind = "pdf" | "doc" | "docx" | "xls" | "xlsx";
 
@@ -430,14 +430,18 @@ function generateDocBinary(buffer: ArrayBuffer): { previewText?: string; fullTex
   }
 }
 
-function generateSpreadsheetMarkup(buffer: ArrayBuffer): { previewHtml?: string; fullHtml?: string } {
+async function generateSpreadsheetMarkup(
+  buffer: ArrayBuffer,
+  kind: TaskDocumentKind
+): Promise<{ previewHtml?: string; fullHtml?: string }> {
+  if (kind === "xls") {
+    // Legacy .xls parsing is intentionally not supported without SheetJS (xlsx).
+    return {};
+  }
+
   try {
-    const workbook = read(buffer, { type: "array" });
-    const sheetName = workbook.SheetNames[0];
-    if (!sheetName) return {};
-    const sheet = workbook.Sheets[sheetName];
-    if (!sheet) return {};
-    const rows = utils.sheet_to_json(sheet, { header: 1, blankrows: false }) as unknown[];
+    const blob = new Blob([buffer]);
+    const rows = await readXlsxFile(blob);
     const rowsArray = Array.isArray(rows) ? (rows as Array<Array<unknown>>) : [];
     if (!rowsArray.length) return {};
     const fullHtml = wrapSheetHtml(rowsArray, 100, 20);
@@ -493,7 +497,7 @@ export async function createDocumentAttachment(file: File): Promise<TaskDocument
     if (previewText) base.preview = { type: "text", data: previewText };
     if (fullText) base.full = { type: "text", data: fullText };
   } else {
-    const { previewHtml, fullHtml } = generateSpreadsheetMarkup(buffer);
+    const { previewHtml, fullHtml } = await generateSpreadsheetMarkup(buffer, kind);
     if (previewHtml) base.preview = { type: "html", data: previewHtml };
     if (fullHtml) base.full = { type: "html", data: fullHtml };
   }
@@ -552,7 +556,7 @@ async function buildPreviewFromDocument(doc: TaskDocument): Promise<TaskDocument
     return null;
   }
 
-  const { previewHtml } = generateSpreadsheetMarkup(buffer);
+  const { previewHtml } = await generateSpreadsheetMarkup(buffer, ensured.kind);
   if (previewHtml) return { type: "html", data: previewHtml };
   return null;
 }

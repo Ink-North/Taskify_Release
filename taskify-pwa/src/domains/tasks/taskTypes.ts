@@ -98,6 +98,7 @@ export type Task = {
   createdBy?: string;             // nostr pubkey of task creator
   lastEditedBy?: string;          // nostr pubkey of latest task editor
   createdAt?: number;             // unix ms timestamp (local)
+  updatedAt?: string;             // iso timestamp of latest local edit when known
   title: string;
   priority?: TaskPriority;        // 1-3 exclamation marks
   note?: string;
