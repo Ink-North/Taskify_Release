@@ -6,7 +6,7 @@ import {
   TASKIFY_CALENDAR_RSVP_KIND,
   calendarAddress,
   parseCalendarAddress,
-} from "../src/calendarProtocol.ts";
+} from "../dist/calendarProtocol.js";
 
 test("calendar protocol constants are stable", () => {
   assert.equal(TASKIFY_CALENDAR_EVENT_KIND, 30310);
