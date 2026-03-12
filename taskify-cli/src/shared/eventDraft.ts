@@ -33,7 +33,7 @@ function normalizeTimeZone(tz?: string): string | undefined {
   }
 }
 
-function isoFromDateTime(dateKey: string, time = "00:00"): string {
+function isoFromDateTime(dateKey: string, time = "00:00", _tz?: string): string {
   return new Date(`${dateKey}T${time}:00Z`).toISOString();
 }
 

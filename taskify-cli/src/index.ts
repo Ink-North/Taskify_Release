@@ -11,6 +11,7 @@ import { renderTable, renderTaskCard, renderJson } from "./render.js";
 import { zshCompletion, bashCompletion, fishCompletion } from "./completions.js";
 import { readCache, clearCache, CACHE_PATH, CACHE_TTL_MS } from "./taskCache.js";
 import { runOnboarding } from "./onboarding.js";
+import { buildCalendarEventDraft } from "./shared/eventDraft.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -296,41 +297,176 @@ const eventCmd = program
 eventCmd
   .command("list")
   .description("List events")
-  .action(() => {
-    console.error(chalk.red("event list is not implemented yet"));
-    process.exit(1);
+  .option("--board <id|name>", "Filter by board")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const boardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
+      const events = await runtime.listEvents({ boardId });
+      if (opts.json) {
+        renderJson(events);
+      } else if (events.length === 0) {
+        console.log(chalk.dim("No events found."));
+      } else {
+        for (const e of events) {
+          const when = e.kind === "time"
+            ? `${e.startISO ?? ""}${e.endISO ? ` → ${e.endISO}` : ""}`
+            : `${e.startDate ?? ""}${e.endDate ? ` → ${e.endDate}` : ""}`;
+          console.log(`${chalk.cyan(e.id.slice(0, 8))}  ${e.title}  ${chalk.dim(when)}`);
+        }
+      }
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
   });
 
 eventCmd
   .command("add <title>")
   .description("Create an event")
-  .action(() => {
-    console.error(chalk.red("event add is not implemented yet"));
-    process.exit(1);
+  .option("--board <id|name>", "Board to add to (required if multiple boards configured)")
+  .option("--date <YYYY-MM-DD>", "Start date (required)")
+  .option("--end-date <YYYY-MM-DD>", "End date for all-day range")
+  .option("--time <HH:mm>", "Start time for timed event")
+  .option("--end-time <HH:mm>", "End time for timed event")
+  .option("--tz <iana>", "Timezone for timed event")
+  .option("--description <text>", "Optional description")
+  .option("--json", "Output as JSON")
+  .action(async (title: string, opts) => {
+    if (!opts.date) {
+      console.error(chalk.red("--date is required (YYYY-MM-DD)"));
+      process.exit(1);
+    }
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const boardId = await resolveBoardId(opts.board, config);
+    const runtime = initRuntime(config);
+    try {
+      const draft = buildCalendarEventDraft({
+        boardId,
+        title,
+        date: opts.date,
+        endDate: opts.endDate,
+        time: opts.time,
+        endTime: opts.endTime,
+        timeZone: opts.tz,
+      });
+      const created = await runtime.createEvent({
+        ...draft,
+        description: opts.description,
+      });
+      if (opts.json) renderJson(created);
+      else console.log(chalk.green(`✓ Created event: ${created.title} (${created.id.slice(0, 8)})`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
   });
 
 eventCmd
   .command("show <eventId>")
   .description("Show event details")
-  .action(() => {
-    console.error(chalk.red("event show is not implemented yet"));
-    process.exit(1);
+  .option("--board <id|name>", "Board to search in")
+  .option("--json", "Output as JSON")
+  .action(async (eventId: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const boardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
+      const event = await runtime.getEvent(eventId, boardId);
+      if (!event) {
+        console.error(chalk.red(`Event not found: ${eventId}`));
+        process.exit(1);
+      }
+      if (opts.json) renderJson(event);
+      else {
+        console.log(chalk.bold(event.title));
+        console.log(`id: ${event.id}`);
+        console.log(`kind: ${event.kind}`);
+        if (event.kind === "time") console.log(`when: ${event.startISO}${event.endISO ? ` → ${event.endISO}` : ""}`);
+        else console.log(`when: ${event.startDate}${event.endDate ? ` → ${event.endDate}` : ""}`);
+        if (event.description) console.log(`description: ${event.description}`);
+      }
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
   });
 
 eventCmd
   .command("update <eventId>")
   .description("Update an event")
-  .action(() => {
-    console.error(chalk.red("event update is not implemented yet"));
-    process.exit(1);
+  .option("--board <id|name>", "Board the event belongs to")
+  .option("--title <text>", "Update title")
+  .option("--description <text>", "Update description")
+  .option("--start-date <YYYY-MM-DD>", "Update date event start")
+  .option("--end-date <YYYY-MM-DD>", "Update date event end")
+  .option("--start-iso <iso>", "Update timed event start ISO")
+  .option("--end-iso <iso>", "Update timed event end ISO")
+  .option("--tz <iana>", "Update timed event timezone")
+  .option("--json", "Output as JSON")
+  .action(async (eventId: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const boardId = await resolveBoardId(opts.board, config);
+    const runtime = initRuntime(config);
+    try {
+      const updated = await runtime.updateEvent(eventId, boardId, {
+        title: opts.title,
+        description: opts.description,
+        startDate: opts.startDate,
+        endDate: opts.endDate,
+        startISO: opts.startIso,
+        endISO: opts.endIso,
+        startTzid: opts.tz,
+        endTzid: opts.tz,
+      });
+      if (!updated) {
+        console.error(chalk.red(`Event not found: ${eventId}`));
+        process.exit(1);
+      }
+      if (opts.json) renderJson(updated);
+      else console.log(chalk.green(`✓ Updated event: ${updated.title}`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
   });
 
 eventCmd
   .command("delete <eventId>")
   .description("Delete an event")
-  .action(() => {
-    console.error(chalk.red("event delete is not implemented yet"));
-    process.exit(1);
+  .option("--board <id|name>", "Board the event belongs to")
+  .action(async (eventId: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const boardId = await resolveBoardId(opts.board, config);
+    const runtime = initRuntime(config);
+    try {
+      const deleted = await runtime.deleteEvent(eventId, boardId);
+      if (!deleted) {
+        console.error(chalk.red(`Event not found: ${eventId}`));
+        process.exit(1);
+      }
+      console.log(chalk.green(`✓ Deleted event: ${deleted.title}`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
   });
 
 /** Resolve a week-board day name to the ISO date for that day in the current week (Mon-based). */
