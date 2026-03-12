@@ -7,7 +7,8 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "pretest": "npm run build",
+    "check:api": "node scripts/check-public-api.mjs",
+    "pretest": "npm run build && npm run check:api",
     "test": "node --test --experimental-strip-types tests/*.test.ts"
   },
   "devDependencies": {
