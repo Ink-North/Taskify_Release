@@ -391,6 +391,7 @@ eventCmd
       else {
         console.log(chalk.bold(event.title));
         console.log(`id: ${event.id}`);
+        console.log(`board: ${event.boardName ?? event.boardId}`);
         console.log(`kind: ${event.kind}`);
         if (event.kind === "time") console.log(`when: ${event.startISO}${event.endISO ? ` → ${event.endISO}` : ""}`);
         else console.log(`when: ${event.startDate}${event.endDate ? ` → ${event.endDate}` : ""}`);

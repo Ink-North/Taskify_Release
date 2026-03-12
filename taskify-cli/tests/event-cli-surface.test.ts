@@ -32,3 +32,7 @@ test("event list includes board label when listing across boards", () => {
   assert.match(CLI_SOURCE, /const showBoard = !boardId;/);
   assert.match(CLI_SOURCE, /const boardLabel = showBoard \? ` \$\{chalk\.dim\(`\[\$\{e\.boardName \?\? e\.boardId\}\]`\)\}` : "";/);
 });
+
+test("event show renders board metadata in human output", () => {
+  assert.match(CLI_SOURCE, /console\.log\(`board: \$\{event\.boardName \?\? event\.boardId\}`\);/);
+});
