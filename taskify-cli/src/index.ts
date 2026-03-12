@@ -310,11 +310,13 @@ eventCmd
       } else if (events.length === 0) {
         console.log(chalk.dim("No events found."));
       } else {
+        const showBoard = !boardId;
         for (const e of events) {
           const when = e.kind === "time"
             ? `${e.startISO ?? ""}${e.endISO ? ` → ${e.endISO}` : ""}`
             : `${e.startDate ?? ""}${e.endDate ? ` → ${e.endDate}` : ""}`;
-          console.log(`${chalk.cyan(e.id.slice(0, 8))}  ${e.title}  ${chalk.dim(when)}`);
+          const boardLabel = showBoard ? ` ${chalk.dim(`[${e.boardName ?? e.boardId}]`)}` : "";
+          console.log(`${chalk.cyan(e.id.slice(0, 8))}  ${e.title}${boardLabel}  ${chalk.dim(when)}`);
         }
       }
       process.exit(0);

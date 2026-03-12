@@ -27,3 +27,8 @@ test("event delete supports json output", () => {
   assert.match(CLI_SOURCE, /\.command\("delete\s*<eventId>"\)[\s\S]*?\.option\("--json",\s*"Output as JSON"\)/);
   assert.match(CLI_SOURCE, /if \(opts\.json\) renderJson\(deleted\);/);
 });
+
+test("event list includes board label when listing across boards", () => {
+  assert.match(CLI_SOURCE, /const showBoard = !boardId;/);
+  assert.match(CLI_SOURCE, /const boardLabel = showBoard \? ` \$\{chalk\.dim\(`\[\$\{e\.boardName \?\? e\.boardId\}\]`\)\}` : "";/);
+});
