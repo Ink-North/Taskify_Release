@@ -22,13 +22,11 @@ export type Subtask = { id: string; title: string; completed?: boolean };
 export type InboxSender = { pubkey: string; name?: string; npub?: string };
 export type InboxItemStatus = "pending" | "accepted" | "declined" | "tentative" | "deleted" | "read";
 
-export type SharedContactPayload = Record<string, unknown>;
-export type SharedTaskPayload = Record<string, unknown>;
 export type TaskDocument = Record<string, unknown>;
 export type InboxItem =
   | { type: "board"; boardId: string; boardName?: string; relays?: string[]; sender: InboxSender; receivedAt: string; status?: InboxItemStatus; dmEventId?: string }
-  | { type: "contact"; contact: SharedContactPayload; sender: InboxSender; receivedAt: string; status?: InboxItemStatus; dmEventId?: string }
-  | { type: "task"; task: SharedTaskPayload; sender: InboxSender; receivedAt: string; status?: InboxItemStatus; dmEventId?: string };
+  | { type: "contact"; contact: Record<string, unknown>; sender: InboxSender; receivedAt: string; status?: InboxItemStatus; dmEventId?: string }
+  | { type: "task"; task: Record<string, unknown>; sender: InboxSender; receivedAt: string; status?: InboxItemStatus; dmEventId?: string };
 
 export type TaskAssigneeStatus = "pending" | "accepted" | "declined" | "tentative";
 export type TaskAssignee = { pubkey: string; relay?: string; status?: TaskAssigneeStatus; respondedAt?: number };
