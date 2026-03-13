@@ -490,7 +490,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     event.kind = 30300;
     event.content = encrypted;
     event.tags = [
-      ["d", board.id],
+      ["d", bTag],
       ["b", bTag],
       ["k", board.kind ?? "lists"],
       ["name", board.name],
@@ -966,7 +966,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       } else if (entry.kind === "lists" && Array.isArray(entry.columns) && entry.columns.length > 0) {
         colId = entry.columns[0].id;
       } else if (entry.kind === "week") {
-        colId = new Date().toISOString().slice(0, 10);
+        colId = "day";
       }
       await publishTaskEvent(boardId, taskId, payload, "open", colId);
       const result: FullTaskRecord = {
