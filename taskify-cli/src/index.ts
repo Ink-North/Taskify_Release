@@ -13,6 +13,7 @@ import { readCache, clearCache, CACHE_PATH, CACHE_TTL_MS } from "./taskCache.js"
 import { runOnboarding } from "./onboarding.js";
 import { buildCalendarEventDraft } from "./shared/eventDraft.js";
 import { resolveBoardReference } from "taskify-core";
+import { resolveBoardForCommand } from "./shared/commandResolution.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -70,29 +71,21 @@ async function resolveBoardId(
   boardOpt: string | undefined,
   config: Awaited<ReturnType<typeof loadConfig>>,
 ): Promise<string> {
-  if (boardOpt) {
-    const entry = resolveBoardReference(config.boards, boardOpt);
-    if (!entry) {
-      console.error(chalk.red(`Board not found: "${boardOpt}". Known boards:`));
-      for (const b of config.boards) {
-        console.error(`  ${b.name} (${b.id})`);
-      }
-      process.exit(1);
+  const resolved = resolveBoardForCommand(config.boards, boardOpt);
+  if (resolved.ok) return resolved.boardId;
+
+  if (boardOpt && resolved.listBoards) {
+    console.error(chalk.red(`Board not found: "${boardOpt}". Known boards:`));
+  } else {
+    console.error(chalk.red(resolved.message));
+  }
+
+  if (resolved.listBoards) {
+    for (const b of config.boards) {
+      console.error(`  ${b.name} (${b.id})`);
     }
-    return entry.id;
   }
-  if (config.boards.length === 1) {
-    return config.boards[0].id;
-  }
-  if (config.boards.length === 0) {
-    console.error(chalk.red("No boards configured. Use: taskify board join <id> --name <name>"));
-    process.exit(1);
-  }
-  console.error(chalk.red("Multiple boards configured. Specify one with --board <id|name>:"));
-  for (const b of config.boards) {
-    console.error(`  ${b.name} (${b.id})`);
-  }
-  process.exit(1);
+  process.exit(resolved.exitCode);
 }
 
 // ---- board command group ----
