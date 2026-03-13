@@ -15,6 +15,9 @@ import {
   encryptToBoard,
   decryptFromBoard,
   resolveBoardReference,
+  resolveIdentifierReference,
+  readTagValue,
+  readStatusTag,
 } from "taskify-core";
 
 function nowISO(): string {
@@ -221,14 +224,11 @@ async function parseDecryptedEvent(
   try {
     const plaintext = await decryptContent(boardId, event.content);
     const payload = JSON.parse(plaintext);
-    const dTag = event.tags.find((t) => t[0] === "d");
-    const taskId = dTag?.[1] ?? "";
+    const taskId = readTagValue(event.tags, "d") ?? "";
     if (!taskId) return null;
-    const statusTag = event.tags.find((t) => t[0] === "status");
-    const statusVal = statusTag?.[1] ?? "open";
+    const statusVal = readStatusTag(event.tags, "open");
     const completed = statusVal === "done";
-    const colTag = event.tags.find((t) => t[0] === "col");
-    const column = colTag?.[1] || undefined;
+    const column = readTagValue(event.tags, "col") || undefined;
     return {
       id: taskId,
       boardId,
@@ -272,18 +272,16 @@ async function parseDecryptedCalendarEvent(
   boardName?: string,
 ): Promise<FullEventRecord | null> {
   if (!validateEventCompat(event)) return null;
-  const statusTag = event.tags.find((t) => t[0] === "status");
-  const statusVal = statusTag?.[1] ?? "open";
-  const entityTag = event.tags.find((t) => t[0] === "entity");
+  const statusVal = readStatusTag(event.tags, "open");
+  const entityTag = readTagValue(event.tags, "entity");
   try {
     const plaintext = await decryptContent(boardId, event.content);
     const raw = JSON.parse(plaintext) as Record<string, unknown>;
-    const dTag = event.tags.find((t) => t[0] === "d");
-    const id = dTag?.[1] ?? "";
+    const id = readTagValue(event.tags, "d") ?? "";
     if (!id) return null;
 
     const inferredEvent =
-      entityTag?.[1] === "event" ||
+      entityTag === "event" ||
       raw.kind === "date" ||
       raw.kind === "time" ||
       typeof raw.startDate === "string" ||
@@ -391,17 +389,14 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
   // Resolves a full UUID from a short prefix — fetches all board events and scans "d" tags.
   async function resolveTaskId(boardId: string, taskIdOrPrefix: string): Promise<string | null> {
-    // Full UUID — use directly
-    if (taskIdOrPrefix.length === 36) return taskIdOrPrefix;
-    // Short prefix — scan board events
+    const exact = taskIdOrPrefix.trim();
+    if (exact.length === 36) return exact;
+
     const allEvents = await fetchBoardEvents(boardId);
-    const prefix = taskIdOrPrefix.toLowerCase().slice(0, 8);
-    for (const event of allEvents) {
-      const dTag = event.tags.find((t) => t[0] === "d");
-      const dVal = (dTag?.[1] ?? "").toLowerCase();
-      if (dVal.startsWith(prefix)) return dTag![1];
-    }
-    return null;
+    const entries = Array.from(allEvents)
+      .map((event) => ({ id: readTagValue(event.tags, "d") ?? "" }))
+      .filter((entry) => entry.id);
+    return resolveIdentifierReference(entries, taskIdOrPrefix)?.id ?? null;
   }
 
   async function publishTaskEvent(
