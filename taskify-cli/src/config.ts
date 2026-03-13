@@ -14,6 +14,12 @@ export type BoardEntry = {
   kind?: "week" | "lists" | "compound" | "bible";
   columns?: { id: string; name: string }[];
   children?: string[];
+  archived?: boolean;
+  hidden?: boolean;
+  indexCardEnabled?: boolean;
+  clearCompletedDisabled?: boolean;
+  hideChildBoardNames?: boolean;
+  shareSettings?: Record<string, unknown>;
 };
 
 // Per-profile configuration (stored inside profiles.*)

@@ -258,6 +258,191 @@ boardCmd
     process.exit(0);
   });
 
+boardCmd
+  .command("column-add <board> <name>")
+  .description("Add a list column")
+  .action(async (boardArg: string, name: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const entry = resolveBoardReference(config.boards, boardArg);
+      if (!entry) throw new Error(`Board not found: "${boardArg}"`);
+      if (entry.kind !== "lists") throw new Error("Column operations are only supported for list boards");
+      const next = [...(entry.columns ?? []), { id: crypto.randomUUID(), name }];
+      const updated = await runtime.updateBoard(entry.id, { columns: next });
+      if (!updated) throw new Error("Failed to update board");
+      console.log(chalk.green(`✓ Added column \"${name}\"`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally { await runtime.disconnect(); }
+  });
+
+boardCmd
+  .command("column-rename <board> <columnRef> <name>")
+  .description("Rename a list column by id or name")
+  .action(async (boardArg: string, columnRef: string, name: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const entry = resolveBoardReference(config.boards, boardArg);
+      if (!entry || entry.kind !== "lists") throw new Error("List board not found");
+      const columns = [...(entry.columns ?? [])];
+      const idx = columns.findIndex((c) => c.id === columnRef || c.name.toLowerCase() === columnRef.toLowerCase());
+      if (idx === -1) throw new Error(`Column not found: ${columnRef}`);
+      columns[idx] = { ...columns[idx], name };
+      await runtime.updateBoard(entry.id, { columns });
+      console.log(chalk.green(`✓ Renamed column to \"${name}\"`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally { await runtime.disconnect(); }
+  });
+
+boardCmd
+  .command("column-delete <board> <columnRef>")
+  .description("Delete a list column by id or name")
+  .action(async (boardArg: string, columnRef: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const entry = resolveBoardReference(config.boards, boardArg);
+      if (!entry || entry.kind !== "lists") throw new Error("List board not found");
+      const before = entry.columns ?? [];
+      const after = before.filter((c) => !(c.id === columnRef || c.name.toLowerCase() === columnRef.toLowerCase()));
+      if (after.length === before.length) throw new Error(`Column not found: ${columnRef}`);
+      await runtime.updateBoard(entry.id, { columns: after });
+      console.log(chalk.green(`✓ Deleted column: ${columnRef}`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally { await runtime.disconnect(); }
+  });
+
+boardCmd
+  .command("column-reorder <board> <columnRef> <position>")
+  .description("Reorder a list column by id or name to 1-based position")
+  .action(async (boardArg: string, columnRef: string, positionRaw: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const pos = Number.parseInt(positionRaw, 10);
+      if (!Number.isFinite(pos) || pos < 1) throw new Error("Position must be >= 1");
+      const entry = resolveBoardReference(config.boards, boardArg);
+      if (!entry || entry.kind !== "lists") throw new Error("List board not found");
+      const columns = [...(entry.columns ?? [])];
+      const idx = columns.findIndex((c) => c.id === columnRef || c.name.toLowerCase() === columnRef.toLowerCase());
+      if (idx === -1) throw new Error(`Column not found: ${columnRef}`);
+      const [moved] = columns.splice(idx, 1);
+      const target = Math.min(columns.length, pos - 1);
+      columns.splice(target, 0, moved);
+      await runtime.updateBoard(entry.id, { columns });
+      console.log(chalk.green(`✓ Reordered column: ${moved.name} -> ${target + 1}`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally { await runtime.disconnect(); }
+  });
+
+boardCmd
+  .command("rename <board> <name>")
+  .description("Rename board")
+  .action(async (boardArg: string, name: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const entry = resolveBoardReference(config.boards, boardArg);
+      if (!entry) throw new Error(`Board not found: ${boardArg}`);
+      await runtime.updateBoard(entry.id, { name });
+      console.log(chalk.green(`✓ Renamed board to ${name}`));
+      process.exit(0);
+    } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+  });
+
+boardCmd.command("archive <board>").description("Archive board").action(async (boardArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { archived: true }); console.log(chalk.green("✓ Board archived")); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("unarchive <board>").description("Unarchive board").action(async (boardArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { archived: false }); console.log(chalk.green("✓ Board unarchived")); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("hide <board>").description("Hide board").action(async (boardArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { hidden: true }); console.log(chalk.green("✓ Board hidden")); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("unhide <board>").description("Unhide board").action(async (boardArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { hidden: false }); console.log(chalk.green("✓ Board visible")); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("index-card <board> <state>").description("Set index-card mode on/off").action(async (boardArg: string, state: string) => {
+  const enabled = ["on", "true", "1", "enable"].includes(state.toLowerCase());
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { indexCardEnabled: enabled }); console.log(chalk.green(`✓ Index-card ${enabled ? "enabled" : "disabled"}`)); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("clear-completed <board>").description("Delete completed tasks in board").action(async (boardArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); const count = await runtime.clearCompleted(entry.id); console.log(chalk.green(`✓ Cleared ${count} completed task(s)`)); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("share-settings <board> <json>").description("Update board share settings (JSON object)").action(async (boardArg: string, jsonRaw: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try {
+    const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`);
+    const parsed = JSON.parse(jsonRaw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("share-settings must be a JSON object");
+    await runtime.updateBoard(entry.id, { shareSettings: parsed as Record<string, unknown> });
+    console.log(chalk.green("✓ Updated share settings")); process.exit(0);
+  } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("child-add <board> <child>").description("Add child board to a compound board").action(async (boardArg: string, childArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try {
+    const entry = resolveBoardReference(config.boards, boardArg); if (!entry || entry.kind !== "compound") throw new Error("Compound board not found");
+    const child = resolveBoardReference(config.boards, childArg); const childId = child?.id ?? childArg;
+    const children = [...(entry.children ?? [])]; if (!children.includes(childId)) children.push(childId);
+    await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Added child: ${childId}`)); process.exit(0);
+  } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("child-remove <board> <child>").description("Remove child board from a compound board").action(async (boardArg: string, childArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try {
+    const entry = resolveBoardReference(config.boards, boardArg); if (!entry || entry.kind !== "compound") throw new Error("Compound board not found");
+    const child = resolveBoardReference(config.boards, childArg); const childId = child?.id ?? childArg;
+    const children = (entry.children ?? []).filter((id) => id !== childId);
+    await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Removed child: ${childId}`)); process.exit(0);
+  } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("child-reorder <board> <child> <position>").description("Reorder child board in a compound board").action(async (boardArg: string, childArg: string, positionRaw: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try {
+    const pos = Number.parseInt(positionRaw, 10); if (!Number.isFinite(pos) || pos < 1) throw new Error("Position must be >= 1");
+    const entry = resolveBoardReference(config.boards, boardArg); if (!entry || entry.kind !== "compound") throw new Error("Compound board not found");
+    const child = resolveBoardReference(config.boards, childArg); const childId = child?.id ?? childArg;
+    const children = [...(entry.children ?? [])]; const idx = children.indexOf(childId); if (idx === -1) throw new Error(`Child not found: ${childId}`);
+    const [moved] = children.splice(idx, 1); const target = Math.min(children.length, pos - 1); children.splice(target, 0, moved);
+    await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Reordered child: ${childId} -> ${target + 1}`)); process.exit(0);
+  } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
 // ---- boards (alias for board list) ----
 program
   .command("boards")
@@ -2223,19 +2408,21 @@ inboxCmd
 boardCmd
   .command("create <name>")
   .description("Create and publish a new board")
-  .option("--kind <lists|week>", "Board kind (default: lists)", "lists")
+  .option("--kind <lists|week|compound>", "Board kind (default: lists)", "lists")
+  .option("--child <id|name>", "Child board id/name (repeatable for compound boards)")
   .option("--relay <url>", "Relay URL hint (informational)")
   .action(async (name: string, opts) => {
-    if (!["lists", "week"].includes(opts.kind)) {
-      console.error(chalk.red(`Invalid --kind: "${opts.kind}". Use: lists or week`));
+    if (!["lists", "week", "compound"].includes(opts.kind)) {
+      console.error(chalk.red(`Invalid --kind: "${opts.kind}". Use: lists, week, or compound`));
       process.exit(1);
     }
-    const kind = opts.kind as "lists" | "week";
+    const kind = opts.kind as "lists" | "week" | "compound";
     const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
       let columns: { id: string; name: string }[] = [];
+      let children: string[] = [];
       if (kind === "lists") {
         const { createInterface } = await import("readline");
         const answer = await new Promise<string>((resolve) => {
@@ -2251,8 +2438,11 @@ boardCmd
             name: n,
           }));
         }
+      } else if (kind === "compound") {
+        const providedChildren = Array.isArray(opts.child) ? opts.child : (opts.child ? [opts.child] : []);
+        children = providedChildren.map((ref: string) => resolveBoardReference(config.boards, ref)?.id ?? ref);
       }
-      const { boardId } = await runtime.createBoard({ name, kind, columns });
+      const { boardId } = await runtime.createBoard({ name, kind, columns, children });
       console.log(chalk.green(`✓ Created board: ${name}  [id: ${boardId}]  [kind: ${kind}]`));
       console.log(chalk.dim("  Joined automatically. Run: taskify board sync to confirm."));
     } catch (err) {

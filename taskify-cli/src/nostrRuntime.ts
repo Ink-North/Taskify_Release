@@ -200,7 +200,9 @@ export type NostrRuntime = {
   syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }>;
   createTask(input: AgentTaskCreateInput): Promise<FullTaskRecord>;
   createTaskFull(input: ExtendedCreateInput): Promise<FullTaskRecord>;
-  createBoard(input: { name: string; kind: "lists" | "week"; columns?: { id: string; name: string }[] }): Promise<{ boardId: string }>;
+  createBoard(input: { name: string; kind: "lists" | "week" | "compound"; columns?: { id: string; name: string }[]; children?: string[] }): Promise<{ boardId: string }>;
+  updateBoard(boardId: string, patch: Partial<Pick<BoardEntry, "name" | "archived" | "hidden" | "indexCardEnabled" | "clearCompletedDisabled" | "hideChildBoardNames" | "shareSettings" | "columns" | "children">>): Promise<BoardEntry | null>;
+  clearCompleted(boardId: string): Promise<number>;
   updateTask(taskId: string, boardId: string, patch: AgentTaskPatchInput): Promise<FullTaskRecord | null>;
   setTaskStatus(taskId: string, status: AgentTaskStatus, boardId: string): Promise<FullTaskRecord | null>;
   deleteTask(taskId: string, boardId: string): Promise<FullTaskRecord | null>;
@@ -427,6 +429,38 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       );
     }
     return event;
+  }
+
+  async function publishBoardDefinition(board: BoardEntry): Promise<void> {
+    const { signer } = deriveBoardKeyPair(board.id);
+    const bTag = boardTagHash(board.id);
+    const payload: Record<string, unknown> = {
+      name: board.name,
+      kind: board.kind ?? "lists",
+      columns: board.columns ?? [],
+      children: board.children ?? [],
+      archived: !!board.archived,
+      hidden: !!board.hidden,
+      clearCompletedDisabled: !!board.clearCompletedDisabled,
+      listIndex: !!board.indexCardEnabled,
+      hideBoardNames: !!board.hideChildBoardNames,
+      shareSettings: board.shareSettings ?? {},
+      version: 1,
+    };
+    const encrypted = await encryptContent(board.id, JSON.stringify(payload));
+    const event = new NDKEvent(ndk);
+    event.kind = 30300;
+    event.content = encrypted;
+    event.tags = [
+      ["d", board.id],
+      ["b", bTag],
+      ["k", board.kind ?? "lists"],
+      ["name", board.name],
+      ...(board.columns ?? []).map((c): string[] => ["col", c.id, c.name]),
+      ...(board.children ?? []).map((child): string[] => ["ch", child]),
+    ];
+    await event.sign(signer);
+    await event.publish();
   }
 
   return {
@@ -806,6 +840,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         if (kind) entry.kind = kind as BoardEntry["kind"];
         if (columns && columns.length > 0) entry.columns = columns;
         if (children && children.length > 0) entry.children = children;
+        if (meta.archived !== undefined) entry.archived = meta.archived;
+        if (meta.hidden !== undefined) entry.hidden = meta.hidden;
+        if (meta.indexCardEnabled !== undefined) entry.indexCardEnabled = meta.indexCardEnabled;
+        if (meta.clearCompletedDisabled !== undefined) entry.clearCompletedDisabled = meta.clearCompletedDisabled;
+        if (meta.hideChildBoardNames !== undefined) entry.hideChildBoardNames = meta.hideChildBoardNames;
+        if (meta.shareSettings !== undefined) entry.shareSettings = meta.shareSettings;
         await saveConfig(config);
       }
 
@@ -1168,49 +1208,71 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
     async createBoard(input: {
       name: string;
-      kind: "lists" | "week";
+      kind: "lists" | "week" | "compound";
       columns?: { id: string; name: string }[];
+      children?: string[];
     }): Promise<{ boardId: string }> {
       await ensureConnected();
       const boardId = crypto.randomUUID();
-      const { signer } = deriveBoardKeyPair(boardId);
-      const bTag = boardTagHash(boardId);
 
-      const contentPayload = {
-        name: input.name,
-        kind: input.kind,
-        columns: input.columns ?? [],
-        version: 1,
-      };
-      const encrypted = await encryptContent(boardId, JSON.stringify(contentPayload));
-
-      const event = new NDKEvent(ndk);
-      event.kind = 30300;
-      event.content = encrypted;
-      event.tags = [
-        ["d", boardId],
-        ["b", bTag],
-        ["k", input.kind],
-        ...(input.columns ?? []).map((c): string[] => ["col", c.id, c.name]),
-      ];
-      await event.sign(signer);
-      try {
-        await event.publish();
-      } catch (err) {
-        throw new Error(`Board publish failed: ${String(err)}`);
-      }
-
-      // Auto-join: save to config
       const newEntry: BoardEntry = {
         id: boardId,
         name: input.name,
         kind: input.kind,
         columns: input.columns ?? [],
+        children: input.children ?? [],
+        archived: false,
+        hidden: false,
+        clearCompletedDisabled: false,
+        indexCardEnabled: false,
+        hideChildBoardNames: false,
       };
+      try {
+        await publishBoardDefinition(newEntry);
+      } catch (err) {
+        throw new Error(`Board publish failed: ${String(err)}`);
+      }
+
       config.boards.push(newEntry);
       await saveConfig(config);
-
       return { boardId };
+    },
+
+    async updateBoard(boardId: string, patch: Partial<Pick<BoardEntry, "name" | "archived" | "hidden" | "indexCardEnabled" | "clearCompletedDisabled" | "hideChildBoardNames" | "shareSettings" | "columns" | "children">>): Promise<BoardEntry | null> {
+      await ensureConnected();
+      const entry = resolveBoardEntry(config, boardId);
+      if (!entry) return null;
+      if (patch.name !== undefined) entry.name = patch.name;
+      if (patch.archived !== undefined) entry.archived = patch.archived;
+      if (patch.hidden !== undefined) entry.hidden = patch.hidden;
+      if (patch.indexCardEnabled !== undefined) entry.indexCardEnabled = patch.indexCardEnabled;
+      if (patch.clearCompletedDisabled !== undefined) entry.clearCompletedDisabled = patch.clearCompletedDisabled;
+      if (patch.hideChildBoardNames !== undefined) entry.hideChildBoardNames = patch.hideChildBoardNames;
+      if (patch.columns !== undefined) entry.columns = patch.columns;
+      if (patch.children !== undefined) entry.children = patch.children;
+      if (patch.shareSettings !== undefined) entry.shareSettings = patch.shareSettings;
+      await publishBoardDefinition(entry);
+      await saveConfig(config);
+      return entry;
+    },
+
+    async clearCompleted(boardId: string): Promise<number> {
+      await ensureConnected();
+      const entry = resolveBoardEntry(config, boardId);
+      if (!entry) return 0;
+      const events = await fetchBoardEvents(entry.id);
+      let removed = 0;
+      for (const event of events) {
+        const task = await parseDecryptedEvent(event, entry.id, entry.name);
+        if (!task || !task.completed) continue;
+        const plaintext = await decryptContent(entry.id, event.content);
+        const rawPayload = JSON.parse(plaintext);
+        const colTag = event.tags.find((t) => t[0] === "col");
+        const colId = colTag?.[1] ?? "";
+        await publishTaskEvent(entry.id, task.id, rawPayload, "deleted", colId);
+        removed += 1;
+      }
+      return removed;
     },
   };
 }
