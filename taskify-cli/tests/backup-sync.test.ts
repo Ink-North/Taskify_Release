@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseBackupSnapshot, mergeBoardsFromBackup } from "../src/shared/backupSync.ts";
+import { parseBackupSnapshot, mergeBoardsFromBackup, mergeRelaysFromBackup } from "../src/shared/backupSync.ts";
 import type { BoardEntry } from "../src/config.ts";
 
 test("parseBackupSnapshot validates shape and returns summary fields", () => {
@@ -42,4 +42,14 @@ test("mergeBoardsFromBackup maps nostr backup boards into CLI board entries", ()
   assert.equal(merged[0].id, "local-1");
   assert.deepEqual(merged[0].relays, ["wss://relay.new"]);
   assert.deepEqual(merged[0].columns, [{ id: "col-1", name: "Todo" }]);
+});
+
+test("mergeRelaysFromBackup prefers normalized backup relays when present", () => {
+  const merged = mergeRelaysFromBackup(["wss://relay.local"], ["wss://relay.backup", "wss://relay.backup"]);
+  assert.deepEqual(merged, ["wss://relay.backup"]);
+});
+
+test("mergeRelaysFromBackup preserves current relays when backup relays are empty", () => {
+  const merged = mergeRelaysFromBackup(["wss://relay.local", "wss://relay.two"], []);
+  assert.deepEqual(merged, ["wss://relay.local", "wss://relay.two"]);
 });

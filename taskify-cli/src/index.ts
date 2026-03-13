@@ -14,7 +14,7 @@ import { runOnboarding } from "./onboarding.js";
 import { buildCalendarEventDraft } from "./shared/eventDraft.js";
 import { resolveBoardReference } from "taskify-core";
 import { resolveBoardForCommand } from "./shared/commandResolution.js";
-import { parseBackupSnapshot, mergeBoardsFromBackup } from "./shared/backupSync.js";
+import { parseBackupSnapshot, mergeBoardsFromBackup, mergeRelaysFromBackup } from "./shared/backupSync.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -2005,6 +2005,50 @@ backupCmd
       config.boards = merged;
       await saveConfig(config);
       console.log(chalk.green(`✓ Applied board merge (${changedCount} changed/new)`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    }
+  });
+
+backupCmd
+  .command("merge-relays <file>")
+  .description("Apply backup default relays to local CLI relay config")
+  .option("--dry-run", "Preview relay changes without saving")
+  .action(async (file: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+
+    let raw = "";
+    try {
+      raw = await readFile(file, "utf-8");
+    } catch {
+      console.error(chalk.red(`Cannot read file: ${file}`));
+      process.exit(1);
+    }
+
+    try {
+      const snapshot = parseBackupSnapshot(raw);
+      const mergedRelays = mergeRelaysFromBackup(config.relays, snapshot.defaultRelays);
+      const changed = JSON.stringify(mergedRelays) !== JSON.stringify(config.relays);
+      if (!changed) {
+        console.log(chalk.dim("No relay changes to apply."));
+        process.exit(0);
+      }
+
+      console.log(chalk.bold("Relay merge preview"));
+      console.log(`  current relays: ${config.relays.length}`);
+      console.log(`  backup relays:  ${snapshot.defaultRelays.length}`);
+      console.log(`  merged relays:  ${mergedRelays.length}`);
+
+      if (opts.dryRun) {
+        console.log(chalk.dim("[dry-run] No config written."));
+        process.exit(0);
+      }
+
+      config.relays = mergeRelaysFromBackup(config.relays, snapshot.defaultRelays);
+      await saveConfig(config);
+      console.log(chalk.green(`✓ Applied relay merge (${config.relays.length} relay${config.relays.length === 1 ? "" : "s"})`));
       process.exit(0);
     } catch (err) {
       console.error(chalk.red(String(err)));

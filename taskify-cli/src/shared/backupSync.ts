@@ -51,6 +51,12 @@ export function parseBackupSnapshot(raw: string): ParsedBackupSnapshot {
   return { boards, settings, walletSeed, defaultRelays };
 }
 
+export function mergeRelaysFromBackup(currentRelays: string[], backupDefaultRelays: string[]): string[] {
+  const normalizedBackup = normalizeRelayList(backupDefaultRelays) ?? [];
+  if (normalizedBackup.length > 0) return normalizedBackup;
+  return normalizeRelayList(currentRelays) ?? [];
+}
+
 export function mergeBoardsFromBackup(
   currentBoards: BoardEntry[],
   incomingBoards: NostrAppBackupBoard[],
