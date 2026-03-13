@@ -28,6 +28,7 @@ import {
 import { resolveBoardForCommand } from "./shared/commandResolution.js";
 import { parseBackupSnapshot, mergeBoardsFromBackup, mergeRelaysFromBackup } from "./shared/backupSync.js";
 import { sendShareEnvelopeNip17, fetchShareInboxNip17 } from "./shared/shareTransport.js";
+import { resolveBoardColumn, formatAvailableColumns } from "./shared/columnResolution.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -241,19 +242,42 @@ boardCmd
   });
 
 boardCmd
-  .command("columns")
-  .description("Show cached columns for all configured boards")
-  .action(async () => {
+  .command("columns [board]")
+  .description("Show cached columns/lists for a board (or all boards)")
+  .option("--json", "Output as JSON")
+  .action(async (boardArg: string | undefined, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.boards.length === 0) {
       console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
       process.exit(0);
     }
-    for (const b of config.boards) {
+
+    const boards = boardArg
+      ? (() => {
+          const entry = resolveBoardReference(config.boards, boardArg);
+          if (!entry) {
+            console.error(chalk.red(`Board not found: "${boardArg}"`));
+            process.exit(1);
+          }
+          return [entry];
+        })()
+      : config.boards;
+
+    if (opts.json) {
+      renderJson(boards.map((b) => ({
+        id: b.id,
+        name: b.name,
+        kind: b.kind ?? "unknown",
+        columns: b.columns ?? [],
+      })));
+      process.exit(0);
+    }
+
+    for (const b of boards) {
       const kindStr = b.kind ? ` (${b.kind})` : "";
       console.log(chalk.bold(`${b.name}${kindStr}:`));
       if (!b.columns || b.columns.length === 0) {
-        console.log(chalk.dim(`  — no columns cached (run: taskify board sync)`));
+        console.log(chalk.dim(`  — no columns/lists cached (run: taskify board sync)`));
       } else {
         for (const col of b.columns) {
           console.log(`  [${chalk.cyan(col.id)}] ${col.name}`);
@@ -494,10 +518,6 @@ program
     process.exit(0);
   });
 
-const WEEK_DAY_MAP: Record<string, number> = {
-  mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6,
-};
-
 // ---- event command group ----
 const eventCmd = program
   .command("event")
@@ -572,7 +592,10 @@ eventCmd
         timeZone: opts.tz,
       });
       const boardEntry = config.boards.find((b) => b.id === boardId)!;
-      const resolvedColumn = opts.column ? resolveColumn(boardEntry, opts.column) : null;
+      if (boardEntry.kind === "lists" && (!boardEntry.columns || boardEntry.columns.length === 0)) {
+        throw new Error(`Board "${boardEntry.name}" has no columns/lists yet. Add one first.`);
+      }
+      const resolvedColumn = opts.column ? resolveColumnOrExit(boardEntry, opts.column) : null;
       const recurrence = normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson));
       const reminders = normalizeTaskReminders(parseReminderOption(opts.reminders));
       const documents = normalizeTaskDocuments(parseJsonOption("--documents-json", opts.documentsJson));
@@ -663,7 +686,7 @@ eventCmd
     try {
       const boardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
       const boardEntry = boardId ? config.boards.find((b) => b.id === boardId) : undefined;
-      const resolvedColumn = opts.column && boardEntry ? resolveColumn(boardEntry, opts.column) : null;
+      const resolvedColumn = opts.column && boardEntry ? resolveColumnOrExit(boardEntry, opts.column) : null;
       const recurrence = opts.recurrenceJson !== undefined ? normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson)) ?? null : undefined;
       const reminders = opts.reminders !== undefined ? normalizeTaskReminders(parseReminderOption(opts.reminders)) ?? null : undefined;
       const documents = opts.documentsJson !== undefined ? normalizeTaskDocuments(parseJsonOption("--documents-json", opts.documentsJson)) ?? null : undefined;
@@ -941,45 +964,28 @@ shareCmd
     }
   });
 
-/** Resolve a week-board day name to the ISO date for that day in the current week (Mon-based). */
-function resolveWeekDayToISO(dayKey: string): string {
-  const offset = WEEK_DAY_MAP[dayKey];
-  if (offset === undefined) return dayKey;
-  const today = new Date();
-  // JavaScript: 0=Sun, 1=Mon … 6=Sat
-  const jsDay = today.getDay();
-  // Offset from Monday: Mon=0 … Sun=6
-  const mondayShift = jsDay === 0 ? -6 : 1 - jsDay;
-  const monday = new Date(today);
-  monday.setDate(today.getDate() + mondayShift);
-  monday.setHours(0, 0, 0, 0);
-  const target = new Date(monday);
-  target.setDate(monday.getDate() + offset);
-  const y = target.getFullYear();
-  const m = String(target.getMonth() + 1).padStart(2, "0");
-  const d = String(target.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-// Resolve --column value to { id, name } given a board entry.
-function resolveColumn(
+function resolveColumnOrExit(
   entry: Awaited<ReturnType<typeof loadConfig>>["boards"][number],
   columnArg: string,
-): { id: string; name: string } | null {
-  const dayKey = columnArg.toLowerCase();
-  // Week board: day name → ISO date
-  if (dayKey in WEEK_DAY_MAP && entry.kind === "week") {
-    const isoDate = resolveWeekDayToISO(dayKey);
-    return { id: isoDate, name: columnArg };
+): { id: string; name: string } {
+  const resolved = resolveBoardColumn(entry, columnArg);
+  if (resolved.ok) return resolved.column;
+
+  const available = formatAvailableColumns(resolved.available);
+  if (resolved.reason === "no-columns") {
+    console.error(chalk.red(`Board "${entry.name}" has no columns/lists yet.`));
+    console.error(chalk.dim("Add a list first (PWA or `taskify board column-add`) then retry."));
+    process.exit(1);
   }
-  if (!entry.columns || entry.columns.length === 0) return null;
-  // Exact id match
-  const byId = entry.columns.find((c) => c.id === columnArg);
-  if (byId) return byId;
-  // Case-insensitive name match
-  const lower = columnArg.toLowerCase();
-  const byName = entry.columns.find((c) => c.name.toLowerCase() === lower);
-  return byName ?? null;
+  if (resolved.reason === "ambiguous") {
+    console.error(chalk.red(`Ambiguous column "${columnArg}" on board "${entry.name}".`));
+    console.error(chalk.dim("Use --column <id> to target deterministically."));
+    console.error(chalk.dim(`Available columns:\n${available}`));
+    process.exit(1);
+  }
+  console.error(chalk.red(`Column not found: "${columnArg}" on board "${entry.name}".`));
+  console.error(chalk.dim(`Available columns:\n${available}`));
+  process.exit(1);
 }
 
 // ---- list ----
@@ -1010,11 +1016,7 @@ program
           process.exit(1);
         }
         const boardEntry = config.boards.find((b) => b.id === singleBoardId)!;
-        const resolved = resolveColumn(boardEntry, opts.column);
-        if (!resolved) {
-          console.error(chalk.red(`Unknown column: ${opts.column}. Run: taskify board sync`));
-          process.exit(1);
-        }
+        const resolved = resolveColumnOrExit(boardEntry, opts.column);
         columnId = resolved.id;
         columnName = resolved.name;
       }
@@ -1195,17 +1197,19 @@ program
       process.exit(1);
     }
 
+    if (boardEntry.kind === "lists" && (!boardEntry.columns || boardEntry.columns.length === 0)) {
+      console.error(chalk.red(`Board "${boardEntry.name}" has no columns/lists yet.`));
+      console.error(chalk.dim("Add a list first (PWA or `taskify board column-add`) then retry."));
+      process.exit(1);
+    }
+
     // Resolve --column
     let resolvedColumnId: string | undefined;
     let resolvedColumnName: string | undefined;
     if (opts.column) {
-      const col = resolveColumn(boardEntry, opts.column);
-      if (!col) {
-        process.stderr.write(`⚠ Column not found in board config — run: taskify board sync\n`);
-      } else {
-        resolvedColumnId = col.id;
-        resolvedColumnName = col.name;
-      }
+      const col = resolveColumnOrExit(boardEntry, opts.column);
+      resolvedColumnId = col.id;
+      resolvedColumnName = col.name;
     }
 
     const runtime = initRuntime(config);
@@ -1237,7 +1241,7 @@ program
         renderJson(task);
       } else {
         const colStr = task.column
-          ? chalk.dim(`  [col: ${resolvedColumnName ?? task.column}]`)
+          ? chalk.dim(`  [col: ${task.column}${resolvedColumnName ? ` (${resolvedColumnName})` : ""}]`)
           : "";
         console.log(
           chalk.green(`✓ Created: ${task.title}`) + colStr,
@@ -1466,12 +1470,8 @@ program
       if (opts.column !== undefined) {
         const bEntry = config.boards.find((b) => b.id === boardId);
         if (bEntry) {
-          const col = resolveColumn(bEntry, opts.column);
-          if (col) {
-            patch.columnId = col.id;
-          } else {
-            process.stderr.write(`⚠ Column not found in board config — run: taskify board sync\n`);
-          }
+          const col = resolveColumnOrExit(bEntry, opts.column);
+          patch.columnId = col.id;
         }
       }
       const task = await runtime.updateTask(taskId, boardId, patch);
@@ -1930,7 +1930,7 @@ Today is ${today}.`;
     let resolvedColumnId: string | undefined;
     let resolvedColumnName: string | undefined;
     if (extracted.column) {
-      const col = resolveColumn(boardEntry, extracted.column);
+      const col = resolveColumnOrExit(boardEntry, extracted.column);
       if (col) {
         resolvedColumnId = col.id;
         resolvedColumnName = col.name;
@@ -2401,7 +2401,7 @@ program
         // Resolve column
         let colId: string | undefined;
         if (r.column) {
-          const col = resolveColumn(boardEntry, r.column);
+          const col = resolveColumnOrExit(boardEntry, r.column);
           if (col) colId = col.id;
         }
         const subtasks = (r.subtasks ?? []).map((text) => ({
@@ -2659,7 +2659,7 @@ inboxCmd
         if (opts.yes) {
           // Apply flags directly
           if (opts.column) {
-            const col = resolveColumn(boardEntry, opts.column);
+            const col = resolveColumnOrExit(boardEntry, opts.column);
             if (col) { colId = col.id; colName = col.name; }
           }
           if (opts.priority) priority = parseInt(opts.priority, 10) as 1 | 2 | 3;
@@ -2675,7 +2675,7 @@ inboxCmd
             : "none";
           const colAns = await ask(`Column [${currentCol}]: `);
           if (colAns) {
-            const col = resolveColumn(boardEntry, colAns);
+            const col = resolveColumnOrExit(boardEntry, colAns);
             if (col) { colId = col.id; colName = col.name; }
             else process.stderr.write(`⚠ Column not found — skipping column change\n`);
           }
