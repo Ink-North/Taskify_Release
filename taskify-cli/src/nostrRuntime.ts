@@ -1,7 +1,7 @@
 import NDK, { NDKEvent, NDKRelayStatus } from "@nostr-dev-kit/ndk";
 import { getPublicKey, nip19 } from "nostr-tools";
 import { boardTagHash, deriveBoardKeyPair } from "taskify-runtime-nostr";
-import type { ReminderPreset, Recurrence, Subtask } from "./shared/taskTypes.js";
+import type { ReminderPreset, Recurrence, Subtask, TaskAssignee } from "./shared/taskTypes.js";
 import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from "./shared/agentRuntime.js";
 import type { AgentSecurityConfig } from "./shared/agentSecurity.js";
 import type { TaskifyConfig, BoardEntry } from "./config.js";
@@ -87,6 +87,7 @@ function recordToCache(r: FullTaskRecord): CachedTask {
     reminders: r.reminders as string[] | undefined,
     inboxItem: r.inboxItem,
     assignees: r.assignees,
+    documents: r.documents,
   };
 }
 
@@ -115,7 +116,8 @@ function cacheToRecord(t: CachedTask, boardName?: string): FullTaskRecord {
     bounty: t.bounty,
     reminders: t.reminders as ReminderPreset[] | undefined,
     inboxItem: t.inboxItem,
-    assignees: t.assignees,
+    assignees: t.assignees as TaskAssignee[] | undefined,
+    documents: t.documents as Record<string, unknown>[] | undefined,
   };
 }
 
@@ -144,7 +146,8 @@ export type FullTaskRecord = {
   column?: string;         // col tag value (column ID)
   sourceBoardId?: string;
   inboxItem?: boolean;
-  assignees?: string[];    // hex pubkeys
+  assignees?: TaskAssignee[];
+  documents?: Record<string, unknown>[];
 };
 
 export type ExtendedCreateInput = AgentTaskCreateInput & {
@@ -166,6 +169,12 @@ export type FullEventRecord = {
   startTzid?: string;
   endTzid?: string;
   description?: string;
+  recurrence?: Recurrence;
+  reminders?: ReminderPreset[];
+  participants?: Array<{ pubkey: string; relay?: string; role?: string }>;
+  columnId?: string;
+  rsvpStatus?: "accepted" | "declined" | "tentative";
+  rsvpCreatedAt?: number;
   createdAt?: number;
   updatedAt?: string;
   deleted?: boolean;
@@ -208,6 +217,8 @@ export type NostrRuntime = {
   deleteTask(taskId: string, boardId: string): Promise<FullTaskRecord | null>;
   toggleSubtask(taskId: string, boardId: string, subtaskRef: string, completed: boolean): Promise<FullTaskRecord | null>;
   getTask(taskId: string, boardId?: string): Promise<FullTaskRecord | null>;
+  applyTaskAssignmentResponse(taskId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullTaskRecord | null>;
+  applyEventRsvpResponse(eventId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullEventRecord | null>;
   remindTask(taskId: string, presets: ReminderPreset[]): Promise<void>;
   getLocalReminders(taskId: string): ReminderPreset[];
   getAgentSecurityConfig(): Promise<AgentSecurityConfig>;
@@ -258,10 +269,25 @@ async function parseDecryptedEvent(
       column,
       inboxItem: payload.inboxItem === true ? true : undefined,
       assignees: Array.isArray(payload.assignees) && payload.assignees.length > 0
-        ? (payload.assignees as Array<unknown>).map((a) =>
-            typeof a === "string" ? a : (a as Record<string, string>).pubkey ?? "")
-          .filter(Boolean)
+        ? (payload.assignees as Array<unknown>)
+          .map((a) => {
+            if (typeof a === "string") return { pubkey: a };
+            if (!a || typeof a !== "object") return null;
+            const obj = a as Record<string, unknown>;
+            const pubkey = typeof obj.pubkey === "string" ? obj.pubkey : "";
+            if (!pubkey) return null;
+            return {
+              pubkey,
+              relay: typeof obj.relay === "string" ? obj.relay : undefined,
+              status: obj.status === "pending" || obj.status === "accepted" || obj.status === "declined" || obj.status === "tentative"
+                ? obj.status
+                : undefined,
+              respondedAt: typeof obj.respondedAt === "number" ? Math.round(obj.respondedAt) : undefined,
+            };
+          })
+          .filter((a): a is TaskAssignee => !!a)
         : undefined,
+      documents: Array.isArray(payload.documents) ? (payload.documents as Record<string, unknown>[]) : undefined,
     };
   } catch {
     return null;
@@ -307,6 +333,12 @@ async function parseDecryptedCalendarEvent(
       startTzid: payload.startTzid,
       endTzid: payload.endTzid,
       description: payload.description,
+      recurrence: payload.recurrence as Recurrence | undefined,
+      reminders: payload.reminders as ReminderPreset[] | undefined,
+      participants: Array.isArray(payload.participants) ? payload.participants as Array<{ pubkey: string; relay?: string; role?: string }> : undefined,
+      columnId: (readTagValue(event.tags, "col") || undefined),
+      rsvpStatus: payload.rsvpStatus as "accepted" | "declined" | "tentative" | undefined,
+      rsvpCreatedAt: typeof payload.rsvpCreatedAt === "number" ? payload.rsvpCreatedAt : undefined,
       createdAt: event.created_at,
       updatedAt: event.created_at ? new Date(event.created_at * 1000).toISOString() : undefined,
       deleted: statusVal === "deleted" || payload.deleted === true,
@@ -895,7 +927,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         documents: null,
         bounty: null,
         subtasks: input.subtasks ?? null,
-        assignees: input.assignees ? input.assignees.map((pk) => ({ pubkey: pk })) : null,
+        assignees: input.assignees ? input.assignees.map((pk) => ({ pubkey: pk, status: "pending" })) : null,
         inboxItem: input.inboxItem === true ? true : null,
       };
       // Resolve column: explicit > week-board today > ""
@@ -922,7 +954,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         subtasks: input.subtasks,
         column: colId || undefined,
         inboxItem: input.inboxItem === true ? true : undefined,
-        assignees: input.assignees,
+        assignees: input.assignees?.map((pubkey) => ({ pubkey, status: "pending" })),
       };
       // Update cache with the new task
       const cache = readCache();
@@ -960,8 +992,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         ...(patch.dueISO !== undefined ? { dueISO: patch.dueISO ?? "" } : {}),
         ...(patch.priority !== undefined ? { priority: patch.priority ?? null } : {}),
         ...(patch.inboxItem !== undefined ? { inboxItem: patch.inboxItem } : {}),
-        // Store assignees as {pubkey} objects in Nostr payload for PWA compat
-        ...(patch.assignees !== undefined ? { assignees: patch.assignees.map((pk) => ({ pubkey: pk })) } : {}),
+        ...(patch.assignees !== undefined ? { assignees: patch.assignees.map((pk) => ({ pubkey: pk, status: "pending" })) } : {}),
         lastEditedBy: userPubkey,
       };
       const statusTag = event.tags.find((t) => t[0] === "status");
@@ -971,8 +1002,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const colId = patch.columnId !== undefined ? (patch.columnId ?? "") : existingColId;
       await publishTaskEvent(entry.id, taskId, merged, status, colId);
       // Build updated FullTaskRecord — keep assignees as string[] (extract pubkeys)
-      const updatedAssignees: string[] | undefined = patch.assignees !== undefined
-        ? patch.assignees
+      const updatedAssignees: TaskAssignee[] | undefined = patch.assignees !== undefined
+        ? patch.assignees.map((pubkey) => ({ pubkey, status: "pending" }))
         : existing.assignees;
       const updated: FullTaskRecord = {
         ...existing,
@@ -1155,6 +1186,59 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
             }
           }
         }
+      }
+      return null;
+    },
+
+    async applyTaskAssignmentResponse(taskId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullTaskRecord | null> {
+      await ensureConnected();
+      for (const entry of config.boards) {
+        const resolvedId = await resolveTaskId(entry.id, taskId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardEvents(entry.id, resolvedId);
+        if (events.size === 0) continue;
+        const [event] = events;
+        const existing = await parseDecryptedEvent(event, entry.id, entry.name);
+        if (!existing) continue;
+        const plaintext = await decryptContent(entry.id, event.content);
+        const rawPayload = JSON.parse(plaintext);
+        const assignees = Array.isArray(rawPayload.assignees) ? rawPayload.assignees : [];
+        const idx = assignees.findIndex((a: any) => (typeof a === "string" ? a : a?.pubkey) === senderPubkey);
+        const respondedEpoch = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(Date.now() / 1000);
+        if (idx >= 0) {
+          const prev = assignees[idx];
+          assignees[idx] = typeof prev === "string" ? { pubkey: prev, status, respondedAt: respondedEpoch } : { ...prev, status, respondedAt: respondedEpoch };
+        } else {
+          assignees.push({ pubkey: senderPubkey, status, respondedAt: respondedEpoch });
+        }
+        rawPayload.assignees = assignees;
+        const statusTag = event.tags.find((t) => t[0] === "status");
+        const nostrStatus = (statusTag?.[1] ?? "open") as "open" | "done" | "deleted";
+        const colId = readTagValue(event.tags, "col") ?? "";
+        await publishTaskEvent(entry.id, resolvedId, rawPayload, nostrStatus, colId);
+        return await parseDecryptedEvent(event, entry.id, entry.name);
+      }
+      return null;
+    },
+
+    async applyEventRsvpResponse(eventId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullEventRecord | null> {
+      await ensureConnected();
+      for (const entry of config.boards) {
+        const resolvedId = await resolveTaskId(entry.id, eventId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardEvents(entry.id, resolvedId);
+        if (events.size === 0) continue;
+        const [event] = events;
+        const existing = await parseDecryptedCalendarEvent(event, entry.id, entry.name);
+        if (!existing || existing.deleted) continue;
+        const plaintext = await decryptContent(entry.id, event.content);
+        const rawPayload = JSON.parse(plaintext);
+        rawPayload.rsvpStatus = status;
+        rawPayload.rsvpCreatedAt = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(Date.now() / 1000);
+        rawPayload.lastEditedBy = senderPubkey;
+        const colId = readTagValue(event.tags, "col") ?? "";
+        await publishTaskEvent(entry.id, resolvedId, rawPayload, "open", colId);
+        return { ...existing, rsvpStatus: status, rsvpCreatedAt: rawPayload.rsvpCreatedAt };
       }
       return null;
     },

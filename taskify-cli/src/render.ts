@@ -103,7 +103,8 @@ function formatRecurrenceFull(task: FullTaskRecord): string {
 function formatAssignee(task: FullTaskRecord): string {
   const assignees = task.assignees;
   if (!Array.isArray(assignees) || assignees.length === 0) return "".padEnd(12);
-  const first = assignees[0];
+  const first = assignees[0]?.pubkey;
+  if (!first) return "".padEnd(12);
   const npub = toNpubSafe(first) ?? first;
   const truncated = npub.length > 12 ? npub.slice(0, 9) + "..." : npub;
   return truncated.padEnd(12);
@@ -179,6 +180,19 @@ export function renderTaskCard(task: FullTaskRecord, trustedNpubs: string[], loc
     task.subtasks.forEach((s, i) => {
       const check = s.completed ? "x" : " ";
       console.log(`  [${i + 1}] [${check}] ${s.title}`);
+    });
+  }
+
+  if (Array.isArray(task.documents) && task.documents.length > 0) {
+    console.log(`${lbl("Documents:")}${task.documents.length}`);
+  }
+
+  if (Array.isArray(task.assignees) && task.assignees.length > 0) {
+    console.log(`${lbl("Assignment states:")}`);
+    task.assignees.forEach((a) => {
+      const short = truncateNpub(a.pubkey);
+      const status = a.status ?? "pending";
+      console.log(`  - ${short}: ${status}`);
     });
   }
 

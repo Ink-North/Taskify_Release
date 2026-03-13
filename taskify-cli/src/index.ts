@@ -19,6 +19,7 @@ import {
   buildTaskShareEnvelope,
   buildCalendarEventInviteEnvelope,
   buildTaskAssignmentResponseEnvelope,
+  buildEventRsvpResponseEnvelope,
 } from "taskify-core";
 import { resolveBoardForCommand } from "./shared/commandResolution.js";
 import { parseBackupSnapshot, mergeBoardsFromBackup, mergeRelaysFromBackup } from "./shared/backupSync.js";
@@ -578,6 +579,11 @@ eventCmd
         if (event.kind === "time") console.log(`when: ${event.startISO}${event.endISO ? ` → ${event.endISO}` : ""}`);
         else console.log(`when: ${event.startDate}${event.endDate ? ` → ${event.endDate}` : ""}`);
         if (event.description) console.log(`description: ${event.description}`);
+        if (event.recurrence) console.log(`recurrence: ${JSON.stringify(event.recurrence)}`);
+        if (Array.isArray(event.reminders) && event.reminders.length > 0) console.log(`reminders: ${event.reminders.join(", ")}`);
+        if (Array.isArray(event.participants) && event.participants.length > 0) console.log(`invitees: ${event.participants.length}`);
+        if (event.columnId) console.log(`column: ${event.columnId}`);
+        if (event.rsvpStatus) console.log(`rsvp status: ${event.rsvpStatus}`);
       }
       process.exit(0);
     } catch (err) {
@@ -705,8 +711,8 @@ eventCmd
     try {
       if (!opts.to) throw new Error("--to <npubOrHex> is required.");
       const senderHex = nsecToHexOrThrow(config.nsec);
-      const envelope = buildTaskAssignmentResponseEnvelope({
-        taskId: `event:${eventId}`,
+      const envelope = buildEventRsvpResponseEnvelope({
+        eventId,
         status,
         respondedAt: new Date().toISOString(),
       });
@@ -774,6 +780,9 @@ shareCmd
         dueISO: task.dueISO,
         dueDateEnabled: task.dueDateEnabled,
         dueTimeEnabled: task.dueTimeEnabled,
+        recurrence: task.recurrence,
+        reminders: task.reminders,
+        documents: task.documents,
         sourceTaskId: task.id,
         assignment: opts.assignment === true ? true : undefined,
         assignees: task.assignees?.map((pubkey) => ({ pubkey })),
@@ -828,7 +837,9 @@ shareCmd
       const senderHex = nsecToHexOrThrow(config.nsec);
       const inbox = await fetchShareInboxNip17({ recipientSecretHex: senderHex, relays: config.relays, limit: 100 });
       if (opts.apply) {
+        const processed = new Set(config.processedInboxRumorIds ?? []);
         for (const item of inbox) {
+          if (processed.has(item.rumorId)) continue;
           if (item.envelope.item.type === "board") {
             const exists = config.boards.some((b) => b.id === item.envelope.item.boardId);
             if (!exists) {
@@ -844,7 +855,15 @@ shareCmd
               assignees: item.envelope.item.assignees?.map((a) => a.pubkey),
             });
           }
+          if (item.envelope.item.type === "task-assignment-response") {
+            await runtime.applyTaskAssignmentResponse(item.envelope.item.taskId, item.senderPubkey, item.envelope.item.status, item.envelope.item.respondedAt);
+          }
+          if (item.envelope.item.type === "event-rsvp-response") {
+            await runtime.applyEventRsvpResponse(item.envelope.item.eventId, item.senderPubkey, item.envelope.item.status, item.envelope.item.respondedAt);
+          }
+          processed.add(item.rumorId);
         }
+        config.processedInboxRumorIds = Array.from(processed).slice(-2000);
         await saveConfig(config);
       }
       if (opts.json) renderJson(inbox);
