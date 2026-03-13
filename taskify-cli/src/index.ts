@@ -12,6 +12,7 @@ import { zshCompletion, bashCompletion, fishCompletion } from "./completions.js"
 import { readCache, clearCache, CACHE_PATH, CACHE_TTL_MS } from "./taskCache.js";
 import { runOnboarding } from "./onboarding.js";
 import { buildCalendarEventDraft } from "./shared/eventDraft.js";
+import { resolveBoardReference } from "taskify-core";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -70,9 +71,7 @@ async function resolveBoardId(
   config: Awaited<ReturnType<typeof loadConfig>>,
 ): Promise<string> {
   if (boardOpt) {
-    const entry =
-      config.boards.find((b) => b.id === boardOpt) ??
-      config.boards.find((b) => b.name.toLowerCase() === boardOpt.toLowerCase());
+    const entry = resolveBoardReference(config.boards, boardOpt);
     if (!entry) {
       console.error(chalk.red(`Board not found: "${boardOpt}". Known boards:`));
       for (const b of config.boards) {
@@ -165,9 +164,7 @@ boardCmd
     }
     const toSync = boardId
       ? (() => {
-          const entry =
-            config.boards.find((b) => b.id === boardId) ??
-            config.boards.find((b) => b.name.toLowerCase() === boardId.toLowerCase());
+          const entry = resolveBoardReference(config.boards, boardId);
           if (!entry) {
             console.error(chalk.red(`Board not found: "${boardId}"`));
             process.exit(1);
@@ -242,9 +239,7 @@ boardCmd
   .description("List children of a compound board")
   .action(async (boardArg: string) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
-    const entry =
-      config.boards.find((b) => b.id === boardArg) ??
-      config.boards.find((b) => b.name.toLowerCase() === boardArg.toLowerCase());
+    const entry = resolveBoardReference(config.boards, boardArg);
     if (!entry) {
       console.error(chalk.red(`Board not found: "${boardArg}"`));
       process.exit(1);

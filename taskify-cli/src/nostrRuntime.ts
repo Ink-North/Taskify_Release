@@ -14,6 +14,7 @@ import {
   normalizeCalendarMutationPayload,
   encryptToBoard,
   decryptFromBoard,
+  resolveBoardReference,
 } from "taskify-core";
 
 function nowISO(): string {
@@ -53,13 +54,7 @@ function validateEventCompat(event: NDKEvent): boolean {
 }
 
 function resolveBoardEntry(config: TaskifyConfig, boardIdOrName: string): BoardEntry | null {
-  // Exact UUID match first
-  let entry = config.boards.find((b) => b.id === boardIdOrName);
-  if (entry) return entry;
-  // Case-insensitive name match
-  const lower = boardIdOrName.toLowerCase();
-  entry = config.boards.find((b) => b.name.toLowerCase() === lower);
-  return entry ?? null;
+  return resolveBoardReference(config.boards, boardIdOrName);
 }
 
 // ---- Cache conversion helpers ----

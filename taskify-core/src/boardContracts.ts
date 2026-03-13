@@ -1,5 +1,16 @@
 import type { Board } from "./taskContracts.js";
 
+export type BoardReferenceLike = { id: string; name?: string | null };
+
+export function resolveBoardReference<TBoard extends BoardReferenceLike>(boards: TBoard[], boardRef: string): TBoard | null {
+  const ref = boardRef.trim();
+  if (!ref) return null;
+  const exact = boards.find((board) => board.id === ref);
+  if (exact) return exact;
+  const lower = ref.toLowerCase();
+  return boards.find((board) => (board.name ?? "").toLowerCase() === lower) ?? null;
+}
+
 export function parseCompoundChildInput(raw: string): { boardId: string; relays: string[] } {
   const trimmed = raw.trim();
   if (!trimmed) return { boardId: "", relays: [] };
