@@ -185,6 +185,11 @@ export function renderTaskCard(task: FullTaskRecord, trustedNpubs: string[], loc
 
   if (Array.isArray(task.documents) && task.documents.length > 0) {
     console.log(`${lbl("Documents:")}${task.documents.length}`);
+    task.documents.forEach((doc, idx) => {
+      const name = typeof doc.name === "string" ? doc.name : `document-${idx + 1}`;
+      const url = typeof doc.url === "string" ? doc.url : "";
+      console.log(`  - ${name}${url ? ` (${url})` : ""}`);
+    });
   }
 
   if (Array.isArray(task.assignees) && task.assignees.length > 0) {

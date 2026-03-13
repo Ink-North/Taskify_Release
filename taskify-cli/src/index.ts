@@ -20,6 +20,10 @@ import {
   buildCalendarEventInviteEnvelope,
   buildTaskAssignmentResponseEnvelope,
   buildEventRsvpResponseEnvelope,
+  normalizeTaskRecurrence,
+  normalizeTaskDocuments,
+  normalizeTaskAssignees,
+  normalizeTaskReminders,
 } from "taskify-core";
 import { resolveBoardForCommand } from "./shared/commandResolution.js";
 import { parseBackupSnapshot, mergeBoardsFromBackup, mergeRelaysFromBackup } from "./shared/backupSync.js";
@@ -61,6 +65,28 @@ function warnShortTaskId(taskId: string): void {
 }
 
 const VALID_REMINDER_PRESETS = new Set(["0h", "5m", "15m", "30m", "1h", "1d", "1w"]);
+
+function parseJsonOption(label: string, raw: string | undefined): unknown {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    console.error(chalk.red(`Invalid ${label} JSON.`));
+    process.exit(1);
+  }
+}
+
+function parseReminderOption(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  const parsed = raw.split(",").map((v) => v.trim()).filter(Boolean);
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function normalizeAssigneeArgs(values: string[] | undefined): Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }> | undefined {
+  if (!values || values.length === 0) return undefined;
+  const normalized = normalizeTaskAssignees(values.map((pubkey) => ({ pubkey })));
+  return normalized as Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }> | undefined;
+}
 
 function initRuntime(config: Parameters<typeof createNostrRuntime>[0]): NostrRuntime {
   try {
@@ -521,6 +547,11 @@ eventCmd
   .option("--end-time <HH:mm>", "End time for timed event")
   .option("--tz <iana>", "Timezone for timed event")
   .option("--description <text>", "Optional description")
+  .option("--column <id|name>", "List column placement")
+  .option("--recurrence-json <json>", "Recurrence object JSON")
+  .option("--reminders <csv>", "Reminder presets csv (e.g. 15m,1h)")
+  .option("--invitee <npubOrHex>", "Invitee pubkey/npub (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
+  .option("--documents-json <json>", "Documents/attachments array JSON")
   .option("--json", "Output as JSON")
   .action(async (title: string, opts) => {
     if (!opts.date) {
@@ -540,9 +571,20 @@ eventCmd
         endTime: opts.endTime,
         timeZone: opts.tz,
       });
+      const boardEntry = config.boards.find((b) => b.id === boardId)!;
+      const resolvedColumn = opts.column ? resolveColumn(boardEntry, opts.column) : null;
+      const recurrence = normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson));
+      const reminders = normalizeTaskReminders(parseReminderOption(opts.reminders));
+      const documents = normalizeTaskDocuments(parseJsonOption("--documents-json", opts.documentsJson));
+      const invitees = normalizeAssigneeArgs(opts.invitee as string[])?.map((a) => ({ pubkey: a.pubkey, relay: a.relay }));
       const created = await runtime.createEvent({
         ...draft,
         description: opts.description,
+        columnId: resolvedColumn?.id,
+        recurrence: recurrence as any,
+        reminders: reminders as any,
+        participants: invitees,
+        documents: documents as any,
       });
       if (opts.json) renderJson(created);
       else console.log(chalk.green(`✓ Created event: ${created.title} (${created.id.slice(0, 8)})`));
@@ -581,7 +623,11 @@ eventCmd
         if (event.description) console.log(`description: ${event.description}`);
         if (event.recurrence) console.log(`recurrence: ${JSON.stringify(event.recurrence)}`);
         if (Array.isArray(event.reminders) && event.reminders.length > 0) console.log(`reminders: ${event.reminders.join(", ")}`);
-        if (Array.isArray(event.participants) && event.participants.length > 0) console.log(`invitees: ${event.participants.length}`);
+        if (Array.isArray(event.participants) && event.participants.length > 0) {
+          console.log(`invitees: ${event.participants.length}`);
+          event.participants.forEach((p) => console.log(`  - ${p.pubkey}${p.role ? ` (${p.role})` : ""}`));
+        }
+        if (Array.isArray(event.documents) && event.documents.length > 0) console.log(`documents: ${event.documents.length}`);
         if (event.columnId) console.log(`column: ${event.columnId}`);
         if (event.rsvpStatus) console.log(`rsvp status: ${event.rsvpStatus}`);
       }
@@ -605,12 +651,25 @@ eventCmd
   .option("--start-iso <iso>", "Update timed event start ISO")
   .option("--end-iso <iso>", "Update timed event end ISO")
   .option("--tz <iana>", "Update timed event timezone")
+  .option("--column <id|name>", "Update list column placement")
+  .option("--recurrence-json <json>", "Update recurrence object JSON")
+  .option("--reminders <csv>", "Update reminder presets csv")
+  .option("--invitee <npubOrHex>", "Replace invitees (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
+  .option("--documents-json <json>", "Replace documents/attachments with array JSON")
   .option("--json", "Output as JSON")
   .action(async (eventId: string, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
     try {
       const boardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
+      const boardEntry = boardId ? config.boards.find((b) => b.id === boardId) : undefined;
+      const resolvedColumn = opts.column && boardEntry ? resolveColumn(boardEntry, opts.column) : null;
+      const recurrence = opts.recurrenceJson !== undefined ? normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson)) ?? null : undefined;
+      const reminders = opts.reminders !== undefined ? normalizeTaskReminders(parseReminderOption(opts.reminders)) ?? null : undefined;
+      const documents = opts.documentsJson !== undefined ? normalizeTaskDocuments(parseJsonOption("--documents-json", opts.documentsJson)) ?? null : undefined;
+      const invitees = (opts.invitee as string[]).length > 0
+        ? normalizeAssigneeArgs(opts.invitee as string[])?.map((a) => ({ pubkey: a.pubkey, relay: a.relay })) ?? []
+        : undefined;
       const updated = await runtime.updateEvent(eventId, boardId, {
         title: opts.title,
         description: opts.description,
@@ -620,6 +679,11 @@ eventCmd
         endISO: opts.endIso,
         startTzid: opts.tz,
         endTzid: opts.tz,
+        columnId: resolvedColumn?.id,
+        recurrence: recurrence as any,
+        reminders: reminders as any,
+        participants: invitees,
+        documents: documents as any,
       });
       if (!updated) {
         console.error(chalk.red(`Event not found: ${eventId}`));
@@ -912,9 +976,9 @@ function resolveColumn(
   // Exact id match
   const byId = entry.columns.find((c) => c.id === columnArg);
   if (byId) return byId;
-  // Case-insensitive name substring
+  // Case-insensitive name match
   const lower = columnArg.toLowerCase();
-  const byName = entry.columns.find((c) => c.name.toLowerCase().includes(lower));
+  const byName = entry.columns.find((c) => c.name.toLowerCase() === lower);
   return byName ?? null;
 }
 
@@ -935,14 +999,12 @@ program
     try {
       let columnId: string | undefined;
       let columnName: string | undefined;
+      const resolvedBoardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
 
       if (opts.column) {
         // Column requires a single board to be resolvable
-        const singleBoardId = opts.board
-          ? await resolveBoardId(opts.board, config)
-          : config.boards.length === 1
-            ? config.boards[0].id
-            : undefined;
+        const singleBoardId = resolvedBoardId
+          ?? (config.boards.length === 1 ? config.boards[0].id : undefined);
         if (!singleBoardId) {
           console.error(chalk.red("--column requires --board when multiple boards are configured"));
           process.exit(1);
@@ -958,7 +1020,7 @@ program
       }
 
       const tasks = await runtime.listTasks({
-        boardId: opts.board,
+        boardId: resolvedBoardId,
         status: opts.status as "open" | "done" | "any",
         columnId,
         refresh: !!opts.refresh,
@@ -1110,6 +1172,10 @@ program
     [] as string[],
   )
   .option("--column <id|name>", "Column to place task in")
+  .option("--recurrence-json <json>", "Recurrence object JSON (shared contract shape)")
+  .option("--reminders <csv>", "Reminder presets csv (e.g. 15m,1h)")
+  .option("--assignee <npubOrHex>", "Assign to pubkey/npub (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
+  .option("--documents-json <json>", "Documents/attachments array JSON")
   .option("--json", "Output created task as JSON")
   .action(async (title: string, opts) => {
     validateDue(opts.due);
@@ -1150,6 +1216,10 @@ program
         title: text,
         completed: false,
       }));
+      const recurrence = normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson));
+      const reminders = normalizeTaskReminders(parseReminderOption(opts.reminders));
+      const documents = normalizeTaskDocuments(parseJsonOption("--documents-json", opts.documentsJson));
+      const assignees = normalizeAssigneeArgs(opts.assignee as string[]);
       const task = await runtime.createTaskFull({
         title,
         note: opts.note ?? "",
@@ -1158,6 +1228,10 @@ program
         priority: opts.priority ? (parseInt(opts.priority, 10) as 1 | 2 | 3) : undefined,
         subtasks: subtasks.length > 0 ? subtasks : undefined,
         columnId: resolvedColumnId,
+        recurrence,
+        reminders: reminders as any,
+        documents: documents as any,
+        assignees,
       });
       if (opts.json) {
         renderJson(task);
@@ -1366,6 +1440,10 @@ program
   .option("--priority <p>", "New priority")
   .option("--note <n>", "New note")
   .option("--column <id|name>", "Move task to a different column")
+  .option("--recurrence-json <json>", "Recurrence object JSON (shared contract shape)")
+  .option("--reminders <csv>", "Reminder presets csv (e.g. 15m,1h)")
+  .option("--assignee <npubOrHex>", "Replace assignees with pubkey/npub values (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
+  .option("--documents-json <json>", "Replace documents/attachments with array JSON")
   .option("--json", "Output updated task as JSON")
   .action(async (taskId: string, opts) => {
     warnShortTaskId(taskId);
@@ -1381,6 +1459,10 @@ program
       if (opts.due !== undefined) patch.dueISO = opts.due;
       if (opts.priority !== undefined) patch.priority = parseInt(opts.priority, 10);
       if (opts.note !== undefined) patch.note = opts.note;
+      if (opts.recurrenceJson !== undefined) patch.recurrence = normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson)) ?? null;
+      if (opts.reminders !== undefined) patch.reminders = normalizeTaskReminders(parseReminderOption(opts.reminders)) ?? null;
+      if (opts.documentsJson !== undefined) patch.documents = normalizeTaskDocuments(parseJsonOption("--documents-json", opts.documentsJson)) ?? null;
+      if ((opts.assignee as string[]).length > 0) patch.assignees = normalizeAssigneeArgs(opts.assignee as string[]) ?? [];
       if (opts.column !== undefined) {
         const bEntry = config.boards.find((b) => b.id === boardId);
         if (bEntry) {

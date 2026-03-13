@@ -153,7 +153,6 @@ export type FullTaskRecord = {
 export type ExtendedCreateInput = AgentTaskCreateInput & {
   subtasks?: Subtask[];
   inboxItem?: boolean;
-  assignees?: string[];
 };
 
 export type FullEventRecord = {
@@ -172,6 +171,7 @@ export type FullEventRecord = {
   recurrence?: Recurrence;
   reminders?: ReminderPreset[];
   participants?: Array<{ pubkey: string; relay?: string; role?: string }>;
+  documents?: Record<string, unknown>[];
   columnId?: string;
   rsvpStatus?: "accepted" | "declined" | "tentative";
   rsvpCreatedAt?: number;
@@ -203,8 +203,13 @@ export type NostrRuntime = {
     startTzid?: string;
     endTzid?: string;
     description?: string;
+    recurrence?: Recurrence;
+    reminders?: ReminderPreset[];
+    participants?: Array<{ pubkey: string; relay?: string; role?: string }>;
+    columnId?: string;
+    documents?: Record<string, unknown>[];
   }): Promise<FullEventRecord>;
-  updateEvent(eventId: string, boardId: string | undefined, patch: Partial<Pick<FullEventRecord, "title" | "startDate" | "endDate" | "startISO" | "endISO" | "startTzid" | "endTzid" | "description">>): Promise<FullEventRecord | null>;
+  updateEvent(eventId: string, boardId: string | undefined, patch: Partial<Pick<FullEventRecord, "title" | "startDate" | "endDate" | "startISO" | "endISO" | "startTzid" | "endTzid" | "description" | "recurrence" | "reminders" | "participants" | "columnId">> & { documents?: Record<string, unknown>[] | null }): Promise<FullEventRecord | null>;
   deleteEvent(eventId: string, boardId: string | undefined): Promise<FullEventRecord | null>;
   syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }>;
   createTask(input: AgentTaskCreateInput): Promise<FullTaskRecord>;
@@ -336,6 +341,7 @@ async function parseDecryptedCalendarEvent(
       recurrence: payload.recurrence as Recurrence | undefined,
       reminders: payload.reminders as ReminderPreset[] | undefined,
       participants: Array.isArray(payload.participants) ? payload.participants as Array<{ pubkey: string; relay?: string; role?: string }> : undefined,
+      documents: Array.isArray(payload.documents) ? payload.documents as Record<string, unknown>[] : undefined,
       columnId: (readTagValue(event.tags, "col") || undefined),
       rsvpStatus: payload.rsvpStatus as "accepted" | "declined" | "tentative" | undefined,
       rsvpCreatedAt: typeof payload.rsvpCreatedAt === "number" ? payload.rsvpCreatedAt : undefined,
@@ -689,13 +695,20 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           startTzid: input.startTzid,
           endTzid: input.endTzid,
           description: input.description,
+          recurrence: input.recurrence,
+          reminders: input.reminders,
+          participants: input.participants,
+          documents: input.documents,
         },
         now,
       );
       if (!payload) {
         throw new Error("Invalid event payload");
       }
-      await publishTaskEvent(input.boardId, id, payload, "open", "");
+      const boardEntry = resolveBoardEntry(config, input.boardId);
+      const colId = input.columnId
+        ?? (boardEntry?.kind === "lists" && Array.isArray(boardEntry.columns) && boardEntry.columns.length > 0 ? boardEntry.columns[0].id : "");
+      await publishTaskEvent(input.boardId, id, payload, "open", colId);
       return {
         id,
         boardId: input.boardId,
@@ -708,6 +721,11 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         startTzid: payload.startTzid,
         endTzid: payload.endTzid,
         description: payload.description,
+        recurrence: payload.recurrence as Recurrence | undefined,
+        reminders: payload.reminders as ReminderPreset[] | undefined,
+        participants: payload.participants as Array<{ pubkey: string; relay?: string; role?: string }> | undefined,
+        documents: payload.documents as Record<string, unknown>[] | undefined,
+        columnId: colId || undefined,
         createdAt: Math.floor(now / 1000),
         updatedAt: new Date(now).toISOString(),
       };
@@ -752,11 +770,16 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           startTzid: patch.startTzid ?? existing.startTzid,
           endTzid: patch.endTzid ?? existing.endTzid,
           description: patch.description ?? existing.description,
+          recurrence: patch.recurrence ?? existing.recurrence,
+          reminders: patch.reminders ?? existing.reminders,
+          participants: patch.participants ?? existing.participants,
+          documents: patch.documents === undefined ? existing.documents : patch.documents ?? undefined,
         },
         existing.createdAt ? existing.createdAt * 1000 : Date.now(),
       );
       if (!payload) return null;
-      await publishTaskEvent(entry.id, resolvedId, payload, "open", "");
+      const colId = patch.columnId !== undefined ? (patch.columnId ?? "") : (existing.columnId ?? "");
+      await publishTaskEvent(entry.id, resolvedId, payload, "open", colId);
       return {
         id: resolvedId,
         boardId: entry.id,
@@ -770,6 +793,11 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         startTzid: payload.startTzid,
         endTzid: payload.endTzid,
         description: payload.description,
+        recurrence: payload.recurrence as Recurrence | undefined,
+        reminders: payload.reminders as ReminderPreset[] | undefined,
+        participants: payload.participants as Array<{ pubkey: string; relay?: string; role?: string }> | undefined,
+        documents: payload.documents as Record<string, unknown>[] | undefined,
+        columnId: colId || undefined,
         createdAt: existing.createdAt,
         updatedAt: nowISO(),
       };
@@ -912,7 +940,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         dueISO: input.dueISO ?? "",
         completedAt: null,
         completedBy: null,
-        recurrence: null,
+        recurrence: input.recurrence ?? null,
         hiddenUntilISO: null,
         createdBy: userPubkey,
         lastEditedBy: userPubkey,
@@ -924,16 +952,19 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         dueTimeEnabled: null,
         dueTimeZone: null,
         images: null,
-        documents: null,
+        reminders: input.reminders ?? null,
+        documents: input.documents ?? null,
         bounty: null,
         subtasks: input.subtasks ?? null,
-        assignees: input.assignees ? input.assignees.map((pk) => ({ pubkey: pk, status: "pending" })) : null,
+        assignees: input.assignees ?? null,
         inboxItem: input.inboxItem === true ? true : null,
       };
       // Resolve column: explicit > week-board today > ""
       let colId = "";
       if (input.columnId !== undefined) {
         colId = input.columnId;
+      } else if (entry.kind === "lists" && Array.isArray(entry.columns) && entry.columns.length > 0) {
+        colId = entry.columns[0].id;
       } else if (entry.kind === "week") {
         colId = new Date().toISOString().slice(0, 10);
       }
@@ -952,9 +983,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         createdBy: userPubkey,
         lastEditedBy: userPubkey,
         subtasks: input.subtasks,
+        recurrence: input.recurrence as Recurrence | undefined,
+        reminders: input.reminders as ReminderPreset[] | undefined,
+        documents: input.documents,
         column: colId || undefined,
         inboxItem: input.inboxItem === true ? true : undefined,
-        assignees: input.assignees?.map((pubkey) => ({ pubkey, status: "pending" })),
+        assignees: input.assignees,
       };
       // Update cache with the new task
       const cache = readCache();
@@ -992,7 +1026,10 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         ...(patch.dueISO !== undefined ? { dueISO: patch.dueISO ?? "" } : {}),
         ...(patch.priority !== undefined ? { priority: patch.priority ?? null } : {}),
         ...(patch.inboxItem !== undefined ? { inboxItem: patch.inboxItem } : {}),
-        ...(patch.assignees !== undefined ? { assignees: patch.assignees.map((pk) => ({ pubkey: pk, status: "pending" })) } : {}),
+        ...(patch.assignees !== undefined ? { assignees: patch.assignees } : {}),
+        ...(patch.recurrence !== undefined ? { recurrence: patch.recurrence } : {}),
+        ...(patch.reminders !== undefined ? { reminders: patch.reminders } : {}),
+        ...(patch.documents !== undefined ? { documents: patch.documents } : {}),
         lastEditedBy: userPubkey,
       };
       const statusTag = event.tags.find((t) => t[0] === "status");
@@ -1003,7 +1040,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       await publishTaskEvent(entry.id, taskId, merged, status, colId);
       // Build updated FullTaskRecord — keep assignees as string[] (extract pubkeys)
       const updatedAssignees: TaskAssignee[] | undefined = patch.assignees !== undefined
-        ? patch.assignees.map((pubkey) => ({ pubkey, status: "pending" }))
+        ? patch.assignees
         : existing.assignees;
       const updated: FullTaskRecord = {
         ...existing,
@@ -1013,6 +1050,9 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         priority: merged.priority ?? undefined,
         inboxItem: merged.inboxItem === true ? true : undefined,
         assignees: updatedAssignees,
+        recurrence: (merged.recurrence as Recurrence | null | undefined) ?? undefined,
+        reminders: (merged.reminders as ReminderPreset[] | null | undefined) ?? undefined,
+        documents: (merged.documents as Record<string, unknown>[] | null | undefined) ?? undefined,
         lastEditedBy: merged.lastEditedBy,
       };
       if (patch.columnId !== undefined) updated.column = colId || undefined;
