@@ -29,6 +29,28 @@ function normalizeStringArray(value: unknown): string[] | undefined {
   return out.length ? out : undefined;
 }
 
+export function normalizeDelimitedValues(raw: string, delimiter: RegExp, options?: { stripPrefix?: string; dedupe?: boolean }): string[] | undefined {
+  const values = (raw || "")
+    .split(delimiter)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => {
+      if (options?.stripPrefix && value.startsWith(options.stripPrefix)) {
+        return value.slice(options.stripPrefix.length);
+      }
+      return value;
+    })
+    .filter(Boolean);
+  if (!values.length) return undefined;
+  if (options?.dedupe === false) return values;
+  return Array.from(new Set(values));
+}
+
+export function normalizeLocationList(list: string[]): string[] | undefined {
+  const out = (list || []).map((value) => value.trim()).filter(Boolean);
+  return out.length ? out : undefined;
+}
+
 export function normalizeCalendarEventPayload(raw: unknown): CalendarNormalizedPayload | null {
   if (!raw || typeof raw !== "object") return null;
   const deleted = (raw as any).deleted === true;

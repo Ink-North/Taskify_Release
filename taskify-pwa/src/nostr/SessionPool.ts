@@ -1,5 +1,6 @@
 import type { NDKFilter } from "@nostr-dev-kit/ndk";
 import type { NostrEvent } from "nostr-tools";
+import { normalizeRelayUrls } from "taskify-runtime-nostr";
 import { NostrSession } from "./NostrSession";
 
 type SubscribeManyOptions = {
@@ -8,19 +9,10 @@ type SubscribeManyOptions = {
   closeOnEose?: boolean;
 };
 
-function normalizeRelays(relays: string[]): string[] {
-  return Array.from(
-    new Set(
-      (Array.isArray(relays) ? relays : [])
-        .map((r) => (typeof r === "string" ? r.trim() : ""))
-        .filter(Boolean),
-    ),
-  ).sort();
-}
 
 export class SessionPool {
   async list(relays: string[], filters: NDKFilter[], timeoutMs = 15_000): Promise<NostrEvent[]> {
-    const relayList = normalizeRelays(relays);
+    const relayList = normalizeRelayUrls(relays);
     const session = await NostrSession.init(relayList);
     return session.fetchEvents(filters, relayList, timeoutMs);
   }
@@ -30,7 +22,7 @@ export class SessionPool {
     filter: NDKFilter | NDKFilter[],
     opts?: { maxWait?: number; label?: string },
   ): Promise<NostrEvent[]> {
-    const relayList = normalizeRelays(relays);
+    const relayList = normalizeRelayUrls(relays);
     const filters = Array.isArray(filter) ? filter : [filter];
     const session = await NostrSession.init(relayList);
     const fetchPromise = session.fetchEvents(filters, relayList);
@@ -53,7 +45,7 @@ export class SessionPool {
     let release: (() => void) | null = null;
     // Track cleanup requests that arrive before the subscription promise resolves
     let cleanupRequested = false;
-    const relayList = normalizeRelays(relays);
+    const relayList = normalizeRelayUrls(relays);
     NostrSession.init(relayList)
       .then((session) =>
         session.subscribe(filters, {
@@ -87,7 +79,7 @@ export class SessionPool {
   }
 
   subscribeMany(relays: string[], filter: NDKFilter | NDKFilter[], opts?: SubscribeManyOptions) {
-    const relayList = normalizeRelays(relays);
+    const relayList = normalizeRelayUrls(relays);
     let release: (() => void) | null = null;
     // Track cleanup requests that arrive before the subscription promise resolves
     let cleanupRequested = false;
@@ -136,7 +128,7 @@ export class SessionPool {
   }
 
   publish(relays: string[], event: NostrEvent): Promise<unknown> {
-    const relayList = normalizeRelays(relays);
+    const relayList = normalizeRelayUrls(relays);
     return NostrSession.init(relayList).then((session) =>
       session.publishRaw(event, { relayUrls: relayList, returnEvent: false }),
     );

@@ -1,6 +1,6 @@
 export * from "./activityLog.js";
 export { buildCalendarEventDraft } from "./events.js";
-export type { CalendarEvent as DraftCalendarEvent } from "./events.js";
+export type { CalendarEvent as DraftCalendarEvent, BuildCalendarEventDraftInput } from "./events.js";
 export * from "./calendarPayload.js";
 export * from "./mutationContracts.js";
 export * from "./calendarProtocol.js";
@@ -15,3 +15,6 @@ export * from "./shareContracts.js";
 export * from "./backupContracts.js";
 export * from "./nostrPrimitives.js";
 export * from "./boardCrypto.js";
+export * from "./relayNormalize.js";
+export * from "./shareNormalize.js";
+export * from "./entityResolution.js";

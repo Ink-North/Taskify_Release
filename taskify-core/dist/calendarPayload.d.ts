@@ -14,4 +14,9 @@ export type CalendarNormalizedPayload = {
     references?: string[];
     deleted?: boolean;
 };
+export declare function normalizeDelimitedValues(raw: string, delimiter: RegExp, options?: {
+    stripPrefix?: string;
+    dedupe?: boolean;
+}): string[] | undefined;
+export declare function normalizeLocationList(list: string[]): string[] | undefined;
 export declare function normalizeCalendarEventPayload(raw: unknown): CalendarNormalizedPayload | null;
