@@ -1279,6 +1279,9 @@ program
   .option("--reminders <csv>", "Reminder presets csv (e.g. 15m,1h)")
   .option("--assignee <npubOrHex>", "Assign to pubkey/npub (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
   .option("--documents-json <json>", "Documents/attachments array JSON")
+  .option("--due-time <HH:MM>", "Due time (combine with --due to form ISO datetime, sets dueTimeEnabled)")
+  .option("--timezone <iana>", "IANA timezone for due time (e.g. America/New_York)")
+  .option("--hidden-until <ISO>", "Hide task until this ISO datetime")
   .option("--json", "Output created task as JSON")
   .action(async (title: string, opts) => {
     validateDue(opts.due);
@@ -1304,6 +1307,11 @@ program
       process.exit(1);
     }
 
+    if (boardEntry.kind === "week" && !opts.due) {
+      console.error(chalk.red(`Week board "${boardEntry.name}" requires --due <YYYY-MM-DD>.`));
+      process.exit(1);
+    }
+
     // Resolve --column
     let resolvedColumnId: string | undefined;
     let resolvedColumnName: string | undefined;
@@ -1325,11 +1333,19 @@ program
       const reminders = normalizeTaskReminders(parseReminderOption(opts.reminders));
       const documents = normalizeTaskDocuments(parseJsonOption("--documents-json", opts.documentsJson));
       const assignees = normalizeAssigneeArgs(opts.assignee as string[]);
+      let dueISO = opts.due as string | undefined;
+      let dueTimeEnabled: boolean | undefined;
+      if (opts.dueTime) {
+        if (dueISO) {
+          dueISO = `${dueISO}T${opts.dueTime}:00`;
+        }
+        dueTimeEnabled = true;
+      }
       const task = await runtime.createTaskFull({
         title,
         note: opts.note ?? "",
         boardId,
-        dueISO: opts.due,
+        dueISO,
         priority: opts.priority ? (parseInt(opts.priority, 10) as 1 | 2 | 3) : undefined,
         subtasks: subtasks.length > 0 ? subtasks : undefined,
         columnId: resolvedColumnId,
@@ -1337,6 +1353,9 @@ program
         reminders: reminders as any,
         documents: documents as any,
         assignees,
+        dueTimeEnabled,
+        dueTimeZone: opts.timezone,
+        hiddenUntilISO: opts.hiddenUntil,
       });
       if (opts.json) {
         renderJson(task);
@@ -1549,6 +1568,9 @@ program
   .option("--reminders <csv>", "Reminder presets csv (e.g. 15m,1h)")
   .option("--assignee <npubOrHex>", "Replace assignees with pubkey/npub values (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
   .option("--documents-json <json>", "Replace documents/attachments with array JSON")
+  .option("--due-time <HH:MM>", "Due time (combine with --due to form ISO datetime, sets dueTimeEnabled)")
+  .option("--timezone <iana>", "IANA timezone for due time (e.g. America/New_York)")
+  .option("--hidden-until <ISO>", "Hide task until this ISO datetime")
   .option("--json", "Output updated task as JSON")
   .action(async (taskId: string, opts) => {
     warnShortTaskId(taskId);
@@ -1561,7 +1583,6 @@ program
     try {
       const patch: Record<string, unknown> = {};
       if (opts.title !== undefined) patch.title = opts.title;
-      if (opts.due !== undefined) patch.dueISO = opts.due;
       if (opts.priority !== undefined) patch.priority = parseInt(opts.priority, 10);
       if (opts.note !== undefined) patch.note = opts.note;
       if (opts.recurrenceJson !== undefined) patch.recurrence = normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson)) ?? null;
@@ -1575,6 +1596,17 @@ program
           patch.columnId = col.id;
         }
       }
+      // due / due-time combination
+      let dueISO = opts.due as string | undefined;
+      if (opts.dueTime) {
+        if (dueISO) {
+          dueISO = `${dueISO}T${opts.dueTime}:00`;
+        }
+        patch.dueTimeEnabled = true;
+      }
+      if (dueISO !== undefined) patch.dueISO = dueISO;
+      if (opts.timezone !== undefined) patch.dueTimeZone = opts.timezone;
+      if (opts.hiddenUntil !== undefined) patch.hiddenUntilISO = opts.hiddenUntil;
       const task = await runtime.updateTask(taskId, boardId, patch);
       if (!task) {
         console.error(chalk.red(`Task not found: ${taskId}`));
