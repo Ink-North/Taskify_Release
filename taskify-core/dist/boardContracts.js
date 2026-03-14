@@ -1,3 +1,13 @@
+export function resolveBoardReference(boards, boardRef) {
+    const ref = boardRef.trim();
+    if (!ref)
+        return null;
+    const exact = boards.find((board) => board.id === ref);
+    if (exact)
+        return exact;
+    const lower = ref.toLowerCase();
+    return boards.find((board) => (board.name ?? "").toLowerCase() === lower) ?? null;
+}
 export function parseCompoundChildInput(raw) {
     const trimmed = raw.trim();
     if (!trimmed)

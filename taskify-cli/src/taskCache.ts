@@ -33,7 +33,8 @@ export type CachedTask = {
   bounty?: object;
   reminders?: string[];
   inboxItem?: boolean;
-  assignees?: string[];
+  assignees?: Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }>;
+  documents?: Record<string, unknown>[];
 };
 
 export type BoardCache = {

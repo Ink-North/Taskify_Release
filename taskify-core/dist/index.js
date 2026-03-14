@@ -16,3 +16,4 @@ export * from "./nostrPrimitives.js";
 export * from "./boardCrypto.js";
 export * from "./relayNormalize.js";
 export * from "./shareNormalize.js";
+export * from "./entityResolution.js";

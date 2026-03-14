@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseCompoundChildInput, boardScopeIds, normalizeCompoundChildId } from "../dist/boardContracts.js";
+import { parseCompoundChildInput, boardScopeIds, normalizeCompoundChildId, resolveBoardReference } from "../dist/boardContracts.js";
 
 test("parseCompoundChildInput parses board and relays", () => {
   const out = parseCompoundChildInput("child@wss://a,wss://b");
@@ -17,4 +17,15 @@ test("boardScopeIds includes ids and child ids", () => {
   assert.equal(ids.includes("p"), true);
   assert.equal(ids.includes("c"), true);
   assert.equal(normalizeCompoundChildId(boards as any, "nc"), "c");
+});
+
+test("resolveBoardReference matches by id or case-insensitive name", () => {
+  const boards = [
+    { id: "board-1", name: "Personal" },
+    { id: "board-2", name: "Work" },
+  ];
+  assert.equal(resolveBoardReference(boards, "board-2")?.id, "board-2");
+  assert.equal(resolveBoardReference(boards, "personal")?.id, "board-1");
+  assert.equal(resolveBoardReference(boards, "") , null);
+  assert.equal(resolveBoardReference(boards, "missing"), null);
 });

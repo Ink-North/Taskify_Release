@@ -33,7 +33,8 @@ export type SharedTaskPayload = {
   reminders?: Array<string | number>;
   subtasks?: { title: string; completed?: boolean }[];
   recurrence?: { type: string; [key: string]: unknown };
-  assignees?: Array<{
+  documents?: Array<Record<string, unknown>>;
+  assignees?: Array<{ 
     pubkey: string;
     relay?: string;
     status?: "pending" | "accepted" | "declined" | "tentative";
@@ -64,6 +65,13 @@ export type SharedTaskAssignmentResponsePayload = {
   respondedAt?: string;
 };
 
+export type SharedEventRsvpResponsePayload = {
+  type: "event-rsvp-response";
+  eventId: string;
+  status: "accepted" | "declined" | "tentative";
+  respondedAt?: string;
+};
+
 export type ShareEnvelope = {
   v: 1;
   kind: "taskify-share";
@@ -72,7 +80,8 @@ export type ShareEnvelope = {
     | SharedContactPayload
     | SharedTaskPayload
     | SharedCalendarEventInvitePayload
-    | SharedTaskAssignmentResponsePayload;
+    | SharedTaskAssignmentResponsePayload
+    | SharedEventRsvpResponsePayload;
   sender?: { npub?: string; name?: string };
 };
 
@@ -157,6 +166,12 @@ export function normalizeTaskSubtasks(value: unknown): SharedTaskPayload["subtas
     })
     .filter((entry): entry is { title: string; completed?: boolean } => !!entry);
   return subtasks.length ? subtasks : undefined;
+}
+
+export function normalizeTaskDocuments(value: unknown): SharedTaskPayload["documents"] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const docs = value.filter((entry) => !!entry && typeof entry === "object") as Array<Record<string, unknown>>;
+  return docs.length ? docs : undefined;
 }
 
 export function normalizeTaskRecurrence(value: unknown): SharedTaskPayload["recurrence"] | undefined {
@@ -276,6 +291,7 @@ export function buildTaskShareEnvelope(payload: SharedTaskPayload, sender?: { np
       reminders: normalizeTaskReminders(payload.reminders),
       subtasks: normalizeTaskSubtasks(payload.subtasks),
       recurrence: normalizeTaskRecurrence(payload.recurrence),
+      documents: normalizeTaskDocuments(payload.documents),
       sourceTaskId: normalizeTaskId(payload.sourceTaskId),
       assignment: normalizeTaskAssignmentFlag(payload.assignment),
       assignees: normalizeTaskAssignees(payload.assignees),
@@ -290,6 +306,19 @@ export function buildTaskAssignmentResponseEnvelope(payload: Omit<SharedTaskAssi
   const status = normalizeTaskAssignmentResponseStatus(payload.status);
   if (!status) throw new Error("Invalid assignment response status.");
   return { v: 1, kind: "taskify-share", sender: sender?.npub || sender?.name ? sender : undefined, item: { type: "task-assignment-response", taskId, status, respondedAt: normalizeTaskAssignmentResponseTime(payload.respondedAt) } };
+}
+
+export function buildEventRsvpResponseEnvelope(payload: Omit<SharedEventRsvpResponsePayload, "type">, sender?: { npub?: string; name?: string }): ShareEnvelope {
+  const eventId = normalizeTaskId(payload.eventId);
+  if (!eventId) throw new Error("Missing event id for RSVP response.");
+  const status = normalizeTaskAssignmentResponseStatus(payload.status);
+  if (!status) throw new Error("Invalid RSVP response status.");
+  return {
+    v: 1,
+    kind: "taskify-share",
+    sender: sender?.npub || sender?.name ? sender : undefined,
+    item: { type: "event-rsvp-response", eventId, status, respondedAt: normalizeTaskAssignmentResponseTime(payload.respondedAt) },
+  };
 }
 
 export function buildCalendarEventInviteEnvelope(payload: Omit<SharedCalendarEventInvitePayload, "type">, sender?: { npub?: string; name?: string }): ShareEnvelope {
@@ -352,7 +381,7 @@ export function parseShareEnvelope(raw: string): ShareEnvelope | null {
   if (item.type === "task") {
     const title = typeof item.title === "string" ? item.title.trim() : "";
     if (!title) return null;
-    return { v: 1, kind: "taskify-share", item: { type: "task", title, note: typeof item.note === "string" ? item.note.trim() : undefined, priority: normalizeTaskPriority(item.priority), dueISO: normalizeTaskDueISO(item.dueISO), dueDateEnabled: typeof item.dueDateEnabled === "boolean" ? item.dueDateEnabled : undefined, dueTimeEnabled: typeof item.dueTimeEnabled === "boolean" ? item.dueTimeEnabled : undefined, dueTimeZone: normalizeTaskTimeZone(item.dueTimeZone), reminders: normalizeTaskReminders(item.reminders), subtasks: normalizeTaskSubtasks(item.subtasks), recurrence: normalizeTaskRecurrence(item.recurrence), sourceTaskId: normalizeTaskId(item.sourceTaskId), assignment: normalizeTaskAssignmentFlag(item.assignment), assignees: normalizeTaskAssignees(item.assignees), relays: normalizeRelayList(item.relays) }, sender: sanitizeSender(parsed.sender) };
+    return { v: 1, kind: "taskify-share", item: { type: "task", title, note: typeof item.note === "string" ? item.note.trim() : undefined, priority: normalizeTaskPriority(item.priority), dueISO: normalizeTaskDueISO(item.dueISO), dueDateEnabled: typeof item.dueDateEnabled === "boolean" ? item.dueDateEnabled : undefined, dueTimeEnabled: typeof item.dueTimeEnabled === "boolean" ? item.dueTimeEnabled : undefined, dueTimeZone: normalizeTaskTimeZone(item.dueTimeZone), reminders: normalizeTaskReminders(item.reminders), subtasks: normalizeTaskSubtasks(item.subtasks), recurrence: normalizeTaskRecurrence(item.recurrence), documents: normalizeTaskDocuments(item.documents), sourceTaskId: normalizeTaskId(item.sourceTaskId), assignment: normalizeTaskAssignmentFlag(item.assignment), assignees: normalizeTaskAssignees(item.assignees), relays: normalizeRelayList(item.relays) }, sender: sanitizeSender(parsed.sender) };
   }
 
   if (item.type === "task-assignment-response") {
@@ -360,6 +389,13 @@ export function parseShareEnvelope(raw: string): ShareEnvelope | null {
     const status = normalizeTaskAssignmentResponseStatus(item.status);
     if (!taskId || !status) return null;
     return { v: 1, kind: "taskify-share", item: { type: "task-assignment-response", taskId, status, respondedAt: normalizeTaskAssignmentResponseTime(item.respondedAt) }, sender: sanitizeSender(parsed.sender) };
+  }
+
+  if (item.type === "event-rsvp-response") {
+    const eventId = normalizeTaskId(item.eventId);
+    const status = normalizeTaskAssignmentResponseStatus(item.status);
+    if (!eventId || !status) return null;
+    return { v: 1, kind: "taskify-share", item: { type: "event-rsvp-response", eventId, status, respondedAt: normalizeTaskAssignmentResponseTime(item.respondedAt) }, sender: sanitizeSender(parsed.sender) };
   }
 
   if (item.type === "event") {
