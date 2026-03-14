@@ -6,7 +6,7 @@ import { createInterface } from "readline";
 import { createRequire } from "module";
 import { nip19, getPublicKey, generateSecretKey } from "nostr-tools";
 import { hexToBytes, bytesToHex } from "@noble/hashes/utils";
-import { loadConfig, saveConfig, saveProfiles, DEFAULT_RELAYS, type ProfileConfig } from "./config.js";
+import { loadConfig, saveConfig, saveProfiles, DEFAULT_RELAYS, type ProfileConfig, type Contact, type BoardEntry } from "./config.js";
 import { createNostrRuntime, type NostrRuntime } from "./nostrRuntime.js";
 import { renderTable, renderTaskCard, renderJson } from "./render.js";
 import { zshCompletion, bashCompletion, fishCompletion } from "./completions.js";
@@ -470,6 +470,47 @@ boardCmd.command("share-settings <board> <json>").description("Update board shar
   } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
 });
 
+boardCmd
+  .command("sort <board> [mode] [direction]")
+  .description("Get or set board sort settings (modes: manual|due|priority|created|alpha, directions: asc|desc)")
+  .action(async (boardArg: string, mode?: string, direction?: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const entry = resolveBoardReference(config.boards, boardArg);
+    if (!entry) {
+      console.error(chalk.red(`Board not found: "${boardArg}"`));
+      process.exit(1);
+    }
+    if (!mode) {
+      console.log(`Sort mode:      ${entry.sortMode ?? "manual (default)"}`);
+      console.log(`Sort direction: ${entry.sortDirection ?? "asc (default)"}`);
+      process.exit(0);
+    }
+    const VALID_MODES = ["manual", "due", "priority", "created", "alpha"];
+    const VALID_DIRS = ["asc", "desc"];
+    if (!VALID_MODES.includes(mode)) {
+      console.error(chalk.red(`Invalid sort mode. Use: ${VALID_MODES.join(", ")}`));
+      process.exit(1);
+    }
+    if (direction && !VALID_DIRS.includes(direction)) {
+      console.error(chalk.red(`Invalid direction. Use: asc, desc`));
+      process.exit(1);
+    }
+    const runtime = initRuntime(config);
+    try {
+      await runtime.updateBoard(entry.id, {
+        sortMode: mode as BoardEntry["sortMode"],
+        sortDirection: ((direction ?? "asc") as BoardEntry["sortDirection"]),
+      });
+      console.log(chalk.green(`✓ Sort set: ${mode} ${direction ?? "asc"}`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
+  });
+
 boardCmd.command("child-add <board> <child>").description("Add child board to a compound board").action(async (boardArg: string, childArg: string) => {
   const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
   try {
@@ -872,7 +913,7 @@ shareCmd
         documents: task.documents,
         sourceTaskId: task.id,
         assignment: opts.assignment === true ? true : undefined,
-        assignees: task.assignees?.map((pubkey) => ({ pubkey })),
+        assignees: task.assignees?.map((a) => ({ pubkey: a.pubkey })),
         relays: config.relays,
       }, { npub: senderNpub });
       await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
@@ -928,18 +969,20 @@ shareCmd
         for (const item of inbox) {
           if (processed.has(item.rumorId)) continue;
           if (item.envelope.item.type === "board") {
-            const exists = config.boards.some((b) => b.id === item.envelope.item.boardId);
+            const boardItem = item.envelope.item as { boardId: string; boardName?: string; relays?: string[] };
+            const exists = config.boards.some((b) => b.id === boardItem.boardId);
             if (!exists) {
-              config.boards.push({ id: item.envelope.item.boardId, name: item.envelope.item.boardName ?? item.envelope.item.boardId, relays: item.envelope.item.relays ?? config.relays });
+              config.boards.push({ id: boardItem.boardId, name: boardItem.boardName ?? boardItem.boardId, relays: boardItem.relays ?? config.relays });
             }
           }
           if (item.envelope.item.type === "task") {
+            const taskItem = item.envelope.item as { title: string; note?: string; assignees?: Array<{ pubkey: string }> };
             await runtime.createTaskFull({
               boardId: runtime.getDefaultBoardId() ?? config.boards[0]?.id ?? "inbox",
-              title: item.envelope.item.title,
-              note: item.envelope.item.note,
+              title: taskItem.title,
+              note: taskItem.note ?? "",
               inboxItem: true,
-              assignees: item.envelope.item.assignees?.map((a) => a.pubkey),
+              assignees: taskItem.assignees?.map((a) => ({ pubkey: a.pubkey })),
             });
           }
           if (item.envelope.item.type === "task-assignment-response") {
@@ -1035,6 +1078,64 @@ program
           console.log(chalk.dim("No tasks found."));
         } else {
           renderTable(tasks, config.trustedNpubs, columnName);
+        }
+      }
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+// ---- upcoming ----
+program
+  .command("upcoming")
+  .description("Show open tasks due within N days")
+  .option("--days <n>", "Number of days ahead (default: 14)")
+  .option("--board <id|name>", "Filter to a specific board")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const days = opts.days ? parseInt(opts.days, 10) : 14;
+      const resolvedBoardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
+      const allTasks = await runtime.listTasks({ boardId: resolvedBoardId, status: "open" });
+
+      const now = new Date();
+      const todayStr = now.toISOString().slice(0, 10);
+      const cutoff = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+      const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+      const upcoming = allTasks.filter(
+        (t) => t.dueDateEnabled === true && t.dueISO && t.dueISO >= todayStr && t.dueISO <= cutoffStr,
+      );
+
+      // Sort: primary = dueISO asc, secondary = priority asc (1=highest)
+      upcoming.sort((a, b) => {
+        if (a.dueISO < b.dueISO) return -1;
+        if (a.dueISO > b.dueISO) return 1;
+        return (a.priority ?? 99) - (b.priority ?? 99);
+      });
+
+      if (opts.json) {
+        renderJson(upcoming);
+      } else if (upcoming.length === 0) {
+        console.log(chalk.dim(`No tasks due in the next ${days} days.`));
+      } else {
+        // Group by dueISO date prefix
+        const groups = new Map<string, typeof upcoming>();
+        for (const t of upcoming) {
+          const day = t.dueISO.slice(0, 10);
+          if (!groups.has(day)) groups.set(day, []);
+          groups.get(day)!.push(t);
+        }
+        for (const [day, tasks] of groups) {
+          console.log(chalk.bold(`\n${day}`));
+          renderTable(tasks, config.trustedNpubs);
         }
       }
     } catch (err) {
@@ -2792,11 +2893,11 @@ program
         exitCode = 1;
       } else {
         const existing = task.assignees ?? [];
-        if (existing.includes(hex)) {
+        if (existing.some((a) => a.pubkey === hex)) {
           console.log(chalk.dim(`Already assigned: ${npubOrHex}`));
         } else {
           const updated = await runtime.updateTask(taskId, boardId, {
-            assignees: [...existing, hex],
+            assignees: [...existing, { pubkey: hex }],
           });
           if (!updated) {
             console.error(chalk.red("Failed to update task"));
@@ -2816,7 +2917,7 @@ program
                 dueTimeEnabled: updated.dueTimeEnabled,
                 sourceTaskId: updated.id,
                 assignment: true,
-                assignees: (updated.assignees ?? []).map((pubkey) => ({ pubkey })),
+                assignees: (updated.assignees ?? []).map((a) => ({ pubkey: a.pubkey })),
                 relays: config.relays,
               }, { npub: senderNpub });
               await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: hex, relays: config.relays });
@@ -2852,7 +2953,7 @@ program
         console.error(chalk.red(`Task not found: ${taskId}`));
         exitCode = 1;
       } else {
-        const filtered = (task.assignees ?? []).filter((a) => a !== hex);
+        const filtered = (task.assignees ?? []).filter((a) => a.pubkey !== hex);
         const updated = await runtime.updateTask(taskId, boardId, {
           assignees: filtered,
         });
@@ -3158,6 +3259,229 @@ profileCmd
     const newActive = config.activeProfile === oldName ? newName : config.activeProfile;
     await saveProfiles(newActive, newProfiles);
     console.log(chalk.green(`✓ Renamed profile '${oldName}' → '${newName}'`));
+    process.exit(0);
+  });
+
+// ---- contact command group ----
+const contactCmd = program
+  .command("contact")
+  .description("Manage contacts");
+
+function resolveContact(contacts: Contact[], ref: string): Contact | undefined {
+  const lower = ref.toLowerCase();
+  return contacts.find(
+    (c) =>
+      c.npub === ref ||
+      c.pubkey === ref ||
+      c.pubkey.startsWith(lower) ||
+      (c.name?.toLowerCase() === lower),
+  );
+}
+
+contactCmd
+  .command("list")
+  .description("List local contacts")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const contacts = config.contacts ?? [];
+    if (opts.json) { renderJson(contacts); process.exit(0); }
+    if (contacts.length === 0) { console.log(chalk.dim("No contacts.")); process.exit(0); }
+    for (const c of contacts) {
+      const key = c.npub ?? c.pubkey.slice(0, 12) + "...";
+      const label = [c.name, c.nip05].filter(Boolean).join(" / ");
+      console.log(`  ${chalk.bold(key)}  ${chalk.dim(label)}`);
+    }
+    process.exit(0);
+  });
+
+contactCmd
+  .command("show <npubOrId>")
+  .description("Show contact details")
+  .option("--json", "Output as JSON")
+  .action(async (ref: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const contact = resolveContact(config.contacts ?? [], ref);
+    if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exit(1); }
+    if (opts.json) { renderJson(contact); process.exit(0); }
+    console.log(chalk.bold("Contact"));
+    for (const [k, v] of Object.entries(contact)) {
+      if (v !== undefined && v !== null) console.log(`  ${chalk.dim(k + ":")} ${v}`);
+    }
+    process.exit(0);
+  });
+
+contactCmd
+  .command("add <npub>")
+  .description("Add a contact locally")
+  .option("--name <name>", "Display name")
+  .option("--nip05 <nip05>", "NIP-05 identifier")
+  .action(async (npubArg: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    let pubkeyHex: string;
+    let npub: string;
+    try {
+      const decoded = nip19.decode(npubArg);
+      if (decoded.type !== "npub") throw new Error("Expected npub");
+      pubkeyHex = decoded.data as string;
+      npub = npubArg;
+    } catch {
+      console.error(chalk.red("Invalid npub: " + npubArg));
+      process.exit(1);
+    }
+    const contacts = config.contacts ?? [];
+    if (contacts.find((c) => c.pubkey === pubkeyHex)) {
+      console.log(chalk.yellow("Contact already exists."));
+      process.exit(0);
+    }
+    const contact: Contact = {
+      pubkey: pubkeyHex,
+      npub,
+      name: opts.name,
+      nip05: opts.nip05,
+      addedAt: Math.floor(Date.now() / 1000),
+    };
+    config.contacts = [...contacts, contact];
+    await saveConfig(config);
+    console.log(chalk.green(`✓ Added contact: ${opts.name ?? npub}`));
+    process.exit(0);
+  });
+
+contactCmd
+  .command("remove <npubOrId>")
+  .description("Remove a contact")
+  .action(async (ref: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const contacts = config.contacts ?? [];
+    const contact = resolveContact(contacts, ref);
+    if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exit(1); }
+    config.contacts = contacts.filter((c) => c.pubkey !== contact.pubkey);
+    await saveConfig(config);
+    console.log(chalk.green(`✓ Removed contact: ${contact.name ?? contact.npub ?? contact.pubkey}`));
+    process.exit(0);
+  });
+
+contactCmd
+  .command("fetch <npub>")
+  .description("Fetch/refresh NIP-01 kind 0 profile for a contact from relays")
+  .action(async (npubArg: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    let pubkeyHex: string;
+    let npub: string;
+    try {
+      const decoded = nip19.decode(npubArg);
+      if (decoded.type !== "npub") throw new Error("Expected npub");
+      pubkeyHex = decoded.data as string;
+      npub = npubArg;
+    } catch {
+      console.error(chalk.red("Invalid npub: " + npubArg));
+      process.exit(1);
+    }
+    const runtime = initRuntime(config);
+    try {
+      process.stderr.write("Fetching kind 0 profile from relays...\n");
+      const NDKMod = await import("@nostr-dev-kit/ndk");
+      const ndk = new NDKMod.default({ explicitRelayUrls: config.relays });
+      await ndk.connect();
+      const events = await ndk.fetchEvents(
+        { kinds: [0], authors: [pubkeyHex], limit: 1 } as Parameters<typeof ndk.fetchEvents>[0],
+        { closeOnEose: true },
+      );
+      let profileData: Record<string, unknown> = {};
+      if (events.size > 0) {
+        const [evt] = events;
+        try { profileData = JSON.parse(evt.content); } catch { /* ignore */ }
+      }
+      const contacts = config.contacts ?? [];
+      const idx = contacts.findIndex((c) => c.pubkey === pubkeyHex);
+      const existing: Contact = idx >= 0 ? contacts[idx] : { pubkey: pubkeyHex, npub, addedAt: Math.floor(Date.now() / 1000) };
+      const updated: Contact = {
+        ...existing,
+        name: (profileData.name as string | undefined) ?? existing.name,
+        displayName: (profileData.display_name as string | undefined) ?? existing.displayName,
+        nip05: (profileData.nip05 as string | undefined) ?? existing.nip05,
+        about: (profileData.about as string | undefined) ?? existing.about,
+        picture: (profileData.picture as string | undefined) ?? existing.picture,
+        updatedAt: Math.floor(Date.now() / 1000),
+      };
+      if (idx >= 0) contacts[idx] = updated;
+      else contacts.push(updated);
+      config.contacts = contacts;
+      await saveConfig(config);
+      console.log(chalk.green(`✓ Fetched profile for ${updated.name ?? npub}`));
+      try { (ndk.pool as unknown as { destroy?(): void })?.destroy?.(); } catch { /* ignore */ }
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
+    process.exit(0);
+  });
+
+contactCmd
+  .command("sync")
+  .description("Publish/restore NIP-51 kind 30000 encrypted private contacts list to/from relays")
+  .option("--pull", "Only pull from relays (default: push and pull)")
+  .option("--json", "Output merged contacts as JSON after sync")
+  .action(async (opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    if (!config.nsec) {
+      console.error(chalk.red("No nsec configured — cannot sync contacts"));
+      process.exit(1);
+    }
+    const decoded = nip19.decode(config.nsec);
+    if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exit(1); }
+    const userSk = decoded.data as Uint8Array;
+    const userPk = getPublicKey(userSk);
+    const NDKMod = await import("@nostr-dev-kit/ndk");
+    const NDKPrivateKeySigner = (await import("@nostr-dev-kit/ndk")).NDKPrivateKeySigner;
+    const ndk = new NDKMod.default({ explicitRelayUrls: config.relays, signer: new NDKPrivateKeySigner(bytesToHex(userSk)) });
+    await ndk.connect();
+    const contacts = config.contacts ?? [];
+    try {
+      // Fetch existing kind 30000 from relay
+      const existing = await ndk.fetchEvents(
+        { kinds: [30000], authors: [userPk], "#d": ["taskify-contacts"], limit: 1 } as Parameters<typeof ndk.fetchEvents>[0],
+        { closeOnEose: true },
+      );
+      if (existing.size > 0) {
+        const [evt] = existing;
+        const pTags = evt.tags.filter((t: string[]) => t[0] === "p");
+        for (const pTag of pTags) {
+          const pk = pTag[1];
+          if (pk && !contacts.find((c) => c.pubkey === pk)) {
+            contacts.push({
+              pubkey: pk,
+              npub: nip19.npubEncode(pk),
+              addedAt: evt.created_at ?? Math.floor(Date.now() / 1000),
+            });
+          }
+        }
+      }
+      if (!opts.pull && contacts.length > 0) {
+        const NDKEventMod = await import("@nostr-dev-kit/ndk");
+        const syncEvent = new NDKEventMod.NDKEvent(ndk);
+        syncEvent.kind = 30000;
+        syncEvent.content = "";
+        syncEvent.tags = [
+          ["d", "taskify-contacts"],
+          ...contacts.map((c): string[] => ["p", c.pubkey, ...(c.relays?.[0] ? [c.relays[0]] : [])]),
+        ];
+        await syncEvent.sign();
+        await syncEvent.publish();
+        console.log(chalk.green(`✓ Published ${contacts.length} contacts to relay`));
+      }
+      config.contacts = contacts;
+      await saveConfig(config);
+      if (opts.json) renderJson(contacts);
+      else console.log(chalk.green(`✓ Synced ${contacts.length} contacts`));
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      try { (ndk.pool as unknown as { destroy?(): void })?.destroy?.(); } catch { /* ignore */ }
+    }
     process.exit(0);
   });
 
