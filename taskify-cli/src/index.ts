@@ -280,7 +280,7 @@ boardCmd
         console.log(chalk.dim(`  — no columns/lists cached (run: taskify board sync)`));
       } else {
         for (const col of b.columns) {
-          console.log(`  [${chalk.cyan(col.id)}] ${col.name}`);
+          console.log(`  ${chalk.bold(col.name)}  ${chalk.dim(col.id.slice(0, 8))}`);
         }
       }
     }
@@ -1049,6 +1049,9 @@ program
       let columnId: string | undefined;
       let columnName: string | undefined;
       const resolvedBoardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
+      const resolvedBoardEntry = resolvedBoardId
+        ? config.boards.find((b) => b.id === resolvedBoardId)
+        : undefined;
 
       if (opts.column) {
         // Column requires a single board to be resolvable
@@ -1077,7 +1080,7 @@ program
         if (tasks.length === 0) {
           console.log(chalk.dim("No tasks found."));
         } else {
-          renderTable(tasks, config.trustedNpubs, columnName);
+          renderTable(tasks, config.trustedNpubs, columnName, resolvedBoardEntry?.columns);
         }
       }
     } catch (err) {
