@@ -44,6 +44,9 @@ export type AgentTaskPatchInput = {
   recurrence?: Record<string, unknown> | null;
   reminders?: Array<string | number> | null;
   documents?: Array<Record<string, unknown>> | null;
+  dueTimeEnabled?: boolean | null;
+  dueTimeZone?: string | null;
+  hiddenUntilISO?: string | null;
 };
 
 export type AgentRuntime = {

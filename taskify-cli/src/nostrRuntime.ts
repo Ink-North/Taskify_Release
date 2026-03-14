@@ -149,9 +149,11 @@ export type FullTaskRecord = {
   dueISO: string;
   dueDateEnabled?: boolean;
   dueTimeEnabled?: boolean;
+  dueTimeZone?: string;
   priority?: 1 | 2 | 3;
   completed: boolean;
   completedAt?: string;
+  completedBy?: string;
   createdAt?: number;      // Unix seconds (for render compat)
   updatedAt?: string;
   createdBy?: string;      // hex pubkey
@@ -165,11 +167,19 @@ export type FullTaskRecord = {
   inboxItem?: boolean;
   assignees?: TaskAssignee[];
   documents?: Record<string, unknown>[];
+  hiddenUntilISO?: string;
+  streak?: number;
+  longestStreak?: number;
+  seriesId?: string;
+  images?: string[];
 };
 
 export type ExtendedCreateInput = AgentTaskCreateInput & {
   subtasks?: Subtask[];
   inboxItem?: boolean;
+  dueTimeEnabled?: boolean;
+  dueTimeZone?: string;
+  hiddenUntilISO?: string;
 };
 
 export type FullEventRecord = {
@@ -310,6 +320,13 @@ async function parseDecryptedEvent(
           .filter((a): a is TaskAssignee => !!a)
         : undefined,
       documents: Array.isArray(payload.documents) ? (payload.documents as Record<string, unknown>[]) : undefined,
+      dueTimeZone: payload.dueTimeZone ?? undefined,
+      hiddenUntilISO: payload.hiddenUntilISO ?? undefined,
+      streak: typeof payload.streak === "number" ? payload.streak : undefined,
+      longestStreak: typeof payload.longestStreak === "number" ? payload.longestStreak : undefined,
+      seriesId: typeof payload.seriesId === "string" ? payload.seriesId : undefined,
+      completedBy: payload.completedBy ?? undefined,
+      images: Array.isArray(payload.images) ? payload.images as string[] : undefined,
     };
   } catch {
     return null;
@@ -1085,7 +1102,6 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         completedAt: null,
         completedBy: null,
         recurrence: input.recurrence ?? null,
-        hiddenUntilISO: null,
         createdBy: userPubkey,
         lastEditedBy: userPubkey,
         createdAt: now,
@@ -1093,10 +1109,10 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         longestStreak: null,
         seriesId: null,
         dueDateEnabled: input.dueISO ? true : null,
-        dueTimeEnabled: null,
-        dueTimeZone: null,
+        dueTimeEnabled: input.dueTimeEnabled ?? null,
+        dueTimeZone: input.dueTimeZone ?? null,
+        hiddenUntilISO: input.hiddenUntilISO ?? null,
         images: null,
-        reminders: input.reminders ?? null,
         documents: input.documents ?? null,
         bounty: null,
         subtasks: input.subtasks ?? null,
@@ -1121,6 +1137,9 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         note: input.note || undefined,
         dueISO: input.dueISO ?? "",
         dueDateEnabled: input.dueISO ? true : undefined,
+        dueTimeEnabled: input.dueTimeEnabled ?? undefined,
+        dueTimeZone: input.dueTimeZone ?? undefined,
+        hiddenUntilISO: input.hiddenUntilISO ?? undefined,
         priority: input.priority,
         completed: false,
         createdAt: Math.floor(now / 1000),
@@ -1128,7 +1147,6 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         lastEditedBy: userPubkey,
         subtasks: input.subtasks,
         recurrence: input.recurrence as Recurrence | undefined,
-        reminders: input.reminders as ReminderPreset[] | undefined,
         documents: input.documents,
         column: colId || undefined,
         inboxItem: input.inboxItem === true ? true : undefined,
@@ -1172,10 +1190,14 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         ...(patch.inboxItem !== undefined ? { inboxItem: patch.inboxItem } : {}),
         ...(patch.assignees !== undefined ? { assignees: patch.assignees } : {}),
         ...(patch.recurrence !== undefined ? { recurrence: patch.recurrence } : {}),
-        ...(patch.reminders !== undefined ? { reminders: patch.reminders } : {}),
         ...(patch.documents !== undefined ? { documents: patch.documents } : {}),
+        ...(patch.dueTimeEnabled !== undefined ? { dueTimeEnabled: patch.dueTimeEnabled } : {}),
+        ...(patch.dueTimeZone !== undefined ? { dueTimeZone: patch.dueTimeZone } : {}),
+        ...(patch.hiddenUntilISO !== undefined ? { hiddenUntilISO: patch.hiddenUntilISO } : {}),
         lastEditedBy: userPubkey,
       };
+      // reminders are device-local only — strip from published payload
+      delete merged.reminders;
       const statusTag = event.tags.find((t) => t[0] === "status");
       const status = (statusTag?.[1] ?? "open") as "open" | "done" | "deleted";
       const colTag = event.tags.find((t) => t[0] === "col");
@@ -1195,8 +1217,10 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         inboxItem: merged.inboxItem === true ? true : undefined,
         assignees: updatedAssignees,
         recurrence: (merged.recurrence as Recurrence | null | undefined) ?? undefined,
-        reminders: (merged.reminders as ReminderPreset[] | null | undefined) ?? undefined,
         documents: (merged.documents as Record<string, unknown>[] | null | undefined) ?? undefined,
+        dueTimeEnabled: merged.dueTimeEnabled ?? existing.dueTimeEnabled,
+        dueTimeZone: (merged.dueTimeZone as string | null | undefined) ?? existing.dueTimeZone,
+        hiddenUntilISO: (merged.hiddenUntilISO as string | null | undefined) ?? existing.hiddenUntilISO,
         lastEditedBy: merged.lastEditedBy,
       };
       if (patch.columnId !== undefined) updated.column = colId || undefined;
@@ -1530,6 +1554,9 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       await ensureConnected();
       const entry = resolveBoardEntry(config, boardId);
       if (!entry) return 0;
+      if (entry.clearCompletedDisabled === true) {
+        throw new Error("Clear completed is disabled on this board.");
+      }
       const events = await fetchBoardEvents(entry.id);
       let removed = 0;
       for (const event of events) {
