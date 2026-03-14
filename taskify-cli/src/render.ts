@@ -110,9 +110,19 @@ function formatAssignee(task: FullTaskRecord): string {
   return truncated.padEnd(12);
 }
 
-const COL_HEADER = `${"ID".padEnd(8)}  ${"TITLE".padEnd(40)}  ${"DUE".padEnd(12)}  ${"PRI".padEnd(4)}  ${"REC".padEnd(5)}  ${"BOUNTY".padEnd(8)}  ${"ASSIGN".padEnd(12)}  TRUST`;
+const COL_HEADER = `${"ID".padEnd(8)}  ${"TITLE".padEnd(40)}  ${"LIST".padEnd(12)}  ${"DUE".padEnd(12)}  ${"PRI".padEnd(4)}  ${"REC".padEnd(5)}  ${"BOUNTY".padEnd(8)}  ${"ASSIGN".padEnd(12)}  TRUST`;
 
-export function renderTable(tasks: FullTaskRecord[], trustedNpubs: string[], columnName?: string): void {
+export function renderTable(
+  tasks: FullTaskRecord[],
+  trustedNpubs: string[],
+  columnName?: string,
+  columns?: Array<{ id: string; name: string }>,
+): void {
+  // Build a quick id→name lookup for column resolution
+  const colMap = new Map<string, string>(
+    (columns ?? []).map((c) => [c.id, c.name]),
+  );
+
   const byBoard = new Map<string, FullTaskRecord[]>();
   for (const task of tasks) {
     const group = byBoard.get(task.boardId) ?? [];
@@ -133,13 +143,18 @@ export function renderTable(tasks: FullTaskRecord[], trustedNpubs: string[], col
     for (const task of boardTasks) {
       const id = task.id.slice(0, 8).padEnd(8);
       const title = truncateWithSubtasks(task, 40);
+      // Resolve column UUID → name, fall back to short ID, blank if no column
+      const colLabel = task.column
+        ? (colMap.get(task.column) ?? task.column.slice(0, 8))
+        : "";
+      const list = colLabel.slice(0, 12).padEnd(12);
       const due = formatDue(task.dueISO);
       const pri = formatPri(task.priority);
       const rec = formatRec(task);
       const bounty = formatBounty(task).padEnd(8);
       const assign = formatAssignee(task);
       const trust = trustLabel(task.lastEditedBy, trustedNpubs);
-      console.log(`${id}  ${title}  ${due}  ${pri}  ${rec}  ${bounty}  ${assign}  ${trust}`);
+      console.log(`${id}  ${title}  ${list}  ${due}  ${pri}  ${rec}  ${bounty}  ${assign}  ${trust}`);
     }
   }
 }
