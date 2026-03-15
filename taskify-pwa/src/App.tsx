@@ -1730,6 +1730,9 @@ function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
   if (!data || typeof data !== "object") {
     throw new Error("Invalid backup data");
   }
+  // Clear sync cursors on restore so the first post-restore open re-fetches all
+  // events from relays and builds a fresh cursor, rather than skipping history.
+  idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify({}));
   if ("tasks" in data && data.tasks !== undefined) {
     idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(data.tasks));
   }
@@ -6219,11 +6222,12 @@ export default function App() {
     }
   });
   // Batch accumulator for initial sync. While a board's bTag is in this map, all
-  // applyTaskEvent state updates are queued here instead of calling setTasks individually.
-  // After EOSE the entire batch is applied in ONE setTasks call, avoiding hundreds of
-  // re-renders (and IndexedDB writes) during the initial relay flood.
-  // Map<bTag, Array<(prev: Task[]) => Task[]>>
-  const syncBatchRef = useRef<Map<string, Array<(prev: Task[]) => Task[]>>>(new Map());
+  // applyTaskEvent state updates are written directly into this Map instead of calling
+  // setTasks. After EOSE the batch is merged into the task array in a single O(n+m)
+  // setTasks call — no intermediate arrays, no n² churn. This prevents OOM crashes
+  // on mobile when restoring large backups or doing a first-ever open on a big board.
+  // Map<bTag, Map<"boardId::taskId", Task | "deleted">>
+  const syncBatchRef = useRef<Map<string, Map<string, Task | "deleted">>>(new Map());
   const markNostrBoardInitialSyncComplete = useCallback((bTag: string) => {
     if (!bTag) return;
     completedNostrInitialSyncRef.current.add(bTag);
@@ -12957,19 +12961,58 @@ export default function App() {
       }
     }
     else if (lb.kind === "lists") base.columnId = col || (lb.columns[0]?.id || "");
-    // If this board's initial sync is still in progress, queue the state updater into
-    // syncBatchRef instead of calling setTasks. The batch will be flushed as a single
-    // setTasks call after EOSE, eliminating hundreds of re-renders during the relay flood.
-    const applyUpdater = (updater: (prev: Task[]) => Task[]) => {
-      if (!completedNostrInitialSyncRef.current.has(bTag)) {
-        let batch = syncBatchRef.current.get(bTag);
-        if (!batch) { batch = []; syncBatchRef.current.set(bTag, batch); }
-        batch.push(updater);
+    // Key used for both the live setTasks path and the batch Map path.
+    const taskKey = `${lb.id}::${taskId}`;
+
+    // ── Batch path (initial sync in progress) ────────────────────────────────
+    // Write directly into a Map<key, Task|"deleted"> instead of queuing updater
+    // functions. This keeps the batch O(1) per event and makes the final flush
+    // O(n+m) — no n² array churn, no OOM on large backups or first opens.
+    if (!completedNostrInitialSyncRef.current.has(bTag)) {
+      let batchMap = syncBatchRef.current.get(bTag);
+      if (!batchMap) { batchMap = new Map(); syncBatchRef.current.set(bTag, batchMap); }
+      if (status === "deleted") {
+        batchMap.set(taskKey, "deleted");
       } else {
-        setTasks(updater);
+        // For merge fields that normally need prev (bounty, order, images, etc.),
+        // use whatever is already in the batch for this task, falling back to base.
+        const existing = batchMap.get(taskKey);
+        const cur = existing && existing !== "deleted" ? existing as Task : undefined;
+        const incomingB: Task["bounty"] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'bounty') ? payload.bounty : undefined;
+        const incomingImgs: string[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'images') ? payload.images : undefined;
+        const imgs = incomingImgs === undefined ? cur?.images : incomingImgs === null ? undefined : incomingImgs;
+        let docs: TaskDocument[] | undefined = cur?.documents;
+        if (Object.prototype.hasOwnProperty.call(payload, 'documents')) {
+          const rawDocs = (payload as any).documents;
+          docs = rawDocs === null ? undefined : (normalizeDocumentList(rawDocs)?.map(ensureDocumentPreview) ?? undefined);
+        }
+        const incomingStreak: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'streak') ? payload.streak : undefined;
+        const st = incomingStreak === undefined ? cur?.streak : incomingStreak === null ? undefined : incomingStreak;
+        const incomingLongest: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'longestStreak') ? payload.longestStreak : undefined;
+        const longest = incomingLongest === undefined ? cur?.longestStreak : incomingLongest === null ? undefined : incomingLongest;
+        const incomingSubs: Subtask[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'subtasks') ? payload.subtasks : undefined;
+        const subs = incomingSubs === undefined ? cur?.subtasks : incomingSubs === null ? undefined : incomingSubs;
+        const mergedAssignees = incomingAssignees === undefined ? cur?.assignees : incomingAssignees === null ? undefined : incomingAssignees;
+        const normalizedIncoming = incomingB === null ? undefined : normalizeBounty(incomingB);
+        batchMap.set(taskKey, {
+          ...(cur ?? {}),
+          ...base,
+          order: cur?.order ?? 0,
+          createdAt: cur?.createdAt ?? base.createdAt ?? Date.now(),
+          images: imgs,
+          documents: docs,
+          bounty: normalizedIncoming ?? cur?.bounty,
+          streak: st,
+          longestStreak: longest,
+          subtasks: subs,
+          assignees: mergedAssignees,
+        } as Task);
       }
-    };
-    applyUpdater(prev => {
+      return; // ← do NOT call setTasks; flush happens at EOSE
+    }
+
+    // ── Live path (sync already complete, normal per-event update) ────────────
+    setTasks(prev => {
       const idx = prev.findIndex(x => x.id === taskId && x.boardId === lb.id);
       if (status === "deleted") {
         if (idx < 0) return prev;
@@ -17145,13 +17188,16 @@ export default function App() {
       if (!rls.length) continue;
       if (!completedNostrInitialSyncRef.current.has(it.id)) {
         const timeoutId = window.setTimeout(() => {
-          // Timeout fallback: flush any queued batch updates before marking complete
-          const batchedUpdaters = syncBatchRef.current.get(it.id);
-          if (batchedUpdaters && batchedUpdaters.length > 0) {
+          // Timeout fallback: flush batch map before marking complete
+          const batchMap = syncBatchRef.current.get(it.id);
+          if (batchMap && batchMap.size > 0) {
             setTasks(prev => {
-              let state = prev;
-              for (const updater of batchedUpdaters) state = updater(state);
-              return state;
+              const merged = new Map(prev.map(t => [`${t.boardId}::${t.id}`, t]));
+              for (const [key, entry] of batchMap.entries()) {
+                if (entry === "deleted") merged.delete(key);
+                else merged.set(key, entry as Task);
+              }
+              return dedupeRecurringInstances(Array.from(merged.values()));
             });
             syncBatchRef.current.delete(it.id);
           }
@@ -17183,13 +17229,16 @@ export default function App() {
         // then mark sync complete so subsequent events apply individually.
         nostrApplyQueue.current.catch(() => {}).then(() => {
           clearSyncTimeout(it.id);
-          // Flush the batch — one React render instead of N renders for N events
-          const batchedUpdaters = syncBatchRef.current.get(it.id);
-          if (batchedUpdaters && batchedUpdaters.length > 0) {
+          // Flush the batch — O(n+m) merge, one React render, no intermediate arrays
+          const batchMap = syncBatchRef.current.get(it.id);
+          if (batchMap && batchMap.size > 0) {
             setTasks(prev => {
-              let state = prev;
-              for (const updater of batchedUpdaters) state = updater(state);
-              return state;
+              const merged = new Map(prev.map(t => [`${t.boardId}::${t.id}`, t]));
+              for (const [key, entry] of batchMap.entries()) {
+                if (entry === "deleted") merged.delete(key);
+                else merged.set(key, entry as Task);
+              }
+              return dedupeRecurringInstances(Array.from(merged.values()));
             });
             syncBatchRef.current.delete(it.id);
           }
