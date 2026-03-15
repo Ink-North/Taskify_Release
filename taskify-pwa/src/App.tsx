@@ -9923,6 +9923,15 @@ export default function App() {
     return ids;
   }, [boards, pendingNostrInitialSyncByBoardTag]);
 
+  // True while the current board's initial relay sync is in progress.
+  // Used to show a loading indicator so users know tasks are on their way.
+  const isCurrentBoardSyncing = useMemo(() => {
+    if (!currentBoard) return false;
+    const nostrBoardId = currentBoard.nostr?.boardId;
+    if (!nostrBoardId) return false;
+    return !!pendingNostrInitialSyncByBoardTag[boardTag(nostrBoardId)];
+  }, [currentBoard, pendingNostrInitialSyncByBoardTag]);
+
   /* ---------- Derived: board-scoped lists ---------- */
   const tasksForBoard = useMemo(() => {
     if (!currentBoard) return [] as Task[];
@@ -17585,6 +17594,25 @@ export default function App() {
                   </div>
                 </div>
                 <div className="app-header__right">
+                  {isCurrentBoardSyncing && (
+                    <span
+                      className="flex items-center gap-1.5 text-xs text-secondary select-none px-1"
+                      aria-label="Syncing tasks…"
+                      title="Fetching latest tasks from relays…"
+                    >
+                      <svg
+                        className="animate-spin h-3.5 w-3.5 shrink-0 opacity-60"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                      >
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                      </svg>
+                      <span className="hidden sm:inline opacity-60">Syncing…</span>
+                    </span>
+                  )}
                   {settings.completedTab ? (
                     <button
                       ref={completedTabRef}
