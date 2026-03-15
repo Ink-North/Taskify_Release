@@ -63,6 +63,22 @@ taskify board list                 # verify expected boards are visible
 - Reopen: `taskify reopen <taskId> --board "<board>"`
 - Delete: `taskify delete <taskId> --board "<board>" --force`
 
+### Recurring task instances
+Recurring tasks on week boards generate virtual instances with IDs like `recurrence:<seriesKey>:<date>`.
+These show in the table with a `~YYYY-MM-DD` display ID. **Do not use the 8-char prefix** — it will be `~2026-03` for all instances and won't resolve.
+
+**Preferred approach — resolve by title + due date:**
+```bash
+taskify done --title "Bible plan" --due 2026-03-14 --board "Personal schedule"
+taskify reopen --title "Bible plan" --due 2026-03-14 --board "Personal schedule"
+```
+
+**Alternative — use the full recurring instance ID from `--json`:**
+```bash
+taskify list --board "Personal schedule" --json | jq '.[] | select(.title | test("Bible"; "i")) | {id, title, dueISO}'
+# Then: taskify done "<full-recurrence:...:date-id>" --board "Personal schedule"
+```
+
 ### Inbox triage
 - List inbox: `taskify inbox list --board "<board>"`
 - Quick add: `taskify inbox add "<title>" --board "<board>"`

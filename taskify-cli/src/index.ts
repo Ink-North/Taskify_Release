@@ -65,6 +65,49 @@ function warnShortTaskId(taskId: string): void {
   }
 }
 
+/**
+ * Resolve a task by title + optional due-date when no taskId is provided.
+ * Returns the matched taskId or exits with an error if ambiguous / not found.
+ * This is the primary fallback for recurring instances whose IDs start with
+ * "recurrence:" and can't be identified by a short 8-char prefix.
+ */
+async function resolveTaskIdByTitle(
+  runtime: ReturnType<typeof initRuntime>,
+  title: string,
+  due: string | undefined,
+  boardId: string | undefined,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+): Promise<string> {
+  const tasks = await runtime.listTasks({
+    boardId,
+    status: "any",
+    refresh: false,
+    noCache: false,
+  });
+  const titleLower = title.toLowerCase();
+  const duePart = due ? due.slice(0, 10) : undefined;
+  const matches = tasks.filter((t) => {
+    const titleMatch = t.title.toLowerCase().includes(titleLower);
+    const dueMatch = !duePart || (t.dueISO ?? "").startsWith(duePart);
+    return titleMatch && dueMatch;
+  });
+  if (matches.length === 0) {
+    const hint = duePart ? ` due ${duePart}` : "";
+    console.error(chalk.red(`No task found matching title "${title}"${hint}.`));
+    console.error(chalk.dim("Tip: use taskify search to find the exact task first."));
+    process.exit(1);
+  }
+  if (matches.length > 1) {
+    console.error(chalk.red(`Ambiguous: ${matches.length} tasks match "${title}"${duePart ? ` on ${duePart}` : ""}.`));
+    console.error(chalk.dim("Add --due YYYY-MM-DD to narrow down, or pass the full task ID."));
+    for (const t of matches.slice(0, 5)) {
+      console.error(chalk.dim(`  ${t.id.slice(0, 20)}  ${t.title}  ${(t.dueISO ?? "").slice(0, 10)}`));
+    }
+    process.exit(1);
+  }
+  return matches[0].id;
+}
+
 const VALID_REMINDER_PRESETS = new Set(["0h", "5m", "15m", "30m", "1h", "1d", "1w"]);
 
 function parseJsonOption(label: string, raw: string | undefined): unknown {
@@ -1384,20 +1427,31 @@ program
 
 // ---- done ----
 program
-  .command("done <taskId>")
-  .description("Mark a task as done (accepts 8-char prefix or full UUID)")
+  .command("done [taskId]")
+  .description("Mark a task as done (accepts 8-char prefix, full UUID, or full recurring instance ID)")
   .option("--board <id|name>", "Board the task belongs to")
+  .option("--title <title>", "Resolve task by title match (use with --due for recurring instances)")
+  .option("--due <YYYY-MM-DD>", "Filter by due date when resolving by title")
   .option("--json", "Output updated task as JSON")
-  .action(async (taskId: string, opts) => {
-    warnShortTaskId(taskId);
+  .action(async (taskId: string | undefined, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
-      const task = await runtime.setTaskStatus(taskId, "done", boardId);
+      let resolvedId = taskId;
+      if (!resolvedId) {
+        if (!opts.title) {
+          console.error(chalk.red("Provide a taskId or --title to identify the task."));
+          process.exit(1);
+        }
+        resolvedId = await resolveTaskIdByTitle(runtime, opts.title, opts.due, boardId, config);
+      } else {
+        warnShortTaskId(resolvedId);
+      }
+      const task = await runtime.setTaskStatus(resolvedId, "done", boardId);
       if (!task) {
-        console.error(chalk.red(`Task not found: ${taskId}`));
+        console.error(chalk.red(`Task not found: ${resolvedId}`));
         exitCode = 1;
       } else if (opts.json) {
         renderJson(task);
@@ -1415,20 +1469,31 @@ program
 
 // ---- reopen ----
 program
-  .command("reopen <taskId>")
-  .description("Reopen a completed task (accepts 8-char prefix or full UUID)")
+  .command("reopen [taskId]")
+  .description("Reopen a completed task (accepts 8-char prefix, full UUID, or full recurring instance ID)")
   .option("--board <id|name>", "Board the task belongs to")
+  .option("--title <title>", "Resolve task by title match (use with --due for recurring instances)")
+  .option("--due <YYYY-MM-DD>", "Filter by due date when resolving by title")
   .option("--json", "Output updated task as JSON")
-  .action(async (taskId: string, opts) => {
-    warnShortTaskId(taskId);
+  .action(async (taskId: string | undefined, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
-      const task = await runtime.setTaskStatus(taskId, "open", boardId);
+      let resolvedId = taskId;
+      if (!resolvedId) {
+        if (!opts.title) {
+          console.error(chalk.red("Provide a taskId or --title to identify the task."));
+          process.exit(1);
+        }
+        resolvedId = await resolveTaskIdByTitle(runtime, opts.title, opts.due, boardId, config);
+      } else {
+        warnShortTaskId(resolvedId);
+      }
+      const task = await runtime.setTaskStatus(resolvedId, "open", boardId);
       if (!task) {
-        console.error(chalk.red(`Task not found: ${taskId}`));
+        console.error(chalk.red(`Task not found: ${resolvedId}`));
         exitCode = 1;
       } else if (opts.json) {
         renderJson(task);
