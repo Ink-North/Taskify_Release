@@ -180,11 +180,37 @@ boardCmd
     const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.boards.length === 0) {
       console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
-    } else {
-      for (const b of config.boards) {
-        const relays = b.relays?.length ? `  [${b.relays.join(", ")}]` : "";
-        console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}${relays}`);
-      }
+      process.exit(0);
+    }
+
+    // Auto-sync any board whose stored name looks like a raw UUID prefix
+    // (happens when a board was joined without a --name or metadata wasn't fetched).
+    // This ensures agents always see human-readable names without a manual board sync step.
+    const UUID_PREFIX_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i;
+    const stale = config.boards.filter(
+      (b) => UUID_PREFIX_RE.test(b.name) || b.name === b.id || b.name === b.id.slice(0, 8),
+    );
+
+    if (stale.length > 0) {
+      process.stderr.write(chalk.dim(`Fetching display names for ${stale.length} board(s)…\n`));
+      try {
+        const runtime = initRuntime(config);
+        for (const b of stale) {
+          try {
+            const meta = await runtime.syncBoard(b.id);
+            if (meta.name) b.name = meta.name;
+            if (meta.kind) b.kind = meta.kind;
+            if (meta.columns) b.columns = meta.columns;
+          } catch { /* non-fatal — show whatever name we have */ }
+        }
+        await runtime.disconnect();
+        await saveConfig(config);
+      } catch { /* non-fatal */ }
+    }
+
+    for (const b of config.boards) {
+      const relays = b.relays?.length ? `  [${b.relays.join(", ")}]` : "";
+      console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}${relays}`);
     }
     process.exit(0);
   });
@@ -594,10 +620,33 @@ program
     const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.boards.length === 0) {
       console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
-    } else {
-      for (const b of config.boards) {
-        console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}`);
-      }
+      process.exit(0);
+    }
+
+    const UUID_PREFIX_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i;
+    const stale = config.boards.filter(
+      (b) => UUID_PREFIX_RE.test(b.name) || b.name === b.id || b.name === b.id.slice(0, 8),
+    );
+
+    if (stale.length > 0) {
+      process.stderr.write(chalk.dim(`Fetching display names for ${stale.length} board(s)…\n`));
+      try {
+        const runtime = initRuntime(config);
+        for (const b of stale) {
+          try {
+            const meta = await runtime.syncBoard(b.id);
+            if (meta.name) b.name = meta.name;
+            if (meta.kind) b.kind = meta.kind;
+            if (meta.columns) b.columns = meta.columns;
+          } catch { /* non-fatal */ }
+        }
+        await runtime.disconnect();
+        await saveConfig(config);
+      } catch { /* non-fatal */ }
+    }
+
+    for (const b of config.boards) {
+      console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}`);
     }
     process.exit(0);
   });

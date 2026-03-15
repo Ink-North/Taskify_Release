@@ -24,13 +24,16 @@ If `taskify` is missing globally, run via local package:
 ```bash
 taskify profile list               # see all profiles and which is active (marked *)
 taskify profile use <name>         # switch to the right profile
-taskify board list                 # verify expected boards are visible
+taskify board list                 # verify expected boards are visible (auto-syncs display names)
 ```
 
 - Each profile has its own boards, keys, and relay config. The default profile may not have access to the user's personal boards.
-- If board names show as raw UUIDs with no display names, you are on the wrong profile — switch profiles and re-run `taskify board list`.
-- When a user references a named board (e.g. "Personal schedule"), resolve which profile owns it by iterating profiles until that board appears.
-- Use `--profile <name>` for quick one-shot commands without permanently switching: `taskify list --profile nathan --board "Personal schedule"`
+- `taskify board list` now **auto-syncs display names** for any board showing as a raw UUID — no manual `taskify board sync` needed.
+- When a user references a named board (e.g. "Personal schedule"), resolve which profile owns it by iterating profiles until that board appears by name.
+- Use `--profile <name>` for quick one-shot commands without permanently switching: `taskify list --profile ink --board "Personal schedule"`
+
+### If you still see raw UUIDs after `board list`
+Run `taskify board sync` manually — it forces a relay fetch for all boards and updates the local cache.
 
 ## Safety and reliability rules
 
