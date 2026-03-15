@@ -12891,10 +12891,11 @@ export default function App() {
     if (ev.created_at === last && isPending) return;
     // Accept equal timestamps so rapid consecutive updates still apply
     m.set(taskId, ev.created_at);
-    // Advance the in-memory cursor for this board so we know the high-water mark
+    // Advance the in-memory cursor for this board so we know the high-water mark.
+    // Key by lb.id (board UUID) — must match the lookup in the subscription setup.
     if (typeof ev.created_at === "number" && Number.isFinite(ev.created_at)) {
-      const prev = boardSyncCursorsRef.current[bTag] ?? 0;
-      if (ev.created_at > prev) boardSyncCursorsRef.current = { ...boardSyncCursorsRef.current, [bTag]: ev.created_at };
+      const prev = boardSyncCursorsRef.current[lb.id] ?? 0;
+      if (ev.created_at > prev) boardSyncCursorsRef.current = { ...boardSyncCursorsRef.current, [lb.id]: ev.created_at };
     }
 
     let payload: any = {};
