@@ -17,6 +17,21 @@ If `taskify` is missing globally, run via local package:
 - `npm run build` (if needed)
 - `node dist/index.js <args>`
 
+## Profile rule — always do this first
+
+**Before any Taskify command**, check and switch to the correct profile:
+
+```bash
+taskify profile list               # see all profiles and which is active (marked *)
+taskify profile use <name>         # switch to the right profile
+taskify board list                 # verify expected boards are visible
+```
+
+- Each profile has its own boards, keys, and relay config. The default profile may not have access to the user's personal boards.
+- If board names show as raw UUIDs with no display names, you are on the wrong profile — switch profiles and re-run `taskify board list`.
+- When a user references a named board (e.g. "Personal schedule"), resolve which profile owns it by iterating profiles until that board appears.
+- Use `--profile <name>` for quick one-shot commands without permanently switching: `taskify list --profile nathan --board "Personal schedule"`
+
 ## Safety and reliability rules
 
 1. Prefer read commands first (`list`, `show`, `search`, `boards`, `board columns`) before mutating state.
