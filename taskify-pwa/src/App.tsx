@@ -1664,6 +1664,7 @@ function isSameLocalDate(aMs: number, bMs: number): boolean {
 
 const R_NONE: Recurrence = { type: "none" };
 const LS_TASKS = "taskify_tasks_v5";
+const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
 const LS_CALENDAR_EVENTS = "taskify_calendar_events_v1";
 const LS_EXTERNAL_CALENDAR_EVENTS = "taskify_calendar_external_events_v1";
 const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
@@ -2008,6 +2009,9 @@ declare global {
 const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
 const NOSTR_MIGRATION_BUFFER_MS = 15000;
 const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 8000;
+// How many seconds to look back before the stored cursor to guard against
+// clock skew and events that arrived slightly out of order across relays.
+const NOSTR_CURSOR_LOOKBACK_SECS = 300;
 
 function loadDefaultRelays(): string[] {
   try {
@@ -6204,6 +6208,22 @@ export default function App() {
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
   const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
   const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
+  // In-memory cursor: tracks the highest created_at seen per board tag this session.
+  // Persisted to IDB after EOSE so subsequent opens only fetch new events.
+  const boardSyncCursorsRef = useRef<Record<string, number>>(() => {
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  // Batch accumulator for initial sync. While a board's bTag is in this map, all
+  // applyTaskEvent state updates are queued here instead of calling setTasks individually.
+  // After EOSE the entire batch is applied in ONE setTasks call, avoiding hundreds of
+  // re-renders (and IndexedDB writes) during the initial relay flood.
+  // Map<bTag, Array<(prev: Task[]) => Task[]>>
+  const syncBatchRef = useRef<Map<string, Array<(prev: Task[]) => Task[]>>>(new Map());
   const markNostrBoardInitialSyncComplete = useCallback((bTag: string) => {
     if (!bTag) return;
     completedNostrInitialSyncRef.current.add(bTag);
@@ -9903,6 +9923,15 @@ export default function App() {
     return ids;
   }, [boards, pendingNostrInitialSyncByBoardTag]);
 
+  // True while the current board's initial relay sync is in progress.
+  // Used to show a loading indicator so users know tasks are on their way.
+  const isCurrentBoardSyncing = useMemo(() => {
+    if (!currentBoard) return false;
+    const nostrBoardId = currentBoard.nostr?.boardId;
+    if (!nostrBoardId) return false;
+    return !!pendingNostrInitialSyncByBoardTag[boardTag(nostrBoardId)];
+  }, [currentBoard, pendingNostrInitialSyncByBoardTag]);
+
   /* ---------- Derived: board-scoped lists ---------- */
   const tasksForBoard = useMemo(() => {
     if (!currentBoard) return [] as Task[];
@@ -12858,6 +12887,11 @@ export default function App() {
     if (ev.created_at === last && isPending) return;
     // Accept equal timestamps so rapid consecutive updates still apply
     m.set(taskId, ev.created_at);
+    // Advance the in-memory cursor for this board so we know the high-water mark
+    if (typeof ev.created_at === "number" && Number.isFinite(ev.created_at)) {
+      const prev = boardSyncCursorsRef.current[bTag] ?? 0;
+      if (ev.created_at > prev) boardSyncCursorsRef.current = { ...boardSyncCursorsRef.current, [bTag]: ev.created_at };
+    }
 
     let payload: any = {};
     try {
@@ -12923,7 +12957,19 @@ export default function App() {
       }
     }
     else if (lb.kind === "lists") base.columnId = col || (lb.columns[0]?.id || "");
-    setTasks(prev => {
+    // If this board's initial sync is still in progress, queue the state updater into
+    // syncBatchRef instead of calling setTasks. The batch will be flushed as a single
+    // setTasks call after EOSE, eliminating hundreds of re-renders during the relay flood.
+    const applyUpdater = (updater: (prev: Task[]) => Task[]) => {
+      if (!completedNostrInitialSyncRef.current.has(bTag)) {
+        let batch = syncBatchRef.current.get(bTag);
+        if (!batch) { batch = []; syncBatchRef.current.set(bTag, batch); }
+        batch.push(updater);
+      } else {
+        setTasks(updater);
+      }
+    };
+    applyUpdater(prev => {
       const idx = prev.findIndex(x => x.id === taskId && x.boardId === lb.id);
       if (status === "deleted") {
         if (idx < 0) return prev;
@@ -17099,26 +17145,59 @@ export default function App() {
       if (!rls.length) continue;
       if (!completedNostrInitialSyncRef.current.has(it.id)) {
         const timeoutId = window.setTimeout(() => {
+          // Timeout fallback: flush any queued batch updates before marking complete
+          const batchedUpdaters = syncBatchRef.current.get(it.id);
+          if (batchedUpdaters && batchedUpdaters.length > 0) {
+            setTasks(prev => {
+              let state = prev;
+              for (const updater of batchedUpdaters) state = updater(state);
+              return state;
+            });
+            syncBatchRef.current.delete(it.id);
+          }
           markNostrBoardInitialSyncComplete(it.id);
         }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
         syncTimeoutByBoard.set(it.id, timeoutId);
       }
       pool.setRelays(rls);
       ensureMigrationState(it.id);
+      // Use a cursor (since) if we've synced this board before, so we only fetch
+      // events newer than our last high-water mark. This avoids re-fetching hundreds
+      // of old events on every app open, which was the cause of a ~60 second flicker
+      // where completed/deleted tasks would appear then disappear as old events were processed.
+      // First-time sync (no cursor): use limit:500 to bootstrap.
+      // Subsequent syncs: use since:(cursor - lookback) with no hard limit.
+      const cursor = boardSyncCursorsRef.current[it.id];
+      const sinceFilter = cursor ? { since: Math.max(0, cursor - NOSTR_CURSOR_LOOKBACK_SECS) } : { limit: 500 };
       const filters = [
-        { kinds: [30300, 30301], "#b": [it.id], limit: 500 },
+        { kinds: [30300, 30301], "#b": [it.id], ...sinceFilter },
         { kinds: [30300], "#d": [it.id], limit: 1 },
-        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], limit: 500 },
+        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], ...sinceFilter },
       ];
       const unsub = pool.subscribe(rls, filters, (ev) => {
         if (ev.kind === 30300) enqueueNostrApply(() => applyBoardEvent(ev)).catch(() => {});
         else if (ev.kind === 30301) enqueueNostrApply(() => applyTaskEvent(ev)).catch(() => {});
         else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueNostrApply(() => applyCalendarEvent(ev)).catch(() => {});
       }, () => {
-        // After initial sync, migrate legacy authors to the per-board key if needed.
+        // After initial sync: flush the batched state updates in ONE setTasks call,
+        // then mark sync complete so subsequent events apply individually.
         nostrApplyQueue.current.catch(() => {}).then(() => {
           clearSyncTimeout(it.id);
+          // Flush the batch — one React render instead of N renders for N events
+          const batchedUpdaters = syncBatchRef.current.get(it.id);
+          if (batchedUpdaters && batchedUpdaters.length > 0) {
+            setTasks(prev => {
+              let state = prev;
+              for (const updater of batchedUpdaters) state = updater(state);
+              return state;
+            });
+            syncBatchRef.current.delete(it.id);
+          }
           markNostrBoardInitialSyncComplete(it.id);
+          // Persist the updated cursor so the next startup fetches only new events
+          try {
+            idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current));
+          } catch { /* non-fatal */ }
           setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
         });
       });
@@ -17515,6 +17594,25 @@ export default function App() {
                   </div>
                 </div>
                 <div className="app-header__right">
+                  {isCurrentBoardSyncing && (
+                    <span
+                      className="flex items-center gap-1.5 text-xs text-secondary select-none px-1"
+                      aria-label="Syncing tasks…"
+                      title="Fetching latest tasks from relays…"
+                    >
+                      <svg
+                        className="animate-spin h-3.5 w-3.5 shrink-0 opacity-60"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                      >
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                      </svg>
+                      <span className="hidden sm:inline opacity-60">Syncing…</span>
+                    </span>
+                  )}
                   {settings.completedTab ? (
                     <button
                       ref={completedTabRef}

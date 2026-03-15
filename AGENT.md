@@ -190,6 +190,55 @@ PRs that change behavior without updating relevant docs will be flagged in revie
 
 ---
 
+## Development Philosophy
+
+These principles apply to all Taskify work — PWA, CLI, Worker, and Core.
+
+### Bug workflow — test first, always
+**Never fix a reported bug without a failing test first.**
+1. Write a test that reproduces the bug and confirm it fails
+2. Implement the fix
+3. Confirm the test now passes
+
+This prevents regressions and proves the fix is real, not accidental.
+
+### Nevernesting
+Favor early returns and guard clauses over nested conditionals.
+
+```ts
+// ❌ Bad
+if (user) {
+  if (task) {
+    if (boardId) {
+      doThing();
+    }
+  }
+}
+
+// ✅ Good
+if (!user) return;
+if (!task) return;
+if (!boardId) return;
+doThing();
+```
+
+### Core is source of truth
+`taskify-core` and `taskify-runtime-nostr` own business logic. The PWA and CLI are thin consumers — they call core, they never reimplement it. If you find duplicate logic in the UI layer, move it to core.
+
+### No dead code
+Delete commented-out code. Commented code is dead code. Add comments only for genuinely non-obvious logic — not to explain what the code already says.
+
+### Logically distinct, standalone commits
+Each commit must build and run on its own. One logical change per commit. Reviewers should be able to bisect safely.
+
+### Never block the render thread (PWA)
+All network requests, relay queries, and expensive computations must be async. Never perform synchronous blocking work in React hooks, renders, or component bodies. Use `async/await` and keep UI updates on the React thread.
+
+### Minimize agent output noise
+Build and test scripts should output clear `✓`/`✗` indicators with errors only on failure. Verbose output by default makes agent verification harder.
+
+---
+
 ## Safe Contribution Rules
 
 1. **Never modify `main` directly.** All changes go through PRs.

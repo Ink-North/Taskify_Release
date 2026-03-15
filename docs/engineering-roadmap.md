@@ -136,3 +136,36 @@ A milestone is complete when:
 - Coverage percentage tooling (c8, nyc) — will be added once domain tests are in place
 - CI/CD pipeline changes — separate infrastructure track
 - Product feature work — this roadmap is documentation and testing only
+
+---
+
+## Feature Backlog
+
+### Originless File Attachment Integration
+
+**Priority:** Medium  
+**Blocked by:** Usage allowance availability  
+**Source:** 2026-03-14 — reviewed Originless open-source project
+
+Add IPFS-based file attachments to tasks using [Originless](https://github.com/besoeasy/Originless) as the storage backend.
+
+#### Requirements
+
+- **Encryption is mandatory**: Files must be encrypted to the board key client-side *before* upload — same encryption model as task content. The Originless server never sees plaintext.
+- Decrypt on download using the board key, client-side.
+- Use `documents` field already present in the task payload schema (zero schema changes needed).
+- Document shape: `{ url: string, cid: string, filename: string, type: string }`
+- Default to public gateway (`https://originless.besoeasy.com`); allow self-hosted URL override in settings.
+- Check `/health` endpoint before rendering upload UI.
+
+#### PWA scope
+- "Attach file" on task create/edit → upload encrypted file → store document entry → display attachments inline
+
+#### CLI scope
+- `taskify attach <taskId> <file> --board <board>` — encrypt + upload + patch task
+- `taskify attachments <taskId>` — list attached file URLs
+
+#### Notes
+- Self-hosted Originless runs via Docker (`ghcr.io/besoeasy/originless`) — no accounts, no API keys for basic ops
+- Pin management (keep forever) requires Daku auth token — optional for initial implementation
+- Fits cleanly into existing agent workflow: agent uploads → returns IPFS URL → patches task via normal update flow
