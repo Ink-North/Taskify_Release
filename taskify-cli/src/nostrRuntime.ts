@@ -538,12 +538,17 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
   // Resolves a full UUID from a short prefix — fetches all board events and scans "d" tags.
   async function resolveTaskId(boardId: string, taskIdOrPrefix: string): Promise<string | null> {
     const exact = taskIdOrPrefix.trim();
+    // Standard UUID (36 chars) — return directly without a relay lookup
     if (exact.length === 36) return exact;
 
     const allEvents = await fetchBoardEvents(boardId);
     const entries = Array.from(allEvents)
       .map((event) => ({ id: readTagValue(event.tags, "d") ?? "" }))
       .filter((entry) => entry.id);
+
+    // For recurring instance IDs ("recurrence:...") the full ID can be >36 chars.
+    // resolveIdentifierReference does an exact-match first, so passing the full
+    // recurrence ID will always land on the right instance.
     return resolveIdentifierReference(entries, taskIdOrPrefix)?.id ?? null;
   }
 

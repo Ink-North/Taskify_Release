@@ -1664,6 +1664,7 @@ function isSameLocalDate(aMs: number, bMs: number): boolean {
 
 const R_NONE: Recurrence = { type: "none" };
 const LS_TASKS = "taskify_tasks_v5";
+const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
 const LS_CALENDAR_EVENTS = "taskify_calendar_events_v1";
 const LS_EXTERNAL_CALENDAR_EVENTS = "taskify_calendar_external_events_v1";
 const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
@@ -2008,6 +2009,9 @@ declare global {
 const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
 const NOSTR_MIGRATION_BUFFER_MS = 15000;
 const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 8000;
+// How many seconds to look back before the stored cursor to guard against
+// clock skew and events that arrived slightly out of order across relays.
+const NOSTR_CURSOR_LOOKBACK_SECS = 300;
 
 function loadDefaultRelays(): string[] {
   try {
@@ -6204,6 +6208,16 @@ export default function App() {
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
   const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
   const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
+  // In-memory cursor: tracks the highest created_at seen per board tag this session.
+  // Persisted to IDB after EOSE so subsequent opens only fetch new events.
+  const boardSyncCursorsRef = useRef<Record<string, number>>(() => {
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
   const markNostrBoardInitialSyncComplete = useCallback((bTag: string) => {
     if (!bTag) return;
     completedNostrInitialSyncRef.current.add(bTag);
@@ -12858,6 +12872,11 @@ export default function App() {
     if (ev.created_at === last && isPending) return;
     // Accept equal timestamps so rapid consecutive updates still apply
     m.set(taskId, ev.created_at);
+    // Advance the in-memory cursor for this board so we know the high-water mark
+    if (typeof ev.created_at === "number" && Number.isFinite(ev.created_at)) {
+      const prev = boardSyncCursorsRef.current[bTag] ?? 0;
+      if (ev.created_at > prev) boardSyncCursorsRef.current = { ...boardSyncCursorsRef.current, [bTag]: ev.created_at };
+    }
 
     let payload: any = {};
     try {
@@ -17105,10 +17124,18 @@ export default function App() {
       }
       pool.setRelays(rls);
       ensureMigrationState(it.id);
+      // Use a cursor (since) if we've synced this board before, so we only fetch
+      // events newer than our last high-water mark. This avoids re-fetching hundreds
+      // of old events on every app open, which was the cause of a ~60 second flicker
+      // where completed/deleted tasks would appear then disappear as old events were processed.
+      // First-time sync (no cursor): use limit:500 to bootstrap.
+      // Subsequent syncs: use since:(cursor - lookback) with no hard limit.
+      const cursor = boardSyncCursorsRef.current[it.id];
+      const sinceFilter = cursor ? { since: Math.max(0, cursor - NOSTR_CURSOR_LOOKBACK_SECS) } : { limit: 500 };
       const filters = [
-        { kinds: [30300, 30301], "#b": [it.id], limit: 500 },
+        { kinds: [30300, 30301], "#b": [it.id], ...sinceFilter },
         { kinds: [30300], "#d": [it.id], limit: 1 },
-        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], limit: 500 },
+        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], ...sinceFilter },
       ];
       const unsub = pool.subscribe(rls, filters, (ev) => {
         if (ev.kind === 30300) enqueueNostrApply(() => applyBoardEvent(ev)).catch(() => {});
@@ -17119,6 +17146,10 @@ export default function App() {
         nostrApplyQueue.current.catch(() => {}).then(() => {
           clearSyncTimeout(it.id);
           markNostrBoardInitialSyncComplete(it.id);
+          // Persist the updated cursor so the next startup fetches only new events
+          try {
+            idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current));
+          } catch { /* non-fatal */ }
           setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
         });
       });

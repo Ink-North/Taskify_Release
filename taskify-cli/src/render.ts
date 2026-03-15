@@ -110,7 +110,24 @@ function formatAssignee(task: FullTaskRecord): string {
   return truncated.padEnd(12);
 }
 
-const COL_HEADER = `${"ID".padEnd(8)}  ${"TITLE".padEnd(40)}  ${"LIST".padEnd(12)}  ${"DUE".padEnd(12)}  ${"PRI".padEnd(4)}  ${"REC".padEnd(5)}  ${"BOUNTY".padEnd(8)}  ${"ASSIGN".padEnd(12)}  TRUST`;
+/**
+ * Return a short, human-useful display ID for a task.
+ * For recurring instances (id starts with "recurrence:"), the full ID is
+ * "recurrence:<seriesKey>:<datePart>". We show "~YYYY-MM-DD" (9 chars max)
+ * so agents can clearly distinguish instances.
+ * For regular tasks we use the standard 8-char UUID prefix.
+ */
+export function shortTaskId(id: string): string {
+  if (id.startsWith("recurrence:")) {
+    // Last segment after final ":" is the date/time part
+    const lastColon = id.lastIndexOf(":");
+    const datePart = id.slice(lastColon + 1); // e.g. "2026-03-14"
+    return ("~" + datePart).slice(0, 11).padEnd(11);
+  }
+  return id.slice(0, 8).padEnd(8);
+}
+
+const COL_HEADER = `${"ID".padEnd(11)}  ${"TITLE".padEnd(40)}  ${"LIST".padEnd(12)}  ${"DUE".padEnd(12)}  ${"PRI".padEnd(4)}  ${"REC".padEnd(5)}  ${"BOUNTY".padEnd(8)}  ${"ASSIGN".padEnd(12)}  TRUST`;
 
 export function renderTable(
   tasks: FullTaskRecord[],
@@ -141,7 +158,7 @@ export function renderTable(
     console.log("\n" + chalk.bold(boardHeader));
     console.log(chalk.dim(COL_HEADER));
     for (const task of boardTasks) {
-      const id = task.id.slice(0, 8).padEnd(8);
+      const id = shortTaskId(task.id);
       const title = truncateWithSubtasks(task, 40);
       // Resolve column UUID → name, fall back to short ID, blank if no column
       const colLabel = task.column
