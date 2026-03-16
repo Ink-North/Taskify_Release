@@ -6276,6 +6276,15 @@ export default function App() {
   // on mobile when restoring large backups or doing a first-ever open on a big board.
   // Map<bTag, Map<"boardId::taskId", Task | "deleted">>
   const syncBatchRef = useRef<Map<string, Map<string, Task | "deleted">>>(new Map());
+
+  // Tracks how many EOSE callbacks are expected vs. received for each board's
+  // subscription. With multiple relays per board, NDK fires one EOSE per relay.
+  // The first relay's EOSE was previously triggering the batch flush immediately,
+  // but slower relays continued sending events as post-flush live updates — those
+  // live events include old task state without their corresponding deletes, causing
+  // stale tasks to briefly appear. Fix: only flush after ALL relays fire EOSE.
+  // Map<bTag, { expected: number; received: number }>
+  const boardEoseRef = useRef<Map<string, { expected: number; received: number }>>(new Map());
   const markNostrBoardInitialSyncComplete = useCallback((bTag: string) => {
     if (!bTag) return;
     completedNostrInitialSyncRef.current.add(bTag);
@@ -17310,6 +17319,9 @@ export default function App() {
         { kinds: [30300], "#d": [it.id], limit: 1 },
         { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], ...sinceFilter },
       ];
+      // Register the number of relays so the EOSE handler knows how many to wait for.
+      boardEoseRef.current.set(it.id, { expected: rls.length, received: 0 });
+
       const unsub = pool.subscribe(rls, filters, (ev) => {
         // Route each event through the board-specific queue so different boards
         // run in parallel while preserving per-board task-clock ordering.
@@ -17319,6 +17331,17 @@ export default function App() {
       }, () => {
         // After initial sync: flush the batched state updates in ONE setTasks call,
         // then mark sync complete so subsequent events apply individually.
+        //
+        // With multiple relays, NDK fires one EOSE per relay. Wait for ALL relays
+        // to fire EOSE before flushing so events from slower relays remain in the
+        // batch and don't arrive as post-flush live updates (which caused stale
+        // tasks to briefly appear). The timeout fallback handles unresponsive relays.
+        const eoseState = boardEoseRef.current.get(it.id);
+        if (eoseState) {
+          eoseState.received++;
+          if (eoseState.received < eoseState.expected) return; // wait for remaining relays
+        }
+
         // Wait only on THIS board's queue, not all boards.
         (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
           clearSyncTimeout(it.id);
@@ -17348,6 +17371,7 @@ export default function App() {
     return () => {
       unsubs.forEach((u) => u());
       syncTimeoutByBoard.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      for (const it of parsed) boardEoseRef.current.delete(it.id);
     };
   }, [
     nostrBoardsKey,
