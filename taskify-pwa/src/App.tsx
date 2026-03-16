@@ -17341,15 +17341,34 @@ export default function App() {
         if (ev.kind === 30300) enqueueForBoard(it.id, () => applyBoardEvent(ev)).catch(() => {});
         else if (ev.kind === 30301) enqueueForBoard(it.id, () => applyTaskEvent(ev)).catch(() => {});
         else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueForBoard(it.id, () => applyCalendarEvent(ev)).catch(() => {});
+
+        // 0xchat pattern: reset the inactivity grace timer on every event received.
+        // This ensures slow relays that are still sending events never get cut off
+        // by a grace timer that started while they were mid-stream. The grace timer
+        // only fires once all relays have gone quiet (no events for NOSTR_EOSE_GRACE_MS).
+        if (!completedNostrInitialSyncRef.current.has(it.id)) {
+          const existing = graceTimerByBoard.get(it.id);
+          if (existing != null) {
+            window.clearTimeout(existing);
+            const refreshed = window.setTimeout(() => {
+              graceTimerByBoard.delete(it.id);
+              (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
+                doFlush();
+                try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
+                setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
+              });
+            }, NOSTR_EOSE_GRACE_MS);
+            graceTimerByBoard.set(it.id, refreshed);
+          }
+        }
       }, () => {
         // After initial sync: flush the batched state updates in ONE setTasks call,
         // then mark sync complete so subsequent events apply individually.
         //
-        // With multiple relays, NDK fires one EOSE per relay. Strategy:
-        //   • If ALL relays have fired EOSE → flush immediately (best case).
-        //   • First relay EOSE + NOSTR_EOSE_GRACE_MS grace period → flush after grace.
-        //     This captures slow relays' events in the batch instead of letting them
-        //     arrive as post-flush live updates (which caused the stale-task flicker).
+        // With multiple relays, NDK fires one EOSE per relay. Strategy (from 0xchat):
+        //   • All relays EOSE → flush immediately (best case).
+        //   • First relay EOSE → start NOSTR_EOSE_GRACE_MS inactivity timer, reset on
+        //     every incoming event. Fires once all relays go quiet.
         //   • Absolute timeout (NOSTR_INITIAL_SYNC_TIMEOUT_MS) → final fallback.
         const eoseState = boardEoseRef.current.get(it.id);
         let allRelaysResponded = false;
@@ -17357,7 +17376,7 @@ export default function App() {
           eoseState.received++;
           allRelaysResponded = eoseState.received >= eoseState.expected;
           if (!allRelaysResponded && eoseState.received === 1 && !graceTimerByBoard.has(it.id)) {
-            // First relay responded — start grace timer for the rest.
+            // First relay responded — start inactivity grace timer.
             const graceId = window.setTimeout(() => {
               graceTimerByBoard.delete(it.id);
               // Wait for the board queue to drain, then flush.
