@@ -2050,7 +2050,7 @@ declare global {
 const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
 const NOSTR_MIGRATION_BUFFER_MS = 15000;
 const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 25000; // absolute fallback — must exceed typical sync time
-const NOSTR_EOSE_GRACE_MS = 5000; // extra window after first relay EOSE for slower relays
+const NOSTR_EOSE_GRACE_MS = 200; // inactivity window after first relay EOSE before flushing
 // How many seconds to look back before the stored cursor to guard against
 // clock skew and events that arrived slightly out of order across relays.
 const NOSTR_CURSOR_LOOKBACK_SECS = 300;
@@ -17318,6 +17318,16 @@ export default function App() {
     // If all relays haven't responded within NOSTR_EOSE_GRACE_MS we flush anyway.
     const graceTimerByBoard = new Map<string, number>();
 
+    // Per-relay post-flush buffers. After the initial batch is flushed, events
+    // from relays that haven't yet fired EOSE are held here instead of being
+    // rendered immediately. When a relay fires EOSE, its buffer is drained
+    // through the board queue so events are deduped via the clock check and
+    // coalesced by the live micro-batch — ensuring nothing stale ever renders.
+    // Map<bTag, Map<relayUrl, NostrEvent[]>>
+    const postFlushRelayBuffer = new Map<string, Map<string, NostrEvent[]>>();
+    // Track which relay URLs haven't fired EOSE yet for each board.
+    const pendingRelaysByBoard = new Map<string, Set<string>>();
+
     for (const it of parsed) {
       const rls = it.relays.split(",").filter(Boolean);
       if (!rls.length) continue;
@@ -17374,8 +17384,27 @@ export default function App() {
       ];
       // Register the number of relays so the EOSE handler knows how many to wait for.
       boardEoseRef.current.set(it.id, { expected: rls.length, received: 0 });
+      // All relays start as pending — removed as each one fires EOSE.
+      pendingRelaysByBoard.set(it.id, new Set(rls));
 
-      const unsub = pool.subscribe(rls, filters, (ev) => {
+      const unsub = pool.subscribe(rls, filters, (ev, evRelay) => {
+        // If the initial batch has already been flushed and this relay hasn't fired
+        // EOSE yet, buffer the event instead of rendering it immediately. The buffer
+        // is drained (via enqueueForBoard) when that relay fires EOSE, ensuring its
+        // events are clock-checked and micro-batch coalesced before rendering.
+        // This guarantees no stale state ever renders for any relay.
+        if (completedNostrInitialSyncRef.current.has(it.id) && evRelay) {
+          const pendingRelays = pendingRelaysByBoard.get(it.id);
+          if (pendingRelays?.has(evRelay)) {
+            let boardBuf = postFlushRelayBuffer.get(it.id);
+            if (!boardBuf) { boardBuf = new Map(); postFlushRelayBuffer.set(it.id, boardBuf); }
+            const relayBuf = boardBuf.get(evRelay) ?? [];
+            relayBuf.push(ev);
+            boardBuf.set(evRelay, relayBuf);
+            return;
+          }
+        }
+
         // Route each event through the board-specific queue so different boards
         // run in parallel while preserving per-board task-clock ordering.
         if (ev.kind === 30300) enqueueForBoard(it.id, () => applyBoardEvent(ev)).catch(() => {});
@@ -17401,7 +17430,27 @@ export default function App() {
             graceTimerByBoard.set(it.id, refreshed);
           }
         }
-      }, () => {
+      }, (eoseRelay) => {
+        // Mark this relay as having completed its EOSE.
+        pendingRelaysByBoard.get(it.id)?.delete(eoseRelay ?? '');
+
+        // If the initial batch was already flushed (another relay's EOSE triggered the
+        // grace timer), drain this relay's post-flush buffer through the board queue.
+        // Clock check + live micro-batch ensure events are deduped and rendered cleanly.
+        if (completedNostrInitialSyncRef.current.has(it.id)) {
+          const boardBuf = postFlushRelayBuffer.get(it.id);
+          const relayBuf = eoseRelay ? boardBuf?.get(eoseRelay) : undefined;
+          if (relayBuf?.length) {
+            boardBuf!.delete(eoseRelay!);
+            for (const buffEv of relayBuf) {
+              if (buffEv.kind === 30300) enqueueForBoard(it.id, () => applyBoardEvent(buffEv)).catch(() => {});
+              else if (buffEv.kind === 30301) enqueueForBoard(it.id, () => applyTaskEvent(buffEv)).catch(() => {});
+              else if (buffEv.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueForBoard(it.id, () => applyCalendarEvent(buffEv)).catch(() => {});
+            }
+          }
+          return;
+        }
+
         // After initial sync: flush the batched state updates in ONE setTasks call,
         // then mark sync complete so subsequent events apply individually.
         //

@@ -209,7 +209,8 @@ export class SubscriptionManager {
       this.scheduleFlush(state);
     });
 
-    sub.on("eose", () => {
+    sub.on("eose", (relay?: unknown) => {
+      const relayUrl = relay && typeof relay === "object" && "url" in relay ? (relay as { url?: string }).url : undefined;
       // Drain all buffered events synchronously before notifying EOSE handlers.
       // Events are queued in pendingEvents and delivered via requestAnimationFrame
       // (FLUSH_BATCH_SIZE at a time). Without this drain, EOSE fires while
@@ -221,14 +222,14 @@ export class SubscriptionManager {
       if (state.pendingEvents.length > 0) {
         state.flushScheduled = false;
         const remaining = state.pendingEvents.splice(0);
-        for (const { raw, relayUrl } of remaining) {
+        for (const { raw, relayUrl: evRelayUrl } of remaining) {
           state.handlers.forEach((h) => {
-            try { h.onEvent?.(raw, relayUrl); } catch {}
+            try { h.onEvent?.(raw, evRelayUrl); } catch {}
           });
         }
       }
       state.handlers.forEach((h) => {
-        try { h.onEose?.(); } catch {}
+        try { h.onEose?.(relayUrl); } catch {}
       });
     });
 
