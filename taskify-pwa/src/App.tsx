@@ -6278,6 +6278,19 @@ export default function App() {
   // Map<bTag, Map<"boardId::taskId", Task | "deleted">>
   const syncBatchRef = useRef<Map<string, Map<string, Task | "deleted">>>(new Map());
 
+  // Live-mode micro-batch coalescer. After the initial batch flush, post-EOSE events
+  // (e.g. from slow relays still streaming, or live peer updates) are accumulated for
+  // LIVE_BATCH_MS before a single setTasks is called. This prevents slow-relay events
+  // from triggering individual renders that briefly show stale state — by the time the
+  // window fires, both CREATE and DELETE events for a task have arrived, and the clock
+  // check ensures only the latest wins. Initial load speed is completely unaffected.
+  //
+  // Updater functions (not pre-built tasks) are buffered so all existing merge logic
+  // (bounty merging, subtask merging, etc.) runs intact inside a single setTasks call.
+  const LIVE_BATCH_MS = 150;
+  type TaskUpdater = (prev: Task[]) => Task[];
+  const liveBatchRef = useRef<Map<string, { updaters: TaskUpdater[]; timer: number }>>(new Map());
+
   // Tracks how many EOSE callbacks are expected vs. received for each board's
   // subscription. With multiple relays per board, NDK fires one EOSE per relay.
   // The first relay's EOSE was previously triggering the batch flush immediately,
@@ -13103,7 +13116,14 @@ export default function App() {
     }
 
     // ── Live path (sync already complete, normal per-event update) ────────────
-    setTasks(prev => {
+    // Enqueue the updater into the micro-batch coalescer instead of calling
+    // setTasks directly. Multiple events arriving within LIVE_BATCH_MS are
+    // applied sequentially inside a single setTasks call so React only renders
+    // once. The clock check already rejected older events above, so each updater
+    // here represents a genuinely newer state — applying them in arrival order
+    // (newest clock wins) produces the correct final state without flicker.
+    const liveUpdater = (prev: Task[]) => {
+      return ((prev: Task[]) => {
       const idx = prev.findIndex(x => x.id === taskId && x.boardId === lb.id);
       if (status === "deleted") {
         if (idx < 0) return prev;
@@ -13249,7 +13269,27 @@ export default function App() {
           },
         ]);
       }
-    });
+    })(prev);
+    };
+
+    // Enqueue liveUpdater into the micro-batch coalescer
+    let batch = liveBatchRef.current.get(bTag);
+    if (!batch) {
+      batch = { updaters: [], timer: 0 };
+      liveBatchRef.current.set(bTag, batch);
+    }
+    batch.updaters.push(liveUpdater);
+    window.clearTimeout(batch.timer);
+    batch.timer = window.setTimeout(() => {
+      const b = liveBatchRef.current.get(bTag);
+      if (!b) return;
+      liveBatchRef.current.delete(bTag);
+      setTasks(prev => {
+        let result = prev;
+        for (const updater of b.updaters) result = updater(result);
+        return result;
+      });
+    }, LIVE_BATCH_MS);
   }, [setTasks, settings.newTaskPosition, tagValue, ensureMigrationState]);
 
   const maybeMigrateBoardToDedicatedKey = useCallback(async (bTag: string) => {
