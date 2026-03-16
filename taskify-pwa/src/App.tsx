@@ -4423,13 +4423,23 @@ function useTasks() {
     return dedupeRecurringInstances(normalized);
   });
   const tasksFirstRun = useRef(true);
+  // Keep a ref so the debounce callback always serializes the latest tasks value.
+  const tasksForSaveRef = useRef(tasks);
+  tasksForSaveRef.current = tasks;
+  const tasksSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (tasksFirstRun.current) { tasksFirstRun.current = false; return; }
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(tasks));
-    } catch (err) {
-      console.error('Failed to save tasks', err);
-    }
+    // Debounce the heavy JSON.stringify so it runs AFTER the browser has painted
+    // and GC has had a chance to run. Without this, a large batch flush triggers
+    // a render + JSON.stringify(1000 tasks) back-to-back, spiking memory on mobile.
+    if (tasksSaveTimerRef.current) clearTimeout(tasksSaveTimerRef.current);
+    tasksSaveTimerRef.current = setTimeout(() => {
+      try {
+        idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(tasksForSaveRef.current));
+      } catch (err) {
+        console.error('Failed to save tasks', err);
+      }
+    }, 500);
   }, [tasks]);
   return [tasks, setTasks] as const;
 }
@@ -6961,6 +6971,27 @@ export default function App() {
   const enqueueNostrApply = useCallback((fn: () => Promise<void>) => {
     const next = nostrApplyQueue.current.catch(() => {}).then(() => fn());
     nostrApplyQueue.current = next.then(() => {}, () => {});
+    return next;
+  }, []);
+
+  // Per-board event queues. Each board processes its events independently in
+  // parallel with other boards but serially within the board (preserving task
+  // clock ordering). A GC yield is inserted every N events so iOS can reclaim
+  // memory between chunks instead of accumulating until the process is killed.
+  const NOSTR_BOARD_YIELD_INTERVAL = 50;
+  const boardEventQueuesRef = useRef<Map<string, { promise: Promise<void>; count: number }>>(new Map());
+  const enqueueForBoard = useCallback((boardId: string, fn: () => Promise<void>): Promise<void> => {
+    const entry = boardEventQueuesRef.current.get(boardId) ?? { promise: Promise.resolve(), count: 0 };
+    entry.count++;
+    const shouldYield = entry.count % NOSTR_BOARD_YIELD_INTERVAL === 0;
+    const next = entry.promise.catch(() => {}).then(async () => {
+      // Yield to the browser's task scheduler every N events so GC can run and
+      // iOS memory pressure warnings are less likely to kill the process.
+      if (shouldYield) await new Promise<void>(r => setTimeout(r, 0));
+      return fn();
+    });
+    entry.promise = next.then(() => {}, () => {});
+    boardEventQueuesRef.current.set(boardId, entry);
     return next;
   }, []);
   const [nostrRefresh, setNostrRefresh] = useState(0);
@@ -12893,9 +12924,19 @@ export default function App() {
     m.set(taskId, ev.created_at);
     // Advance the in-memory cursor for this board so we know the high-water mark.
     // Key by lb.id (board UUID) — must match the lookup in the subscription setup.
+    // Also persist incrementally every 100 events: if the app crashes before EOSE
+    // the cursor survives and the next open re-fetches only unprocessed events.
     if (typeof ev.created_at === "number" && Number.isFinite(ev.created_at)) {
       const prev = boardSyncCursorsRef.current[lb.id] ?? 0;
-      if (ev.created_at > prev) boardSyncCursorsRef.current = { ...boardSyncCursorsRef.current, [lb.id]: ev.created_at };
+      if (ev.created_at > prev) {
+        boardSyncCursorsRef.current = { ...boardSyncCursorsRef.current, [lb.id]: ev.created_at };
+        const clock = nostrIdxRef.current.taskClock.get(bTag);
+        if (clock && clock.size % 100 === 0) {
+          try {
+            idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current));
+          } catch { /* non-fatal */ }
+        }
+      }
     }
 
     let payload: any = {};
@@ -17222,13 +17263,16 @@ export default function App() {
         { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], ...sinceFilter },
       ];
       const unsub = pool.subscribe(rls, filters, (ev) => {
-        if (ev.kind === 30300) enqueueNostrApply(() => applyBoardEvent(ev)).catch(() => {});
-        else if (ev.kind === 30301) enqueueNostrApply(() => applyTaskEvent(ev)).catch(() => {});
-        else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueNostrApply(() => applyCalendarEvent(ev)).catch(() => {});
+        // Route each event through the board-specific queue so different boards
+        // run in parallel while preserving per-board task-clock ordering.
+        if (ev.kind === 30300) enqueueForBoard(it.id, () => applyBoardEvent(ev)).catch(() => {});
+        else if (ev.kind === 30301) enqueueForBoard(it.id, () => applyTaskEvent(ev)).catch(() => {});
+        else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueForBoard(it.id, () => applyCalendarEvent(ev)).catch(() => {});
       }, () => {
         // After initial sync: flush the batched state updates in ONE setTasks call,
         // then mark sync complete so subsequent events apply individually.
-        nostrApplyQueue.current.catch(() => {}).then(() => {
+        // Wait only on THIS board's queue, not all boards.
+        (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
           clearSyncTimeout(it.id);
           // Flush the batch — O(n+m) merge, one React render, no intermediate arrays
           const batchMap = syncBatchRef.current.get(it.id);
@@ -17267,6 +17311,7 @@ export default function App() {
     ensureMigrationState,
     migrateBoardRef,
     enqueueNostrApply,
+    enqueueForBoard,
     markNostrBoardInitialSyncComplete,
   ]);
 
