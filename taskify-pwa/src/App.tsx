@@ -1730,9 +1730,35 @@ function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
   if (!data || typeof data !== "object") {
     throw new Error("Invalid backup data");
   }
-  // Clear sync cursors on restore so the first post-restore open re-fetches all
-  // events from relays and builds a fresh cursor, rather than skipping history.
-  idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify({}));
+  // Derive per-board sync cursors from the max task timestamp in the backup instead
+  // of clearing them to {}. Clearing to {} caused limit:500 on the next open which
+  // fetched all recent events including old CREATE events whose DELETE events were
+  // beyond the 500 limit — those old tasks would reappear temporarily.
+  //
+  // By seeding the cursor from the backup's task timestamps, the post-restore sync
+  // uses since:(max_task_time - lookback) and only fetches events newer than the
+  // backup, which are exactly the changes the user missed while offline.
+  const RESTORE_LOOKBACK_SECS = 3600; // 1 hour buffer for clock skew / in-flight events
+  const boardMaxSecs = new Map<string, number>();
+  if (Array.isArray(data.tasks)) {
+    for (const task of data.tasks as Array<{ boardId?: string; createdAt?: number; updatedAt?: string }>) {
+      if (!task.boardId) continue;
+      let secs = 0;
+      if (typeof task.createdAt === "number" && task.createdAt > 0) {
+        secs = Math.max(secs, Math.floor(task.createdAt / 1000));
+      }
+      if (typeof task.updatedAt === "string") {
+        const ms = Date.parse(task.updatedAt);
+        if (!isNaN(ms) && ms > 0) secs = Math.max(secs, Math.floor(ms / 1000));
+      }
+      boardMaxSecs.set(task.boardId, Math.max(boardMaxSecs.get(task.boardId) ?? 0, secs));
+    }
+  }
+  const cursors: Record<string, number> = {};
+  for (const [boardId, maxSecs] of boardMaxSecs) {
+    if (maxSecs > 0) cursors[boardId] = Math.max(0, maxSecs - RESTORE_LOOKBACK_SECS);
+  }
+  idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(cursors));
   if ("tasks" in data && data.tasks !== undefined) {
     idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(data.tasks));
   }
@@ -17253,10 +17279,19 @@ export default function App() {
       // events newer than our last high-water mark. This avoids re-fetching hundreds
       // of old events on every app open, which was the cause of a ~60 second flicker
       // where completed/deleted tasks would appear then disappear as old events were processed.
-      // First-time sync (no cursor): use limit:500 to bootstrap.
-      // Subsequent syncs: use since:(cursor - lookback) with no hard limit.
+      //
+      // After a backup restore, applyBackupDataToStorage seeds per-board cursors from
+      // the max task timestamp so this path is taken immediately (no limit:500).
+      //
+      // For a true first-time sync (new user, no backup, no tasks), fall back to a
+      // 30-day time window instead of limit:500. A time-based window is safer than an
+      // event-count limit: limit:500 can include old CREATE events whose DELETE events
+      // are beyond the limit and will never arrive, causing deleted tasks to reappear.
+      const INITIAL_SYNC_FALLBACK_DAYS = 30;
       const cursor = boardSyncCursorsRef.current[it.id];
-      const sinceFilter = cursor ? { since: Math.max(0, cursor - NOSTR_CURSOR_LOOKBACK_SECS) } : { limit: 500 };
+      const sinceFilter = cursor
+        ? { since: Math.max(0, cursor - NOSTR_CURSOR_LOOKBACK_SECS) }
+        : { since: Math.floor(Date.now() / 1000) - INITIAL_SYNC_FALLBACK_DAYS * 24 * 3600 };
       const filters = [
         { kinds: [30300, 30301], "#b": [it.id], ...sinceFilter },
         { kinds: [30300], "#d": [it.id], limit: 1 },
