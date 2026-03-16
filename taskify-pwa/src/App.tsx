@@ -1739,7 +1739,8 @@ function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
   // uses since:(max_task_time - lookback) and only fetches events newer than the
   // backup, which are exactly the changes the user missed while offline.
   const RESTORE_LOOKBACK_SECS = 3600; // 1 hour buffer for clock skew / in-flight events
-  const boardMaxSecs = new Map<string, number>();
+  // Build a map from local boardId → max task timestamp (to avoid iterating boards twice)
+  const boardLocalMaxSecs = new Map<string, number>();
   if (Array.isArray(data.tasks)) {
     for (const task of data.tasks as Array<{ boardId?: string; createdAt?: number; updatedAt?: string }>) {
       if (!task.boardId) continue;
@@ -1751,12 +1752,23 @@ function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
         const ms = Date.parse(task.updatedAt);
         if (!isNaN(ms) && ms > 0) secs = Math.max(secs, Math.floor(ms / 1000));
       }
-      boardMaxSecs.set(task.boardId, Math.max(boardMaxSecs.get(task.boardId) ?? 0, secs));
+      boardLocalMaxSecs.set(task.boardId, Math.max(boardLocalMaxSecs.get(task.boardId) ?? 0, secs));
     }
   }
+  // Cursors must be keyed by bTag = boardTag(b.nostr!.boardId) — this is how the
+  // subscription loop reads them (it.id = boardTag(b.nostr!.boardId)).
   const cursors: Record<string, number> = {};
-  for (const [boardId, maxSecs] of boardMaxSecs) {
-    if (maxSecs > 0) cursors[boardId] = Math.max(0, maxSecs - RESTORE_LOOKBACK_SECS);
+  if (Array.isArray(data.boards)) {
+    for (const board of data.boards as Array<{ id?: string; nostr?: { boardId?: string } }>) {
+      const localId = board.id;
+      const nostrBoardId = board.nostr?.boardId;
+      if (!localId || !nostrBoardId) continue;
+      const maxSecs = boardLocalMaxSecs.get(localId) ?? 0;
+      if (maxSecs > 0) {
+        const bTag = boardTag(nostrBoardId);
+        cursors[bTag] = Math.max(0, maxSecs - RESTORE_LOOKBACK_SECS);
+      }
+    }
   }
   idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(cursors));
   if ("tasks" in data && data.tasks !== undefined) {
@@ -12949,13 +12961,14 @@ export default function App() {
     // Accept equal timestamps so rapid consecutive updates still apply
     m.set(taskId, ev.created_at);
     // Advance the in-memory cursor for this board so we know the high-water mark.
-    // Key by lb.id (board UUID) — must match the lookup in the subscription setup.
+    // Key by bTag (SHA256 of nostrBoardId) — must match the lookup in the
+    // subscription setup where it.id = boardTag(b.nostr!.boardId) = bTag.
     // Also persist incrementally every 100 events: if the app crashes before EOSE
     // the cursor survives and the next open re-fetches only unprocessed events.
     if (typeof ev.created_at === "number" && Number.isFinite(ev.created_at)) {
-      const prev = boardSyncCursorsRef.current[lb.id] ?? 0;
+      const prev = boardSyncCursorsRef.current[bTag] ?? 0;
       if (ev.created_at > prev) {
-        boardSyncCursorsRef.current = { ...boardSyncCursorsRef.current, [lb.id]: ev.created_at };
+        boardSyncCursorsRef.current = { ...boardSyncCursorsRef.current, [bTag]: ev.created_at };
         const clock = nostrIdxRef.current.taskClock.get(bTag);
         if (clock && clock.size % 100 === 0) {
           try {
