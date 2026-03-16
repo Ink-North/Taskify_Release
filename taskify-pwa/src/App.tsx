@@ -2049,7 +2049,8 @@ declare global {
 
 const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
 const NOSTR_MIGRATION_BUFFER_MS = 15000;
-const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 8000;
+const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 25000; // absolute fallback — must exceed typical sync time
+const NOSTR_EOSE_GRACE_MS = 5000; // extra window after first relay EOSE for slower relays
 // How many seconds to look back before the stored cursor to guard against
 // clock skew and events that arrived slightly out of order across relays.
 const NOSTR_CURSOR_LOOKBACK_SECS = 300;
@@ -17273,12 +17274,21 @@ export default function App() {
       }
       return changed ? next : prev;
     });
+    // Per-board grace timers: started after the first relay fires EOSE.
+    // If all relays haven't responded within NOSTR_EOSE_GRACE_MS we flush anyway.
+    const graceTimerByBoard = new Map<string, number>();
+
     for (const it of parsed) {
       const rls = it.relays.split(",").filter(Boolean);
       if (!rls.length) continue;
       if (!completedNostrInitialSyncRef.current.has(it.id)) {
-        const timeoutId = window.setTimeout(() => {
-          // Timeout fallback: flush batch map before marking complete
+        // doFlush is safe to call multiple times — guards against double-flush.
+        const doFlush = () => {
+          // Cancel both timers so whichever didn't fire first doesn't re-run.
+          clearSyncTimeout(it.id);
+          const graceId = graceTimerByBoard.get(it.id);
+          if (graceId != null) { window.clearTimeout(graceId); graceTimerByBoard.delete(it.id); }
+          if (completedNostrInitialSyncRef.current.has(it.id)) return; // already flushed
           const batchMap = syncBatchRef.current.get(it.id);
           if (batchMap && batchMap.size > 0) {
             setTasks(prev => {
@@ -17292,7 +17302,10 @@ export default function App() {
             syncBatchRef.current.delete(it.id);
           }
           markNostrBoardInitialSyncComplete(it.id);
-        }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
+        };
+
+        // Absolute timeout — fires if no relay ever sends EOSE (stuck relay).
+        const timeoutId = window.setTimeout(doFlush, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
         syncTimeoutByBoard.set(it.id, timeoutId);
       }
       pool.setRelays(rls);
@@ -17332,33 +17345,38 @@ export default function App() {
         // After initial sync: flush the batched state updates in ONE setTasks call,
         // then mark sync complete so subsequent events apply individually.
         //
-        // With multiple relays, NDK fires one EOSE per relay. Wait for ALL relays
-        // to fire EOSE before flushing so events from slower relays remain in the
-        // batch and don't arrive as post-flush live updates (which caused stale
-        // tasks to briefly appear). The timeout fallback handles unresponsive relays.
+        // With multiple relays, NDK fires one EOSE per relay. Strategy:
+        //   • If ALL relays have fired EOSE → flush immediately (best case).
+        //   • First relay EOSE + NOSTR_EOSE_GRACE_MS grace period → flush after grace.
+        //     This captures slow relays' events in the batch instead of letting them
+        //     arrive as post-flush live updates (which caused the stale-task flicker).
+        //   • Absolute timeout (NOSTR_INITIAL_SYNC_TIMEOUT_MS) → final fallback.
         const eoseState = boardEoseRef.current.get(it.id);
+        let allRelaysResponded = false;
         if (eoseState) {
           eoseState.received++;
-          if (eoseState.received < eoseState.expected) return; // wait for remaining relays
+          allRelaysResponded = eoseState.received >= eoseState.expected;
+          if (!allRelaysResponded && eoseState.received === 1 && !graceTimerByBoard.has(it.id)) {
+            // First relay responded — start grace timer for the rest.
+            const graceId = window.setTimeout(() => {
+              graceTimerByBoard.delete(it.id);
+              // Wait for the board queue to drain, then flush.
+              (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
+                doFlush();
+                try {
+                  idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current));
+                } catch { /* non-fatal */ }
+                setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
+              });
+            }, NOSTR_EOSE_GRACE_MS);
+            graceTimerByBoard.set(it.id, graceId);
+          }
+          if (!allRelaysResponded) return; // more relays still pending; grace timer handles it
         }
 
-        // Wait only on THIS board's queue, not all boards.
+        // All relays have responded — flush immediately via the board queue.
         (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
-          clearSyncTimeout(it.id);
-          // Flush the batch — O(n+m) merge, one React render, no intermediate arrays
-          const batchMap = syncBatchRef.current.get(it.id);
-          if (batchMap && batchMap.size > 0) {
-            setTasks(prev => {
-              const merged = new Map(prev.map(t => [`${t.boardId}::${t.id}`, t]));
-              for (const [key, entry] of batchMap.entries()) {
-                if (entry === "deleted") merged.delete(key);
-                else merged.set(key, entry as Task);
-              }
-              return dedupeRecurringInstances(Array.from(merged.values()));
-            });
-            syncBatchRef.current.delete(it.id);
-          }
-          markNostrBoardInitialSyncComplete(it.id);
+          doFlush();
           // Persist the updated cursor so the next startup fetches only new events
           try {
             idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current));
@@ -17371,6 +17389,7 @@ export default function App() {
     return () => {
       unsubs.forEach((u) => u());
       syncTimeoutByBoard.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      graceTimerByBoard.forEach((timerId) => window.clearTimeout(timerId));
       for (const it of parsed) boardEoseRef.current.delete(it.id);
     };
   }, [
