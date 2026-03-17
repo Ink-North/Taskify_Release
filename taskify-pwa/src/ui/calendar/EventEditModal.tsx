@@ -79,6 +79,7 @@ import {
 // Nostr key utilities
 import { deriveBoardNostrKeys } from "../../domains/nostr/nostrKeyUtils";
 import { hexToBytes } from "../../domains/nostr/nostrCrypto";
+import { normalizeNostrPubkey } from "../../lib/nostr";
 
 // Share / inbox utilities
 import {
@@ -976,15 +977,26 @@ function EventEditModal({
     setInvitePickerOpen(true);
   };
 
+  // Resolves npub1 bech32, nostr: URIs, and raw hex to a 64-char hex pubkey.
+  const resolveInviteInput = (input: string): string | null => {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    // Try bech32 / nostr: URI first (normalizeNostrPubkey handles these)
+    const compressed = normalizeNostrPubkey(trimmed);
+    if (compressed) return normalizeNostrPubkeyHex(compressed);
+    // Fall back to straight hex
+    return normalizeNostrPubkeyHex(trimmed);
+  };
+
   const handleAddManualInvitee = () => {
     if (isReadOnly) return;
     const raw = manualInviteNpub.trim();
     if (!raw) return;
-    const pubkey = normalizeNostrPubkeyHex(raw);
+    const pubkey = resolveInviteInput(raw);
     if (!pubkey) return;
     setParticipants((prev) => {
       if (prev.some((p) => normalizeNostrPubkeyHex(p.pubkey) === pubkey)) return prev;
-      return [...prev, { pubkey: raw, relay: "", role: "attendee" }];
+      return [...prev, { pubkey, relay: "", role: "attendee" }];
     });
     setManualInviteNpub("");
   };
@@ -2051,7 +2063,7 @@ function EventEditModal({
                 type="button"
                 className="ghost-button button-sm pressable"
                 onClick={handleAddManualInvitee}
-                disabled={isReadOnly || !normalizeNostrPubkeyHex(manualInviteNpub.trim())}
+                disabled={isReadOnly || !resolveInviteInput(manualInviteNpub)}
               >
                 Add
               </button>
