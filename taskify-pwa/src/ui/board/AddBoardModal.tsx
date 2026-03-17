@@ -1,32 +1,9 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
-import { parseShareEnvelope } from "../../lib/shareInbox";
+import { parseBoardSharePayload } from "taskify-core";
 import { useToast } from "../../context/ToastContext";
 import { Modal } from "../Modal";
 import { BoardQrScanner } from "./BoardQrScanner";
 
-const BOARD_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-type BoardSharePayload = {
-  boardId: string;
-  boardName?: string;
-  relaysCsv?: string;
-};
-
-function parseBoardSharePayload(raw: string): BoardSharePayload | null {
-  const trimmed = (raw || "").trim();
-  if (!trimmed) return null;
-  const envelope = parseShareEnvelope(trimmed);
-  if (envelope?.item?.type === "board") {
-    const relaysCsv = envelope.item.relays?.length ? envelope.item.relays.join(",") : undefined;
-    return {
-      boardId: envelope.item.boardId,
-      boardName: envelope.item.boardName || undefined,
-      relaysCsv,
-    };
-  }
-  if (!BOARD_ID_REGEX.test(trimmed)) return null;
-  return { boardId: trimmed };
-}
 
 export function AddBoardModal({
   onClose,

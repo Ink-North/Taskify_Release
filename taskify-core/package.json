@@ -1,0 +1,16 @@
+{
+  "name": "taskify-core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "node --test --experimental-strip-types tests/*.test.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

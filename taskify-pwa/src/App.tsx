@@ -6,6 +6,17 @@ import { createPortal } from "react-dom";
 import { QRCodeCanvas } from "qrcode.react";
 import QrScannerLib from "qr-scanner";
 import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
+import {
+  normalizeCalendarDeleteMutationPayload,
+  normalizeCalendarMutationPayload,
+  normalizeRelayListSorted,
+  parseBoardSharePayload,
+  normalizeNip05,
+  compressedToRawHex,
+  contactInitials,
+  contactVerifiedNip05 as contactVerifiedNip05Core,
+  normalizeTaskAssignmentStatus,
+} from "taskify-core";
 const loadCashuWalletModal = () => import("./components/CashuWalletModal");
 const CashuWalletModal = lazy(loadCashuWalletModal);
 import {
@@ -230,28 +241,6 @@ const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
 
 type ScanResult = QrScannerLib.ScanResult;
 
-type BoardSharePayload = {
-  boardId: string;
-  boardName?: string;
-  relaysCsv?: string;
-};
-
-function parseBoardSharePayload(raw: string): BoardSharePayload | null {
-  const trimmed = (raw || "").trim();
-  if (!trimmed) return null;
-  const envelope = parseShareEnvelope(trimmed);
-  if (envelope?.item?.type === "board") {
-    const relaysCsv = envelope.item.relays?.length ? envelope.item.relays.join(",") : undefined;
-    return {
-      boardId: envelope.item.boardId,
-      boardName: envelope.item.boardName || undefined,
-      relaysCsv,
-    };
-  }
-  if (!BOARD_ID_REGEX.test(trimmed)) return null;
-  return { boardId: trimmed };
-}
-
 /* ================= Types ================= */
 type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6; // 0=Sun
 type DayChoice = Weekday | string; // string = custom list columnId
@@ -400,25 +389,6 @@ type CalendarRsvpEnvelope = {
   inviteToken?: string;
 };
 
-function normalizeNip05(value?: string | null): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-  const atIndex = trimmed.indexOf("@");
-  if (atIndex <= 0 || atIndex === trimmed.length - 1) return null;
-  const name = trimmed.slice(0, atIndex).trim().toLowerCase();
-  const domain = trimmed.slice(atIndex + 1).trim().toLowerCase();
-  if (!name || !domain) return null;
-  return `${name}@${domain}`;
-}
-
-function compressedToRawHex(value: string): string {
-  if (typeof value !== "string") return value;
-  if (/^(02|03)[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
-  if (/^0x[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
-  if (/^[0-9a-fA-F]{64}$/.test(value)) return value.toLowerCase();
-  return value;
-}
-
 function normalizeNostrPubkeyHex(value: string | null | undefined): string | null {
   const trimmed = (value || "").trim();
   if (!trimmed) return null;
@@ -432,14 +402,6 @@ function normalizeAgentPubkey(value: unknown): string | undefined {
   return normalizeNostrPubkeyHex(value) ?? undefined;
 }
 
-function normalizeTaskAssigneeStatus(value: unknown): TaskAssigneeStatus | undefined {
-  if (value === "pending" || value === "accepted" || value === "declined" || value === "tentative") {
-    return value;
-  }
-  if (value === "maybe") return "tentative";
-  return undefined;
-}
-
 function normalizeTaskAssignees(value: unknown): TaskAssignee[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const normalized: TaskAssignee[] = [];
@@ -450,7 +412,7 @@ function normalizeTaskAssignees(value: unknown): TaskAssignee[] | undefined {
     if (!pubkey || seen.has(pubkey)) return;
     seen.add(pubkey);
     const relay = typeof (entry as any).relay === "string" ? (entry as any).relay.trim() : "";
-    const status = normalizeTaskAssigneeStatus((entry as any).status);
+    const status = normalizeTaskAssignmentStatus((entry as any).status) as TaskAssigneeStatus | undefined;
     const respondedAtRaw = Number((entry as any).respondedAt);
     const respondedAt =
       Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
@@ -526,29 +488,15 @@ function loadNip05Cache(): Record<string, Nip05CheckState> {
 }
 
 function contactVerifiedNip05(contact: Contact, cache: Record<string, Nip05CheckState>): string | null {
-  if (!contact?.id) return null;
-  const nip05 = contact.nip05?.trim();
-  const npub = contact.npub?.trim();
-  if (!nip05 || !npub) return null;
-  const normalizedNip05 = normalizeNip05(nip05);
-  const normalizedNpub = normalizeNostrPubkey(npub);
-  if (!normalizedNip05 || !normalizedNpub) return null;
-  const entry = cache[contact.id];
-  if (!entry || entry.status !== "valid") return null;
-  const cachedNip05 = normalizeNip05(entry.nip05);
-  const cachedHex = (entry.npub || "").toLowerCase();
-  const contactHex = compressedToRawHex(normalizedNpub).toLowerCase();
-  if (!cachedNip05 || cachedNip05 !== normalizedNip05) return null;
-  if (!cachedHex || cachedHex !== contactHex) return null;
-  return nip05 || entry.nip05;
-}
-
-function contactInitials(value: string): string {
-  const trimmed = (value || "").trim();
-  if (!trimmed) return "?";
-  const parts = trimmed.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  const normalizedNpub = normalizeNostrPubkey(contact.npub || "");
+  return contactVerifiedNip05Core(
+    {
+      id: contact.id,
+      nip05: contact.nip05,
+      npub: normalizedNpub || contact.npub,
+    },
+    cache,
+  );
 }
 
 function VerifiedBadgeIcon(props: React.SVGProps<SVGSVGElement>) {
@@ -590,6 +538,7 @@ type Task = {
   lastEditedBy?: string;          // nostr pubkey of latest task editor
   createdAt?: number;             // unix ms timestamp (local)
   updatedAt?: string;             // iso timestamp of latest local edit when known
+  _nostrAt?: number;              // unix seconds of the Nostr event that last wrote this task (not persisted to IDB in old data)
   title: string;
   priority?: TaskPriority;        // 1-3 exclamation marks
   note?: string;
@@ -1716,6 +1665,7 @@ function isSameLocalDate(aMs: number, bMs: number): boolean {
 
 const R_NONE: Recurrence = { type: "none" };
 const LS_TASKS = "taskify_tasks_v5";
+const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
 const LS_CALENDAR_EVENTS = "taskify_calendar_events_v1";
 const LS_EXTERNAL_CALENDAR_EVENTS = "taskify_calendar_external_events_v1";
 const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
@@ -1781,6 +1731,47 @@ function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
   if (!data || typeof data !== "object") {
     throw new Error("Invalid backup data");
   }
+  // Derive per-board sync cursors from the max task timestamp in the backup instead
+  // of clearing them to {}. Clearing to {} caused limit:500 on the next open which
+  // fetched all recent events including old CREATE events whose DELETE events were
+  // beyond the 500 limit — those old tasks would reappear temporarily.
+  //
+  // By seeding the cursor from the backup's task timestamps, the post-restore sync
+  // uses since:(max_task_time - lookback) and only fetches events newer than the
+  // backup, which are exactly the changes the user missed while offline.
+  const RESTORE_LOOKBACK_SECS = 3600; // 1 hour buffer for clock skew / in-flight events
+  // Build a map from local boardId → max task timestamp (to avoid iterating boards twice)
+  const boardLocalMaxSecs = new Map<string, number>();
+  if (Array.isArray(data.tasks)) {
+    for (const task of data.tasks as Array<{ boardId?: string; createdAt?: number; updatedAt?: string }>) {
+      if (!task.boardId) continue;
+      let secs = 0;
+      if (typeof task.createdAt === "number" && task.createdAt > 0) {
+        secs = Math.max(secs, Math.floor(task.createdAt / 1000));
+      }
+      if (typeof task.updatedAt === "string") {
+        const ms = Date.parse(task.updatedAt);
+        if (!isNaN(ms) && ms > 0) secs = Math.max(secs, Math.floor(ms / 1000));
+      }
+      boardLocalMaxSecs.set(task.boardId, Math.max(boardLocalMaxSecs.get(task.boardId) ?? 0, secs));
+    }
+  }
+  // Cursors must be keyed by bTag = boardTag(b.nostr!.boardId) — this is how the
+  // subscription loop reads them (it.id = boardTag(b.nostr!.boardId)).
+  const cursors: Record<string, number> = {};
+  if (Array.isArray(data.boards)) {
+    for (const board of data.boards as Array<{ id?: string; nostr?: { boardId?: string } }>) {
+      const localId = board.id;
+      const nostrBoardId = board.nostr?.boardId;
+      if (!localId || !nostrBoardId) continue;
+      const maxSecs = boardLocalMaxSecs.get(localId) ?? 0;
+      if (maxSecs > 0) {
+        const bTag = boardTag(nostrBoardId);
+        cursors[bTag] = Math.max(0, maxSecs - RESTORE_LOOKBACK_SECS);
+      }
+    }
+  }
+  idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(cursors));
   if ("tasks" in data && data.tasks !== undefined) {
     idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(data.tasks));
   }
@@ -2059,7 +2050,11 @@ declare global {
 
 const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
 const NOSTR_MIGRATION_BUFFER_MS = 15000;
-const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 8000;
+const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 25000; // absolute fallback — must exceed typical sync time
+const NOSTR_EOSE_GRACE_MS = 200; // inactivity window after first relay EOSE before flushing
+// How many seconds to look back before the stored cursor to guard against
+// clock skew and events that arrived slightly out of order across relays.
+const NOSTR_CURSOR_LOOKBACK_SECS = 300;
 
 function loadDefaultRelays(): string[] {
   try {
@@ -4468,13 +4463,23 @@ function useTasks() {
     return dedupeRecurringInstances(normalized);
   });
   const tasksFirstRun = useRef(true);
+  // Keep a ref so the debounce callback always serializes the latest tasks value.
+  const tasksForSaveRef = useRef(tasks);
+  tasksForSaveRef.current = tasks;
+  const tasksSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (tasksFirstRun.current) { tasksFirstRun.current = false; return; }
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(tasks));
-    } catch (err) {
-      console.error('Failed to save tasks', err);
-    }
+    // Debounce the heavy JSON.stringify so it runs AFTER the browser has painted
+    // and GC has had a chance to run. Without this, a large batch flush triggers
+    // a render + JSON.stringify(1000 tasks) back-to-back, spiking memory on mobile.
+    if (tasksSaveTimerRef.current) clearTimeout(tasksSaveTimerRef.current);
+    tasksSaveTimerRef.current = setTimeout(() => {
+      try {
+        idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(tasksForSaveRef.current));
+      } catch (err) {
+        console.error('Failed to save tasks', err);
+      }
+    }, 500);
   }, [tasks]);
   return [tasks, setTasks] as const;
 }
@@ -6254,8 +6259,45 @@ export default function App() {
   const boardMigrationRef = useRef<Map<string, BoardMigrationState>>(new Map());
   const pendingNostrTasksRef = useRef<Set<string>>(new Set());
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
+  // Set of bTags where all relays have fired EOSE — used to determine live vs batch mode.
   const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
   const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
+  // In-memory cursor: tracks the highest created_at seen per board tag this session.
+  // Persisted to IDB after EOSE so subsequent opens only fetch new events.
+  const boardSyncCursorsRef = useRef<Record<string, number>>(() => {
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  // Per-relay batch accumulator. Events from each relay are collected here until
+  // that relay fires EOSE. On EOSE the relay's batch is clock-protected-merged into
+  // the task state and IDB data is shown immediately (no blocking spinner).
+  // Map<bTag, Map<relayUrl, Map<"boardId::taskId", Task | { _deleted:true; _nostrAt:number }>>>
+  type RelayBatchEntry = Task | { _deleted: true; _nostrAt: number };
+  const relayBatchRef = useRef<Map<string, Map<string, Map<string, RelayBatchEntry>>>>(new Map());
+
+  // Tracks which relay URLs still have pending EOSE for each board.
+  // When empty for a board, all relays are done and we're in live mode.
+  // Map<bTag, Set<relayUrl>>
+  const pendingRelaysByBoardRef = useRef<Map<string, Set<string>>>(new Map());
+
+  // Live-mode micro-batch coalescer. After the initial batch flush, post-EOSE events
+  // (e.g. from slow relays still streaming, or live peer updates) are accumulated for
+  // LIVE_BATCH_MS before a single setTasks is called. This prevents slow-relay events
+  // from triggering individual renders that briefly show stale state — by the time the
+  // window fires, both CREATE and DELETE events for a task have arrived, and the clock
+  // check ensures only the latest wins. Initial load speed is completely unaffected.
+  //
+  // Updater functions (not pre-built tasks) are buffered so all existing merge logic
+  // (bounty merging, subtask merging, etc.) runs intact inside a single setTasks call.
+  const LIVE_BATCH_MS = 150;
+  type TaskUpdater = (prev: Task[]) => Task[];
+  const liveBatchRef = useRef<Map<string, { updaters: TaskUpdater[]; timer: number }>>(new Map());
+
+
   const markNostrBoardInitialSyncComplete = useCallback((bTag: string) => {
     if (!bTag) return;
     completedNostrInitialSyncRef.current.add(bTag);
@@ -6991,15 +7033,32 @@ export default function App() {
     nostrApplyQueue.current = next.then(() => {}, () => {});
     return next;
   }, []);
-  const [nostrRefresh, setNostrRefresh] = useState(0);
-  const normalizeRelayList = useCallback((relays: string[] | null | undefined) => {
-    const normalized = Array.isArray(relays)
-      ? relays.map((r) => (typeof r === "string" ? r.trim() : "")).filter(Boolean)
-      : [];
-    const unique = Array.from(new Set(normalized));
-    unique.sort();
-    return unique;
+
+  // Per-board event queues. Each board processes its events independently in
+  // parallel with other boards but serially within the board (preserving task
+  // clock ordering). A GC yield is inserted every N events so iOS can reclaim
+  // memory between chunks instead of accumulating until the process is killed.
+  const NOSTR_BOARD_YIELD_INTERVAL = 50;
+  const boardEventQueuesRef = useRef<Map<string, { promise: Promise<void>; count: number }>>(new Map());
+  const enqueueForBoard = useCallback((boardId: string, fn: () => Promise<void>): Promise<void> => {
+    const entry = boardEventQueuesRef.current.get(boardId) ?? { promise: Promise.resolve(), count: 0 };
+    entry.count++;
+    const shouldYield = entry.count % NOSTR_BOARD_YIELD_INTERVAL === 0;
+    const next = entry.promise.catch(() => {}).then(async () => {
+      // Yield to the browser's task scheduler every N events so GC can run and
+      // iOS memory pressure warnings are less likely to kill the process.
+      if (shouldYield) await new Promise<void>(r => setTimeout(r, 0));
+      return fn();
+    });
+    entry.promise = next.then(() => {}, () => {});
+    boardEventQueuesRef.current.set(boardId, entry);
+    return next;
   }, []);
+  const [nostrRefresh, setNostrRefresh] = useState(0);
+  const normalizeRelayList = useCallback(
+    (relays: string[] | null | undefined) => normalizeRelayListSorted(relays) ?? [],
+    [],
+  );
 
   const sanitizeSettingsForBackup = useCallback(
     (raw: Settings | Record<string, unknown>): Partial<Settings> =>
@@ -9959,12 +10018,21 @@ export default function App() {
     return ids;
   }, [boards, pendingNostrInitialSyncByBoardTag]);
 
+  // True while the current board's initial relay sync is in progress.
+  // Used to show a loading indicator so users know tasks are on their way.
+  const isCurrentBoardSyncing = useMemo(() => {
+    if (!currentBoard) return false;
+    const nostrBoardId = currentBoard.nostr?.boardId;
+    if (!nostrBoardId) return false;
+    return !!pendingNostrInitialSyncByBoardTag[boardTag(nostrBoardId)];
+  }, [currentBoard, pendingNostrInitialSyncByBoardTag]);
+
   /* ---------- Derived: board-scoped lists ---------- */
   const tasksForBoard = useMemo(() => {
     if (!currentBoard) return [] as Task[];
     const scope = new Set(boardScopeIds(currentBoard, boards));
     return tasks
-      .filter((t) => scope.has(t.boardId) && !pendingSharedBoardIds.has(t.boardId))
+      .filter((t) => scope.has(t.boardId))
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   }, [boards, tasks, currentBoard, pendingSharedBoardIds]);
 
@@ -12238,9 +12306,40 @@ export default function App() {
     };
     if (createdBy) base.createdBy = createdBy;
     if (lastEditedBy) base.lastEditedBy = lastEditedBy;
+    const normalized = deleted
+      ? normalizeCalendarDeleteMutationPayload(
+          {
+            title: event.title || "Untitled",
+            kind: event.kind,
+            startDate: event.kind === "date" ? event.startDate : undefined,
+            endDate: event.kind === "date" ? event.endDate : undefined,
+            startISO: event.kind === "time" ? event.startISO : undefined,
+            endISO: event.kind === "time" ? event.endISO : undefined,
+            startTzid: event.kind === "time" ? event.startTzid : undefined,
+            endTzid: event.kind === "time" ? event.endTzid : undefined,
+            description: event.description,
+          },
+          Date.now(),
+        )
+      : normalizeCalendarMutationPayload(
+          {
+            title: event.title || "Untitled",
+            kind: event.kind,
+            startDate: event.kind === "date" ? event.startDate : undefined,
+            endDate: event.kind === "date" ? event.endDate : undefined,
+            startISO: event.kind === "time" ? event.startISO : undefined,
+            endISO: event.kind === "time" ? event.endISO : undefined,
+            startTzid: event.kind === "time" ? event.startTzid : undefined,
+            endTzid: event.kind === "time" ? event.endTzid : undefined,
+            description: event.description,
+          },
+          Date.now(),
+        );
+    if (!normalized) return null;
     if (deleted) return base;
-    base.kind = event.kind;
-    base.title = event.title || "Untitled";
+
+    base.kind = normalized.kind;
+    base.title = normalized.title || "Untitled";
     if (event.summary) base.summary = event.summary;
     if (event.description) base.description = event.description;
     if (event.documents?.length) base.documents = event.documents;
@@ -12251,24 +12350,19 @@ export default function App() {
     if (event.hashtags?.length) base.hashtags = event.hashtags;
     if (event.references?.length) base.references = event.references;
     if (event.inviteTokens && Object.keys(event.inviteTokens).length) base.inviteTokens = event.inviteTokens;
-    if (event.kind === "date") {
-      const startDate = isDateKey(event.startDate) ? event.startDate : isoDatePart(new Date().toISOString());
-      base.startDate = startDate;
-      const normalizedEnd = event.endDate && isDateKey(event.endDate) ? event.endDate : "";
-      if (normalizedEnd && normalizedEnd > startDate) base.endDate = normalizedEnd;
+
+    if (normalized.kind === "date") {
+      if (!normalized.startDate) return null;
+      base.startDate = normalized.startDate;
+      if (normalized.endDate) base.endDate = normalized.endDate;
       return base;
     }
-    const startMs = Date.parse(event.startISO);
-    if (Number.isNaN(startMs)) return null;
-    base.startISO = new Date(startMs).toISOString();
-    if (event.endISO) {
-      const endMs = Date.parse(event.endISO);
-      if (!Number.isNaN(endMs) && endMs > startMs) base.endISO = new Date(endMs).toISOString();
-    }
-    const startTzid = normalizeTimeZone(event.startTzid) ?? undefined;
-    const endTzid = normalizeTimeZone(event.endTzid) ?? undefined;
-    if (startTzid) base.startTzid = startTzid;
-    if (endTzid) base.endTzid = endTzid;
+
+    if (!normalized.startISO) return null;
+    base.startISO = normalized.startISO;
+    if (normalized.endISO) base.endISO = normalized.endISO;
+    if (normalized.startTzid) base.startTzid = normalized.startTzid;
+    if (normalized.endTzid) base.endTzid = normalized.endTzid;
     return base;
   };
 
@@ -12283,9 +12377,40 @@ export default function App() {
     };
     if (createdBy) base.createdBy = createdBy;
     if (lastEditedBy) base.lastEditedBy = lastEditedBy;
+    const normalized = deleted
+      ? normalizeCalendarDeleteMutationPayload(
+          {
+            title: event.title || "Untitled",
+            kind: event.kind,
+            startDate: event.kind === "date" ? event.startDate : undefined,
+            endDate: event.kind === "date" ? event.endDate : undefined,
+            startISO: event.kind === "time" ? event.startISO : undefined,
+            endISO: event.kind === "time" ? event.endISO : undefined,
+            startTzid: event.kind === "time" ? event.startTzid : undefined,
+            endTzid: event.kind === "time" ? event.endTzid : undefined,
+            description: event.description,
+          },
+          Date.now(),
+        )
+      : normalizeCalendarMutationPayload(
+          {
+            title: event.title || "Untitled",
+            kind: event.kind,
+            startDate: event.kind === "date" ? event.startDate : undefined,
+            endDate: event.kind === "date" ? event.endDate : undefined,
+            startISO: event.kind === "time" ? event.startISO : undefined,
+            endISO: event.kind === "time" ? event.endISO : undefined,
+            startTzid: event.kind === "time" ? event.startTzid : undefined,
+            endTzid: event.kind === "time" ? event.endTzid : undefined,
+            description: event.description,
+          },
+          Date.now(),
+        );
+    if (!normalized) return null;
     if (deleted) return base;
-    base.kind = event.kind;
-    base.title = event.title || "Untitled";
+
+    base.kind = normalized.kind;
+    base.title = normalized.title || "Untitled";
     if (event.summary) base.summary = event.summary;
     if (event.description) base.description = event.description;
     if (event.documents?.length) base.documents = event.documents;
@@ -12294,24 +12419,19 @@ export default function App() {
     if (event.geohash) base.geohash = event.geohash;
     if (event.hashtags?.length) base.hashtags = event.hashtags;
     if (event.references?.length) base.references = event.references;
-    if (event.kind === "date") {
-      const startDate = isDateKey(event.startDate) ? event.startDate : isoDatePart(new Date().toISOString());
-      base.startDate = startDate;
-      const normalizedEnd = event.endDate && isDateKey(event.endDate) ? event.endDate : "";
-      if (normalizedEnd && normalizedEnd > startDate) base.endDate = normalizedEnd;
+
+    if (normalized.kind === "date") {
+      if (!normalized.startDate) return null;
+      base.startDate = normalized.startDate;
+      if (normalized.endDate) base.endDate = normalized.endDate;
       return base;
     }
-    const startMs = Date.parse(event.startISO);
-    if (Number.isNaN(startMs)) return null;
-    base.startISO = new Date(startMs).toISOString();
-    if (event.endISO) {
-      const endMs = Date.parse(event.endISO);
-      if (!Number.isNaN(endMs) && endMs > startMs) base.endISO = new Date(endMs).toISOString();
-    }
-    const startTzid = normalizeTimeZone(event.startTzid) ?? undefined;
-    const endTzid = normalizeTimeZone(event.endTzid) ?? undefined;
-    if (startTzid) base.startTzid = startTzid;
-    if (endTzid) base.endTzid = endTzid;
+
+    if (!normalized.startISO) return null;
+    base.startISO = normalized.startISO;
+    if (normalized.endISO) base.endISO = normalized.endISO;
+    if (normalized.startTzid) base.startTzid = normalized.startTzid;
+    if (normalized.endTzid) base.endTzid = normalized.endTzid;
     return base;
   };
 
@@ -12862,6 +12982,23 @@ export default function App() {
     if (ev.created_at === last && isPending) return;
     // Accept equal timestamps so rapid consecutive updates still apply
     m.set(taskId, ev.created_at);
+    // Advance the in-memory cursor for this board so we know the high-water mark.
+    // Key by bTag (SHA256 of nostrBoardId) — must match the lookup in the
+    // subscription setup where it.id = boardTag(b.nostr!.boardId) = bTag.
+    // Also persist incrementally every 100 events: if the app crashes before EOSE
+    // the cursor survives and the next open re-fetches only unprocessed events.
+    if (typeof ev.created_at === "number" && Number.isFinite(ev.created_at)) {
+      const prev = boardSyncCursorsRef.current[bTag] ?? 0;
+      if (ev.created_at > prev) {
+        boardSyncCursorsRef.current = { ...boardSyncCursorsRef.current, [bTag]: ev.created_at };
+        const clock = nostrIdxRef.current.taskClock.get(bTag);
+        if (clock && clock.size % 100 === 0) {
+          try {
+            idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current));
+          } catch { /* non-fatal */ }
+        }
+      }
+    }
 
     let payload: any = {};
     try {
@@ -12927,7 +13064,70 @@ export default function App() {
       }
     }
     else if (lb.kind === "lists") base.columnId = col || (lb.columns[0]?.id || "");
-    setTasks(prev => {
+    // Key used for both the live setTasks path and the batch Map path.
+    const taskKey = `${lb.id}::${taskId}`;
+
+    // ── Per-relay batch path (relay hasn't fired EOSE yet) ───────────────────
+    // Route event into the relay-specific batch Map. On EOSE, the relay's batch
+    // is clock-protected-merged into state. IDB data is always visible immediately.
+    // evRelay is captured from pool.subscribe's onEvent(ev, relay) argument.
+    const evRelay = (ev as any).__relay as string | undefined;
+    const isPendingRelay = evRelay && pendingRelaysByBoardRef.current.get(bTag)?.has(evRelay);
+    if (isPendingRelay) {
+      let boardBatch = relayBatchRef.current.get(bTag);
+      if (!boardBatch) { boardBatch = new Map(); relayBatchRef.current.set(bTag, boardBatch); }
+      let batchMap = boardBatch.get(evRelay!);
+      if (!batchMap) { batchMap = new Map(); boardBatch.set(evRelay!, batchMap); }
+      if (status === "deleted") {
+        batchMap.set(taskKey, { _deleted: true, _nostrAt: ev.created_at });
+      } else {
+        // For merge fields that need prev (bounty, order, images, etc.),
+        // use what's already in this relay's batch, falling back to base.
+        const existing = batchMap.get(taskKey);
+        const cur = existing && !('_deleted' in existing) ? existing as Task : undefined;
+        const incomingB: Task["bounty"] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'bounty') ? payload.bounty : undefined;
+        const incomingImgs: string[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'images') ? payload.images : undefined;
+        const imgs = incomingImgs === undefined ? cur?.images : incomingImgs === null ? undefined : incomingImgs;
+        let docs: TaskDocument[] | undefined = cur?.documents;
+        if (Object.prototype.hasOwnProperty.call(payload, 'documents')) {
+          const rawDocs = (payload as any).documents;
+          docs = rawDocs === null ? undefined : (normalizeDocumentList(rawDocs)?.map(ensureDocumentPreview) ?? undefined);
+        }
+        const incomingStreak: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'streak') ? payload.streak : undefined;
+        const st = incomingStreak === undefined ? cur?.streak : incomingStreak === null ? undefined : incomingStreak;
+        const incomingLongest: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'longestStreak') ? payload.longestStreak : undefined;
+        const longest = incomingLongest === undefined ? cur?.longestStreak : incomingLongest === null ? undefined : incomingLongest;
+        const incomingSubs: Subtask[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'subtasks') ? payload.subtasks : undefined;
+        const subs = incomingSubs === undefined ? cur?.subtasks : incomingSubs === null ? undefined : incomingSubs;
+        const mergedAssignees = incomingAssignees === undefined ? cur?.assignees : incomingAssignees === null ? undefined : incomingAssignees;
+        const normalizedIncoming = incomingB === null ? undefined : normalizeBounty(incomingB);
+        batchMap.set(taskKey, {
+          ...(cur ?? {}),
+          ...base,
+          order: cur?.order ?? 0,
+          createdAt: cur?.createdAt ?? base.createdAt ?? Date.now(),
+          images: imgs,
+          documents: docs,
+          bounty: normalizedIncoming ?? cur?.bounty,
+          streak: st,
+          longestStreak: longest,
+          subtasks: subs,
+          assignees: mergedAssignees,
+          _nostrAt: ev.created_at,
+        } as Task);
+      }
+      return; // ← do NOT call setTasks; flush happens at relay EOSE
+    }
+
+    // ── Live path (sync already complete, normal per-event update) ────────────
+    // Enqueue the updater into the micro-batch coalescer instead of calling
+    // setTasks directly. Multiple events arriving within LIVE_BATCH_MS are
+    // applied sequentially inside a single setTasks call so React only renders
+    // once. The clock check already rejected older events above, so each updater
+    // here represents a genuinely newer state — applying them in arrival order
+    // (newest clock wins) produces the correct final state without flicker.
+    const liveUpdater = (prev: Task[]) => {
+      return ((prev: Task[]) => {
       const idx = prev.findIndex(x => x.id === taskId && x.boardId === lb.id);
       if (status === "deleted") {
         if (idx < 0) return prev;
@@ -13073,7 +13273,27 @@ export default function App() {
           },
         ]);
       }
-    });
+    })(prev);
+    };
+
+    // Enqueue liveUpdater into the micro-batch coalescer
+    let batch = liveBatchRef.current.get(bTag);
+    if (!batch) {
+      batch = { updaters: [], timer: 0 };
+      liveBatchRef.current.set(bTag, batch);
+    }
+    batch.updaters.push(liveUpdater);
+    window.clearTimeout(batch.timer);
+    batch.timer = window.setTimeout(() => {
+      const b = liveBatchRef.current.get(bTag);
+      if (!b) return;
+      liveBatchRef.current.delete(bTag);
+      setTasks(prev => {
+        let result = prev;
+        for (const updater of b.updaters) result = updater(result);
+        return result;
+      });
+    }, LIVE_BATCH_MS);
   }, [setTasks, settings.newTaskPosition, tagValue, ensureMigrationState]);
 
   const maybeMigrateBoardToDedicatedKey = useCallback(async (bTag: string) => {
@@ -17088,49 +17308,123 @@ export default function App() {
       window.clearTimeout(timeoutId);
       syncTimeoutByBoard.delete(bTag);
     };
+    // Mark all boards as syncing (non-blocking — IDB tasks render immediately).
     setPendingNostrInitialSyncByBoardTag((prev) => {
-      let changed = false;
       const next = { ...prev };
+      let changed = false;
       for (const item of parsed) {
-        if (completedNostrInitialSyncRef.current.has(item.id) || next[item.id]) continue;
+        if (next[item.id]) continue;
         next[item.id] = true;
         changed = true;
       }
       return changed ? next : prev;
     });
+
+    // Clock-protected merge: apply a relay's batch into current task state.
+    // Only updates tasks where the relay has newer data than what's already in state.
+    const flushRelayBatch = (bTag: string, relayBatch: Map<string, RelayBatchEntry>) => {
+      if (!relayBatch.size) return;
+      const bTagClock = nostrIdxRef.current.taskClock.get(bTag);
+      setTasks(prev => {
+        const merged = new Map(prev.map(t => [`${t.boardId}::${t.id}`, t]));
+        for (const [key, entry] of relayBatch) {
+          const taskId = key.split('::')[1];
+          const incomingNostrAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? bTagClock?.get(taskId) ?? 0;
+          const existingNostrAt = (merged.get(key) as Task | undefined)?._nostrAt ?? 0;
+          if (incomingNostrAt < existingNostrAt) continue; // IDB/prior relay has newer data
+          if ('_deleted' in entry) merged.delete(key);
+          else merged.set(key, entry as Task);
+        }
+        return dedupeRecurringInstances(Array.from(merged.values()));
+      });
+    };
+
     for (const it of parsed) {
       const rls = it.relays.split(",").filter(Boolean);
       if (!rls.length) continue;
-      if (!completedNostrInitialSyncRef.current.has(it.id)) {
-        const timeoutId = window.setTimeout(() => {
-          markNostrBoardInitialSyncComplete(it.id);
-        }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
-        syncTimeoutByBoard.set(it.id, timeoutId);
-      }
+
+      // Register this board's pending relays. applyTaskEvent reads this ref to route
+      // events into per-relay batches instead of the live path.
+      pendingRelaysByBoardRef.current.set(it.id, new Set(rls));
+
+      // Absolute timeout: flush all remaining relay batches for stuck relays.
+      const timeoutId = window.setTimeout(() => {
+        clearSyncTimeout(it.id);
+        const boardBatch = relayBatchRef.current.get(it.id);
+        if (boardBatch?.size) {
+          const combined = new Map<string, RelayBatchEntry>();
+          for (const relayBatch of boardBatch.values()) {
+            for (const [key, entry] of relayBatch) {
+              const existing = combined.get(key);
+              const inAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? 0;
+              const exAt = existing ? ('_deleted' in existing ? existing._nostrAt : (existing as Task)._nostrAt ?? 0) : -1;
+              if (inAt >= exAt) combined.set(key, entry);
+            }
+          }
+          flushRelayBatch(it.id, combined);
+          relayBatchRef.current.delete(it.id);
+        }
+        pendingRelaysByBoardRef.current.delete(it.id);
+        completedNostrInitialSyncRef.current.add(it.id);
+        markNostrBoardInitialSyncComplete(it.id);
+        try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
+        setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
+      }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
+      syncTimeoutByBoard.set(it.id, timeoutId);
+
       pool.setRelays(rls);
       ensureMigrationState(it.id);
+
+      const INITIAL_SYNC_FALLBACK_DAYS = 30;
+      const cursor = boardSyncCursorsRef.current[it.id];
+      const sinceFilter = cursor
+        ? { since: Math.max(0, cursor - NOSTR_CURSOR_LOOKBACK_SECS) }
+        : { since: Math.floor(Date.now() / 1000) - INITIAL_SYNC_FALLBACK_DAYS * 24 * 3600 };
       const filters = [
-        { kinds: [30300, 30301], "#b": [it.id], limit: 500 },
+        { kinds: [30300, 30301], "#b": [it.id], ...sinceFilter },
         { kinds: [30300], "#d": [it.id], limit: 1 },
-        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], limit: 500 },
+        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], ...sinceFilter },
       ];
-      const unsub = pool.subscribe(rls, filters, (ev) => {
-        if (ev.kind === 30300) enqueueNostrApply(() => applyBoardEvent(ev)).catch(() => {});
-        else if (ev.kind === 30301) enqueueNostrApply(() => applyTaskEvent(ev)).catch(() => {});
-        else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueNostrApply(() => applyCalendarEvent(ev)).catch(() => {});
-      }, () => {
-        // After initial sync, migrate legacy authors to the per-board key if needed.
-        nostrApplyQueue.current.catch(() => {}).then(() => {
+
+      const unsub = pool.subscribe(rls, filters, (ev, evRelay) => {
+        // Tag the event with the relay URL so applyTaskEvent can route it to the
+        // correct per-relay batch without changing the function signature.
+        (ev as any).__relay = evRelay;
+        if (ev.kind === 30300) enqueueForBoard(it.id, () => applyBoardEvent(ev)).catch(() => {});
+        else if (ev.kind === 30301) enqueueForBoard(it.id, () => applyTaskEvent(ev)).catch(() => {});
+        else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueForBoard(it.id, () => applyCalendarEvent(ev)).catch(() => {});
+      }, (eoseRelay) => {
+        // Per-relay EOSE: merge this relay's batch and remove it from pending.
+        // IDB tasks are already visible — this only adds/updates with relay data.
+        const relayUrl = eoseRelay ?? '';
+        pendingRelaysByBoardRef.current.get(it.id)?.delete(relayUrl);
+
+        const boardBatch = relayBatchRef.current.get(it.id);
+        const relayBatch = boardBatch?.get(relayUrl);
+        if (relayBatch?.size) {
+          boardBatch!.delete(relayUrl);
+          (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
+            flushRelayBatch(it.id, relayBatch!);
+          });
+        }
+
+        // If all relays done: clear spinner, persist cursor, trigger migration.
+        const pendingRelays = pendingRelaysByBoardRef.current.get(it.id);
+        if (!pendingRelays?.size) {
           clearSyncTimeout(it.id);
+          pendingRelaysByBoardRef.current.delete(it.id);
+          completedNostrInitialSyncRef.current.add(it.id);
           markNostrBoardInitialSyncComplete(it.id);
+          try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
           setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-        });
+        }
       });
       unsubs.push(unsub);
     }
     return () => {
       unsubs.forEach((u) => u());
       syncTimeoutByBoard.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      for (const it of parsed) pendingRelaysByBoardRef.current.delete(it.id);
     };
   }, [
     nostrBoardsKey,
@@ -17142,6 +17436,7 @@ export default function App() {
     ensureMigrationState,
     migrateBoardRef,
     enqueueNostrApply,
+    enqueueForBoard,
     markNostrBoardInitialSyncComplete,
   ]);
 
@@ -17519,6 +17814,25 @@ export default function App() {
                   </div>
                 </div>
                 <div className="app-header__right">
+                  {isCurrentBoardSyncing && (
+                    <span
+                      className="flex items-center gap-1.5 text-xs text-secondary select-none px-1"
+                      aria-label="Syncing tasks…"
+                      title="Fetching latest tasks from relays…"
+                    >
+                      <svg
+                        className="animate-spin h-3.5 w-3.5 shrink-0 opacity-60"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                      >
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                      </svg>
+                      <span className="hidden sm:inline opacity-60">Syncing…</span>
+                    </span>
+                  )}
                   {settings.completedTab ? (
                     <button
                       ref={completedTabRef}

@@ -5,12 +5,30 @@ import { readFile, writeFile } from "fs/promises";
 import { createInterface } from "readline";
 import { createRequire } from "module";
 import { nip19, getPublicKey, generateSecretKey } from "nostr-tools";
-import { loadConfig, saveConfig, saveProfiles, DEFAULT_RELAYS, type ProfileConfig } from "./config.js";
+import { hexToBytes, bytesToHex } from "@noble/hashes/utils";
+import { loadConfig, saveConfig, saveProfiles, DEFAULT_RELAYS, type ProfileConfig, type Contact, type BoardEntry } from "./config.js";
 import { createNostrRuntime, type NostrRuntime } from "./nostrRuntime.js";
 import { renderTable, renderTaskCard, renderJson } from "./render.js";
 import { zshCompletion, bashCompletion, fishCompletion } from "./completions.js";
 import { readCache, clearCache, CACHE_PATH, CACHE_TTL_MS } from "./taskCache.js";
 import { runOnboarding } from "./onboarding.js";
+import { buildCalendarEventDraft } from "./shared/eventDraft.js";
+import {
+  resolveBoardReference,
+  buildBoardShareEnvelope,
+  buildTaskShareEnvelope,
+  buildCalendarEventInviteEnvelope,
+  buildTaskAssignmentResponseEnvelope,
+  buildEventRsvpResponseEnvelope,
+  normalizeTaskRecurrence,
+  normalizeTaskDocuments,
+  normalizeTaskAssignees,
+  normalizeTaskReminders,
+} from "taskify-core";
+import { resolveBoardForCommand } from "./shared/commandResolution.js";
+import { parseBackupSnapshot, mergeBoardsFromBackup, mergeRelaysFromBackup } from "./shared/backupSync.js";
+import { sendShareEnvelopeNip17, fetchShareInboxNip17 } from "./shared/shareTransport.js";
+import { resolveBoardColumn, formatAvailableColumns } from "./shared/columnResolution.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -47,7 +65,72 @@ function warnShortTaskId(taskId: string): void {
   }
 }
 
+/**
+ * Resolve a task by title + optional due-date when no taskId is provided.
+ * Returns the matched taskId or exits with an error if ambiguous / not found.
+ * This is the primary fallback for recurring instances whose IDs start with
+ * "recurrence:" and can't be identified by a short 8-char prefix.
+ */
+async function resolveTaskIdByTitle(
+  runtime: ReturnType<typeof initRuntime>,
+  title: string,
+  due: string | undefined,
+  boardId: string | undefined,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+): Promise<string> {
+  const tasks = await runtime.listTasks({
+    boardId,
+    status: "any",
+    refresh: false,
+    noCache: false,
+  });
+  const titleLower = title.toLowerCase();
+  const duePart = due ? due.slice(0, 10) : undefined;
+  const matches = tasks.filter((t) => {
+    const titleMatch = t.title.toLowerCase().includes(titleLower);
+    const dueMatch = !duePart || (t.dueISO ?? "").startsWith(duePart);
+    return titleMatch && dueMatch;
+  });
+  if (matches.length === 0) {
+    const hint = duePart ? ` due ${duePart}` : "";
+    console.error(chalk.red(`No task found matching title "${title}"${hint}.`));
+    console.error(chalk.dim("Tip: use taskify search to find the exact task first."));
+    process.exit(1);
+  }
+  if (matches.length > 1) {
+    console.error(chalk.red(`Ambiguous: ${matches.length} tasks match "${title}"${duePart ? ` on ${duePart}` : ""}.`));
+    console.error(chalk.dim("Add --due YYYY-MM-DD to narrow down, or pass the full task ID."));
+    for (const t of matches.slice(0, 5)) {
+      console.error(chalk.dim(`  ${t.id.slice(0, 20)}  ${t.title}  ${(t.dueISO ?? "").slice(0, 10)}`));
+    }
+    process.exit(1);
+  }
+  return matches[0].id;
+}
+
 const VALID_REMINDER_PRESETS = new Set(["0h", "5m", "15m", "30m", "1h", "1d", "1w"]);
+
+function parseJsonOption(label: string, raw: string | undefined): unknown {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    console.error(chalk.red(`Invalid ${label} JSON.`));
+    process.exit(1);
+  }
+}
+
+function parseReminderOption(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  const parsed = raw.split(",").map((v) => v.trim()).filter(Boolean);
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function normalizeAssigneeArgs(values: string[] | undefined): Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }> | undefined {
+  if (!values || values.length === 0) return undefined;
+  const normalized = normalizeTaskAssignees(values.map((pubkey) => ({ pubkey })));
+  return normalized as Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }> | undefined;
+}
 
 function initRuntime(config: Parameters<typeof createNostrRuntime>[0]): NostrRuntime {
   try {
@@ -68,31 +151,21 @@ async function resolveBoardId(
   boardOpt: string | undefined,
   config: Awaited<ReturnType<typeof loadConfig>>,
 ): Promise<string> {
-  if (boardOpt) {
-    const entry =
-      config.boards.find((b) => b.id === boardOpt) ??
-      config.boards.find((b) => b.name.toLowerCase() === boardOpt.toLowerCase());
-    if (!entry) {
-      console.error(chalk.red(`Board not found: "${boardOpt}". Known boards:`));
-      for (const b of config.boards) {
-        console.error(`  ${b.name} (${b.id})`);
-      }
-      process.exit(1);
+  const resolved = resolveBoardForCommand(config.boards, boardOpt);
+  if (resolved.ok) return resolved.boardId;
+
+  if (boardOpt && resolved.listBoards) {
+    console.error(chalk.red(`Board not found: "${boardOpt}". Known boards:`));
+  } else {
+    console.error(chalk.red(resolved.message));
+  }
+
+  if (resolved.listBoards) {
+    for (const b of config.boards) {
+      console.error(`  ${b.name} (${b.id})`);
     }
-    return entry.id;
   }
-  if (config.boards.length === 1) {
-    return config.boards[0].id;
-  }
-  if (config.boards.length === 0) {
-    console.error(chalk.red("No boards configured. Use: taskify board join <id> --name <name>"));
-    process.exit(1);
-  }
-  console.error(chalk.red("Multiple boards configured. Specify one with --board <id|name>:"));
-  for (const b of config.boards) {
-    console.error(`  ${b.name} (${b.id})`);
-  }
-  process.exit(1);
+  process.exit(resolved.exitCode);
 }
 
 // ---- board command group ----
@@ -107,11 +180,37 @@ boardCmd
     const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.boards.length === 0) {
       console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
-    } else {
-      for (const b of config.boards) {
-        const relays = b.relays?.length ? `  [${b.relays.join(", ")}]` : "";
-        console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}${relays}`);
-      }
+      process.exit(0);
+    }
+
+    // Auto-sync any board whose stored name looks like a raw UUID prefix
+    // (happens when a board was joined without a --name or metadata wasn't fetched).
+    // This ensures agents always see human-readable names without a manual board sync step.
+    const UUID_PREFIX_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i;
+    const stale = config.boards.filter(
+      (b) => UUID_PREFIX_RE.test(b.name) || b.name === b.id || b.name === b.id.slice(0, 8),
+    );
+
+    if (stale.length > 0) {
+      process.stderr.write(chalk.dim(`Fetching display names for ${stale.length} board(s)…\n`));
+      try {
+        const runtime = initRuntime(config);
+        for (const b of stale) {
+          try {
+            const meta = await runtime.syncBoard(b.id);
+            if (meta.name) b.name = meta.name;
+            if (meta.kind) b.kind = meta.kind;
+            if (meta.columns) b.columns = meta.columns;
+          } catch { /* non-fatal — show whatever name we have */ }
+        }
+        await runtime.disconnect();
+        await saveConfig(config);
+      } catch { /* non-fatal */ }
+    }
+
+    for (const b of config.boards) {
+      const relays = b.relays?.length ? `  [${b.relays.join(", ")}]` : "";
+      console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}${relays}`);
     }
     process.exit(0);
   });
@@ -164,9 +263,7 @@ boardCmd
     }
     const toSync = boardId
       ? (() => {
-          const entry =
-            config.boards.find((b) => b.id === boardId) ??
-            config.boards.find((b) => b.name.toLowerCase() === boardId.toLowerCase());
+          const entry = resolveBoardReference(config.boards, boardId);
           if (!entry) {
             console.error(chalk.red(`Board not found: "${boardId}"`));
             process.exit(1);
@@ -214,22 +311,45 @@ boardCmd
   });
 
 boardCmd
-  .command("columns")
-  .description("Show cached columns for all configured boards")
-  .action(async () => {
+  .command("columns [board]")
+  .description("Show cached columns/lists for a board (or all boards)")
+  .option("--json", "Output as JSON")
+  .action(async (boardArg: string | undefined, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.boards.length === 0) {
       console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
       process.exit(0);
     }
-    for (const b of config.boards) {
+
+    const boards = boardArg
+      ? (() => {
+          const entry = resolveBoardReference(config.boards, boardArg);
+          if (!entry) {
+            console.error(chalk.red(`Board not found: "${boardArg}"`));
+            process.exit(1);
+          }
+          return [entry];
+        })()
+      : config.boards;
+
+    if (opts.json) {
+      renderJson(boards.map((b) => ({
+        id: b.id,
+        name: b.name,
+        kind: b.kind ?? "unknown",
+        columns: b.columns ?? [],
+      })));
+      process.exit(0);
+    }
+
+    for (const b of boards) {
       const kindStr = b.kind ? ` (${b.kind})` : "";
       console.log(chalk.bold(`${b.name}${kindStr}:`));
       if (!b.columns || b.columns.length === 0) {
-        console.log(chalk.dim(`  — no columns cached (run: taskify board sync)`));
+        console.log(chalk.dim(`  — no columns/lists cached (run: taskify board sync)`));
       } else {
         for (const col of b.columns) {
-          console.log(`  [${chalk.cyan(col.id)}] ${col.name}`);
+          console.log(`  ${chalk.bold(col.name)}  ${chalk.dim(col.id.slice(0, 8))}`);
         }
       }
     }
@@ -241,9 +361,7 @@ boardCmd
   .description("List children of a compound board")
   .action(async (boardArg: string) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
-    const entry =
-      config.boards.find((b) => b.id === boardArg) ??
-      config.boards.find((b) => b.name.toLowerCase() === boardArg.toLowerCase());
+    const entry = resolveBoardReference(config.boards, boardArg);
     if (!entry) {
       console.error(chalk.red(`Board not found: "${boardArg}"`));
       process.exit(1);
@@ -268,6 +386,232 @@ boardCmd
     process.exit(0);
   });
 
+boardCmd
+  .command("column-add <board> <name>")
+  .description("Add a list column")
+  .action(async (boardArg: string, name: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const entry = resolveBoardReference(config.boards, boardArg);
+      if (!entry) throw new Error(`Board not found: "${boardArg}"`);
+      if (entry.kind !== "lists") throw new Error("Column operations are only supported for list boards");
+      const next = [...(entry.columns ?? []), { id: crypto.randomUUID(), name }];
+      const updated = await runtime.updateBoard(entry.id, { columns: next });
+      if (!updated) throw new Error("Failed to update board");
+      console.log(chalk.green(`✓ Added column \"${name}\"`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally { await runtime.disconnect(); }
+  });
+
+boardCmd
+  .command("column-rename <board> <columnRef> <name>")
+  .description("Rename a list column by id or name")
+  .action(async (boardArg: string, columnRef: string, name: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const entry = resolveBoardReference(config.boards, boardArg);
+      if (!entry || entry.kind !== "lists") throw new Error("List board not found");
+      const columns = [...(entry.columns ?? [])];
+      const idx = columns.findIndex((c) => c.id === columnRef || c.name.toLowerCase() === columnRef.toLowerCase());
+      if (idx === -1) throw new Error(`Column not found: ${columnRef}`);
+      columns[idx] = { ...columns[idx], name };
+      await runtime.updateBoard(entry.id, { columns });
+      console.log(chalk.green(`✓ Renamed column to \"${name}\"`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally { await runtime.disconnect(); }
+  });
+
+boardCmd
+  .command("column-delete <board> <columnRef>")
+  .description("Delete a list column by id or name")
+  .action(async (boardArg: string, columnRef: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const entry = resolveBoardReference(config.boards, boardArg);
+      if (!entry || entry.kind !== "lists") throw new Error("List board not found");
+      const before = entry.columns ?? [];
+      const after = before.filter((c) => !(c.id === columnRef || c.name.toLowerCase() === columnRef.toLowerCase()));
+      if (after.length === before.length) throw new Error(`Column not found: ${columnRef}`);
+      await runtime.updateBoard(entry.id, { columns: after });
+      console.log(chalk.green(`✓ Deleted column: ${columnRef}`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally { await runtime.disconnect(); }
+  });
+
+boardCmd
+  .command("column-reorder <board> <columnRef> <position>")
+  .description("Reorder a list column by id or name to 1-based position")
+  .action(async (boardArg: string, columnRef: string, positionRaw: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const pos = Number.parseInt(positionRaw, 10);
+      if (!Number.isFinite(pos) || pos < 1) throw new Error("Position must be >= 1");
+      const entry = resolveBoardReference(config.boards, boardArg);
+      if (!entry || entry.kind !== "lists") throw new Error("List board not found");
+      const columns = [...(entry.columns ?? [])];
+      const idx = columns.findIndex((c) => c.id === columnRef || c.name.toLowerCase() === columnRef.toLowerCase());
+      if (idx === -1) throw new Error(`Column not found: ${columnRef}`);
+      const [moved] = columns.splice(idx, 1);
+      const target = Math.min(columns.length, pos - 1);
+      columns.splice(target, 0, moved);
+      await runtime.updateBoard(entry.id, { columns });
+      console.log(chalk.green(`✓ Reordered column: ${moved.name} -> ${target + 1}`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally { await runtime.disconnect(); }
+  });
+
+boardCmd
+  .command("rename <board> <name>")
+  .description("Rename board")
+  .action(async (boardArg: string, name: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const entry = resolveBoardReference(config.boards, boardArg);
+      if (!entry) throw new Error(`Board not found: ${boardArg}`);
+      await runtime.updateBoard(entry.id, { name });
+      console.log(chalk.green(`✓ Renamed board to ${name}`));
+      process.exit(0);
+    } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+  });
+
+boardCmd.command("archive <board>").description("Archive board").action(async (boardArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { archived: true }); console.log(chalk.green("✓ Board archived")); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("unarchive <board>").description("Unarchive board").action(async (boardArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { archived: false }); console.log(chalk.green("✓ Board unarchived")); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("hide <board>").description("Hide board").action(async (boardArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { hidden: true }); console.log(chalk.green("✓ Board hidden")); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("unhide <board>").description("Unhide board").action(async (boardArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { hidden: false }); console.log(chalk.green("✓ Board visible")); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("index-card <board> <state>").description("Set index-card mode on/off").action(async (boardArg: string, state: string) => {
+  const enabled = ["on", "true", "1", "enable"].includes(state.toLowerCase());
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { indexCardEnabled: enabled }); console.log(chalk.green(`✓ Index-card ${enabled ? "enabled" : "disabled"}`)); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("clear-completed <board>").description("Delete completed tasks in board").action(async (boardArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); const count = await runtime.clearCompleted(entry.id); console.log(chalk.green(`✓ Cleared ${count} completed task(s)`)); process.exit(0); }
+  catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("share-settings <board> <json>").description("Update board share settings (JSON object)").action(async (boardArg: string, jsonRaw: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try {
+    const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`);
+    const parsed = JSON.parse(jsonRaw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("share-settings must be a JSON object");
+    await runtime.updateBoard(entry.id, { shareSettings: parsed as Record<string, unknown> });
+    console.log(chalk.green("✓ Updated share settings")); process.exit(0);
+  } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd
+  .command("sort <board> [mode] [direction]")
+  .description("Get or set board sort settings (modes: manual|due|priority|created|alpha, directions: asc|desc)")
+  .action(async (boardArg: string, mode?: string, direction?: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const entry = resolveBoardReference(config.boards, boardArg);
+    if (!entry) {
+      console.error(chalk.red(`Board not found: "${boardArg}"`));
+      process.exit(1);
+    }
+    if (!mode) {
+      console.log(`Sort mode:      ${entry.sortMode ?? "manual (default)"}`);
+      console.log(`Sort direction: ${entry.sortDirection ?? "asc (default)"}`);
+      process.exit(0);
+    }
+    const VALID_MODES = ["manual", "due", "priority", "created", "alpha"];
+    const VALID_DIRS = ["asc", "desc"];
+    if (!VALID_MODES.includes(mode)) {
+      console.error(chalk.red(`Invalid sort mode. Use: ${VALID_MODES.join(", ")}`));
+      process.exit(1);
+    }
+    if (direction && !VALID_DIRS.includes(direction)) {
+      console.error(chalk.red(`Invalid direction. Use: asc, desc`));
+      process.exit(1);
+    }
+    const runtime = initRuntime(config);
+    try {
+      await runtime.updateBoard(entry.id, {
+        sortMode: mode as BoardEntry["sortMode"],
+        sortDirection: ((direction ?? "asc") as BoardEntry["sortDirection"]),
+      });
+      console.log(chalk.green(`✓ Sort set: ${mode} ${direction ?? "asc"}`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
+  });
+
+boardCmd.command("child-add <board> <child>").description("Add child board to a compound board").action(async (boardArg: string, childArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try {
+    const entry = resolveBoardReference(config.boards, boardArg); if (!entry || entry.kind !== "compound") throw new Error("Compound board not found");
+    const child = resolveBoardReference(config.boards, childArg); const childId = child?.id ?? childArg;
+    const children = [...(entry.children ?? [])]; if (!children.includes(childId)) children.push(childId);
+    await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Added child: ${childId}`)); process.exit(0);
+  } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("child-remove <board> <child>").description("Remove child board from a compound board").action(async (boardArg: string, childArg: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try {
+    const entry = resolveBoardReference(config.boards, boardArg); if (!entry || entry.kind !== "compound") throw new Error("Compound board not found");
+    const child = resolveBoardReference(config.boards, childArg); const childId = child?.id ?? childArg;
+    const children = (entry.children ?? []).filter((id) => id !== childId);
+    await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Removed child: ${childId}`)); process.exit(0);
+  } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
+boardCmd.command("child-reorder <board> <child> <position>").description("Reorder child board in a compound board").action(async (boardArg: string, childArg: string, positionRaw: string) => {
+  const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
+  try {
+    const pos = Number.parseInt(positionRaw, 10); if (!Number.isFinite(pos) || pos < 1) throw new Error("Position must be >= 1");
+    const entry = resolveBoardReference(config.boards, boardArg); if (!entry || entry.kind !== "compound") throw new Error("Compound board not found");
+    const child = resolveBoardReference(config.boards, childArg); const childId = child?.id ?? childArg;
+    const children = [...(entry.children ?? [])]; const idx = children.indexOf(childId); if (idx === -1) throw new Error(`Child not found: ${childId}`);
+    const [moved] = children.splice(idx, 1); const target = Math.min(children.length, pos - 1); children.splice(target, 0, moved);
+    await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Reordered child: ${childId} -> ${target + 1}`)); process.exit(0);
+  } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+});
+
 // ---- boards (alias for board list) ----
 program
   .command("boards")
@@ -276,57 +620,507 @@ program
     const config = await loadConfig(program.opts().profile as string | undefined);
     if (config.boards.length === 0) {
       console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
-    } else {
-      for (const b of config.boards) {
-        console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}`);
-      }
+      process.exit(0);
+    }
+
+    const UUID_PREFIX_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i;
+    const stale = config.boards.filter(
+      (b) => UUID_PREFIX_RE.test(b.name) || b.name === b.id || b.name === b.id.slice(0, 8),
+    );
+
+    if (stale.length > 0) {
+      process.stderr.write(chalk.dim(`Fetching display names for ${stale.length} board(s)…\n`));
+      try {
+        const runtime = initRuntime(config);
+        for (const b of stale) {
+          try {
+            const meta = await runtime.syncBoard(b.id);
+            if (meta.name) b.name = meta.name;
+            if (meta.kind) b.kind = meta.kind;
+            if (meta.columns) b.columns = meta.columns;
+          } catch { /* non-fatal */ }
+        }
+        await runtime.disconnect();
+        await saveConfig(config);
+      } catch { /* non-fatal */ }
+    }
+
+    for (const b of config.boards) {
+      console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}`);
     }
     process.exit(0);
   });
 
-const WEEK_DAY_MAP: Record<string, number> = {
-  mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6,
-};
+// ---- event command group ----
+const eventCmd = program
+  .command("event")
+  .description("Manage calendar events");
 
-/** Resolve a week-board day name to the ISO date for that day in the current week (Mon-based). */
-function resolveWeekDayToISO(dayKey: string): string {
-  const offset = WEEK_DAY_MAP[dayKey];
-  if (offset === undefined) return dayKey;
-  const today = new Date();
-  // JavaScript: 0=Sun, 1=Mon … 6=Sat
-  const jsDay = today.getDay();
-  // Offset from Monday: Mon=0 … Sun=6
-  const mondayShift = jsDay === 0 ? -6 : 1 - jsDay;
-  const monday = new Date(today);
-  monday.setDate(today.getDate() + mondayShift);
-  monday.setHours(0, 0, 0, 0);
-  const target = new Date(monday);
-  target.setDate(monday.getDate() + offset);
-  const y = target.getFullYear();
-  const m = String(target.getMonth() + 1).padStart(2, "0");
-  const d = String(target.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
+eventCmd
+  .command("list")
+  .description("List events")
+  .option("--board <id|name>", "Filter by board")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const boardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
+      const events = await runtime.listEvents({ boardId });
+      if (opts.json) {
+        renderJson(events);
+      } else if (events.length === 0) {
+        console.log(chalk.dim("No events found."));
+      } else {
+        const showBoard = !boardId;
+        for (const e of events) {
+          const when = e.kind === "time"
+            ? `${e.startISO ?? ""}${e.endISO ? ` → ${e.endISO}` : ""}`
+            : `${e.startDate ?? ""}${e.endDate ? ` → ${e.endDate}` : ""}`;
+          const boardLabel = showBoard ? ` ${chalk.dim(`[${e.boardName ?? e.boardId}]`)}` : "";
+          console.log(`${chalk.cyan(e.id.slice(0, 8))}  ${e.title}${boardLabel}  ${chalk.dim(when)}`);
+        }
+      }
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
+  });
 
-// Resolve --column value to { id, name } given a board entry.
-function resolveColumn(
+eventCmd
+  .command("add <title>")
+  .description("Create an event")
+  .option("--board <id|name>", "Board to add to (required if multiple boards configured)")
+  .option("--date <YYYY-MM-DD>", "Start date (required)")
+  .option("--end-date <YYYY-MM-DD>", "End date for all-day range")
+  .option("--time <HH:mm>", "Start time for timed event")
+  .option("--end-time <HH:mm>", "End time for timed event")
+  .option("--tz <iana>", "Timezone for timed event")
+  .option("--description <text>", "Optional description")
+  .option("--column <id|name>", "List column placement")
+  .option("--recurrence-json <json>", "Recurrence object JSON")
+  .option("--reminders <csv>", "Reminder presets csv (e.g. 15m,1h)")
+  .option("--invitee <npubOrHex>", "Invitee pubkey/npub (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
+  .option("--documents-json <json>", "Documents/attachments array JSON")
+  .option("--json", "Output as JSON")
+  .action(async (title: string, opts) => {
+    if (!opts.date) {
+      console.error(chalk.red("--date is required (YYYY-MM-DD)"));
+      process.exit(1);
+    }
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const boardId = await resolveBoardId(opts.board, config);
+    const runtime = initRuntime(config);
+    try {
+      const draft = buildCalendarEventDraft({
+        boardId,
+        title,
+        date: opts.date,
+        endDate: opts.endDate,
+        time: opts.time,
+        endTime: opts.endTime,
+        timeZone: opts.tz,
+      });
+      const boardEntry = config.boards.find((b) => b.id === boardId)!;
+      if (boardEntry.kind === "lists" && (!boardEntry.columns || boardEntry.columns.length === 0)) {
+        throw new Error(`Board "${boardEntry.name}" has no columns/lists yet. Add one first.`);
+      }
+      const resolvedColumn = opts.column ? resolveColumnOrExit(boardEntry, opts.column) : null;
+      const recurrence = normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson));
+      const reminders = normalizeTaskReminders(parseReminderOption(opts.reminders));
+      const documents = normalizeTaskDocuments(parseJsonOption("--documents-json", opts.documentsJson));
+      const invitees = normalizeAssigneeArgs(opts.invitee as string[])?.map((a) => ({ pubkey: a.pubkey, relay: a.relay }));
+      const created = await runtime.createEvent({
+        ...draft,
+        description: opts.description,
+        columnId: resolvedColumn?.id,
+        recurrence: recurrence as any,
+        reminders: reminders as any,
+        participants: invitees,
+        documents: documents as any,
+      });
+      if (opts.json) renderJson(created);
+      else console.log(chalk.green(`✓ Created event: ${created.title} (${created.id.slice(0, 8)})`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
+  });
+
+eventCmd
+  .command("show <eventId>")
+  .description("Show event details")
+  .option("--board <id|name>", "Board to search in")
+  .option("--json", "Output as JSON")
+  .action(async (eventId: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const boardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
+      const event = await runtime.getEvent(eventId, boardId);
+      if (!event) {
+        console.error(chalk.red(`Event not found: ${eventId}`));
+        process.exit(1);
+      }
+      if (opts.json) renderJson(event);
+      else {
+        console.log(chalk.bold(event.title));
+        console.log(`id: ${event.id}`);
+        console.log(`board: ${event.boardName ?? event.boardId}`);
+        console.log(`kind: ${event.kind}`);
+        if (event.kind === "time") console.log(`when: ${event.startISO}${event.endISO ? ` → ${event.endISO}` : ""}`);
+        else console.log(`when: ${event.startDate}${event.endDate ? ` → ${event.endDate}` : ""}`);
+        if (event.description) console.log(`description: ${event.description}`);
+        if (event.recurrence) console.log(`recurrence: ${JSON.stringify(event.recurrence)}`);
+        if (Array.isArray(event.reminders) && event.reminders.length > 0) console.log(`reminders: ${event.reminders.join(", ")}`);
+        if (Array.isArray(event.participants) && event.participants.length > 0) {
+          console.log(`invitees: ${event.participants.length}`);
+          event.participants.forEach((p) => console.log(`  - ${p.pubkey}${p.role ? ` (${p.role})` : ""}`));
+        }
+        if (Array.isArray(event.documents) && event.documents.length > 0) console.log(`documents: ${event.documents.length}`);
+        if (event.columnId) console.log(`column: ${event.columnId}`);
+        if (event.rsvpStatus) console.log(`rsvp status: ${event.rsvpStatus}`);
+      }
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
+  });
+
+eventCmd
+  .command("update <eventId>")
+  .description("Update an event")
+  .option("--board <id|name>", "Board the event belongs to (optional; scans all if omitted)")
+  .option("--title <text>", "Update title")
+  .option("--description <text>", "Update description")
+  .option("--start-date <YYYY-MM-DD>", "Update date event start")
+  .option("--end-date <YYYY-MM-DD>", "Update date event end")
+  .option("--start-iso <iso>", "Update timed event start ISO")
+  .option("--end-iso <iso>", "Update timed event end ISO")
+  .option("--tz <iana>", "Update timed event timezone")
+  .option("--column <id|name>", "Update list column placement")
+  .option("--recurrence-json <json>", "Update recurrence object JSON")
+  .option("--reminders <csv>", "Update reminder presets csv")
+  .option("--invitee <npubOrHex>", "Replace invitees (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
+  .option("--documents-json <json>", "Replace documents/attachments with array JSON")
+  .option("--json", "Output as JSON")
+  .action(async (eventId: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const boardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
+      const boardEntry = boardId ? config.boards.find((b) => b.id === boardId) : undefined;
+      const resolvedColumn = opts.column && boardEntry ? resolveColumnOrExit(boardEntry, opts.column) : null;
+      const recurrence = opts.recurrenceJson !== undefined ? normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson)) ?? null : undefined;
+      const reminders = opts.reminders !== undefined ? normalizeTaskReminders(parseReminderOption(opts.reminders)) ?? null : undefined;
+      const documents = opts.documentsJson !== undefined ? normalizeTaskDocuments(parseJsonOption("--documents-json", opts.documentsJson)) ?? null : undefined;
+      const invitees = (opts.invitee as string[]).length > 0
+        ? normalizeAssigneeArgs(opts.invitee as string[])?.map((a) => ({ pubkey: a.pubkey, relay: a.relay })) ?? []
+        : undefined;
+      const updated = await runtime.updateEvent(eventId, boardId, {
+        title: opts.title,
+        description: opts.description,
+        startDate: opts.startDate,
+        endDate: opts.endDate,
+        startISO: opts.startIso,
+        endISO: opts.endIso,
+        startTzid: opts.tz,
+        endTzid: opts.tz,
+        columnId: resolvedColumn?.id,
+        recurrence: recurrence as any,
+        reminders: reminders as any,
+        participants: invitees,
+        documents: documents as any,
+      });
+      if (!updated) {
+        console.error(chalk.red(`Event not found: ${eventId}`));
+        process.exit(1);
+      }
+      if (opts.json) renderJson(updated);
+      else console.log(chalk.green(`✓ Updated event: ${updated.title}`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
+  });
+
+eventCmd
+  .command("delete <eventId>")
+  .description("Delete an event")
+  .option("--board <id|name>", "Board the event belongs to (optional; scans all if omitted)")
+  .option("--json", "Output as JSON")
+  .action(async (eventId: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    try {
+      const boardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
+      const deleted = await runtime.deleteEvent(eventId, boardId);
+      if (!deleted) {
+        console.error(chalk.red(`Event not found: ${eventId}`));
+        process.exit(1);
+      }
+      if (opts.json) renderJson(deleted);
+      else console.log(chalk.green(`✓ Deleted event: ${deleted.title}`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
+  });
+
+eventCmd
+  .command("invite <eventId> <npubOrHex>")
+  .description("Share an event invite over NIP-17 DM")
+  .option("--board <id|name>", "Board the event belongs to (optional; scans all if omitted)")
+  .action(async (eventId: string, npubOrHex: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const recipient = npubOrHexToHex(npubOrHex);
+      const event = await runtime.getEvent(eventId, opts.board ? await resolveBoardId(opts.board, config) : undefined);
+      if (!event) throw new Error(`Event not found: ${eventId}`);
+      const senderHex = nsecToHexOrThrow(config.nsec);
+      const senderNpub = nip19.npubEncode(getPublicKey(hexToBytes(senderHex)));
+      const eventKey = `taskify:event:${event.id}`;
+      const canonical = `31923:${getPublicKey(hexToBytes(senderHex))}:${event.id}`;
+      const view = `31924:${getPublicKey(hexToBytes(senderHex))}:${event.id}`;
+      const envelope = buildCalendarEventInviteEnvelope({
+        eventId: event.id,
+        canonical,
+        view,
+        eventKey,
+        inviteToken: `${event.id}:${recipient.slice(0, 16)}`,
+        title: event.title,
+        start: event.startISO ?? event.startDate,
+        end: event.endISO ?? event.endDate,
+        relays: config.relays,
+      }, { npub: senderNpub });
+      await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: recipient, relays: config.relays });
+      console.log(chalk.green("✓ Event invite shared."));
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+eventCmd
+  .command("rsvp <eventId> <accepted|declined|tentative>")
+  .description("Send RSVP response for an event invite")
+  .option("--to <npubOrHex>", "Invite sender public key")
+  .action(async (eventId: string, status: "accepted" | "declined" | "tentative", opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    let exitCode = 0;
+    try {
+      if (!opts.to) throw new Error("--to <npubOrHex> is required.");
+      const senderHex = nsecToHexOrThrow(config.nsec);
+      const envelope = buildEventRsvpResponseEnvelope({
+        eventId,
+        status,
+        respondedAt: new Date().toISOString(),
+      });
+      await sendShareEnvelopeNip17({
+        envelope,
+        senderSecretHex: senderHex,
+        recipientPubkeyHex: npubOrHexToHex(opts.to),
+        relays: config.relays,
+      });
+      console.log(chalk.green("✓ RSVP sent."));
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      process.exit(exitCode);
+    }
+  });
+
+const shareCmd = program
+  .command("share")
+  .description("Share board/task/event envelopes over NIP-17 and process inbox messages");
+
+shareCmd
+  .command("board <board> <npubOrHex>")
+  .description("Share a board envelope over NIP-17 DM")
+  .action(async (boardRef: string, npubOrHex: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const entry = resolveBoardReference(config.boards, boardRef);
+    if (!entry) {
+      console.error(chalk.red(`Board not found: ${boardRef}`));
+      process.exit(1);
+    }
+    try {
+      const senderHex = nsecToHexOrThrow(config.nsec);
+      const senderNpub = nip19.npubEncode(getPublicKey(hexToBytes(senderHex)));
+      const envelope = buildBoardShareEnvelope(entry.id, entry.name, config.relays, { npub: senderNpub });
+      await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
+      console.log(chalk.green("✓ Board share sent."));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    }
+  });
+
+shareCmd
+  .command("task <taskId> <npubOrHex>")
+  .description("Share a task envelope over NIP-17 DM")
+  .option("--board <id|name>", "Board the task belongs to")
+  .option("--assignment", "Send as assignment request")
+  .action(async (taskId: string, npubOrHex: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const task = await runtime.getTask(taskId, opts.board ? await resolveBoardId(opts.board, config) : undefined);
+      if (!task) throw new Error(`Task not found: ${taskId}`);
+      const senderHex = nsecToHexOrThrow(config.nsec);
+      const senderNpub = nip19.npubEncode(getPublicKey(hexToBytes(senderHex)));
+      const envelope = buildTaskShareEnvelope({
+        type: "task",
+        title: task.title,
+        note: task.note,
+        priority: task.priority,
+        dueISO: task.dueISO,
+        dueDateEnabled: task.dueDateEnabled,
+        dueTimeEnabled: task.dueTimeEnabled,
+        recurrence: task.recurrence,
+        reminders: task.reminders,
+        documents: task.documents,
+        sourceTaskId: task.id,
+        assignment: opts.assignment === true ? true : undefined,
+        assignees: task.assignees?.map((a) => ({ pubkey: a.pubkey })),
+        relays: config.relays,
+      }, { npub: senderNpub });
+      await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
+      console.log(chalk.green("✓ Task share sent."));
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+shareCmd
+  .command("event <eventId> <npubOrHex>")
+  .description("Share an event invite envelope over NIP-17 DM")
+  .option("--board <id|name>", "Board the event belongs to (optional)")
+  .action(async (eventId: string, npubOrHex: string, opts) => {
+    await program.parseAsync(["node", "taskify", "event", "invite", eventId, npubOrHex, ...(opts.board ? ["--board", opts.board] : [])], { from: "user" });
+  });
+
+shareCmd
+  .command("respond-assignment <taskId> <accepted|declined|tentative> <npubOrHex>")
+  .description("Send task assignment response over NIP-17 DM")
+  .action(async (taskId: string, status: "accepted" | "declined" | "tentative", npubOrHex: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    try {
+      const senderHex = nsecToHexOrThrow(config.nsec);
+      const envelope = buildTaskAssignmentResponseEnvelope({ taskId, status, respondedAt: new Date().toISOString() });
+      await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
+      console.log(chalk.green("✓ Assignment response sent."));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    }
+  });
+
+shareCmd
+  .command("inbox")
+  .description("Fetch NIP-17 share inbox messages")
+  .option("--apply", "Apply actionable share messages (board join/task create)")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const senderHex = nsecToHexOrThrow(config.nsec);
+      const inbox = await fetchShareInboxNip17({ recipientSecretHex: senderHex, relays: config.relays, limit: 100 });
+      if (opts.apply) {
+        const processed = new Set(config.processedInboxRumorIds ?? []);
+        for (const item of inbox) {
+          if (processed.has(item.rumorId)) continue;
+          if (item.envelope.item.type === "board") {
+            const boardItem = item.envelope.item as { boardId: string; boardName?: string; relays?: string[] };
+            const exists = config.boards.some((b) => b.id === boardItem.boardId);
+            if (!exists) {
+              config.boards.push({ id: boardItem.boardId, name: boardItem.boardName ?? boardItem.boardId, relays: boardItem.relays ?? config.relays });
+            }
+          }
+          if (item.envelope.item.type === "task") {
+            const taskItem = item.envelope.item as { title: string; note?: string; assignees?: Array<{ pubkey: string }> };
+            await runtime.createTaskFull({
+              boardId: runtime.getDefaultBoardId() ?? config.boards[0]?.id ?? "inbox",
+              title: taskItem.title,
+              note: taskItem.note ?? "",
+              inboxItem: true,
+              assignees: taskItem.assignees?.map((a) => ({ pubkey: a.pubkey })),
+            });
+          }
+          if (item.envelope.item.type === "task-assignment-response") {
+            await runtime.applyTaskAssignmentResponse(item.envelope.item.taskId, item.senderPubkey, item.envelope.item.status, item.envelope.item.respondedAt);
+          }
+          if (item.envelope.item.type === "event-rsvp-response") {
+            await runtime.applyEventRsvpResponse(item.envelope.item.eventId, item.senderPubkey, item.envelope.item.status, item.envelope.item.respondedAt);
+          }
+          processed.add(item.rumorId);
+        }
+        config.processedInboxRumorIds = Array.from(processed).slice(-2000);
+        await saveConfig(config);
+      }
+      if (opts.json) renderJson(inbox);
+      else inbox.forEach((m) => console.log(`${chalk.cyan(m.envelope.item.type)} ${chalk.dim(m.senderPubkey.slice(0, 12))}`));
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+function resolveColumnOrExit(
   entry: Awaited<ReturnType<typeof loadConfig>>["boards"][number],
   columnArg: string,
-): { id: string; name: string } | null {
-  const dayKey = columnArg.toLowerCase();
-  // Week board: day name → ISO date
-  if (dayKey in WEEK_DAY_MAP && entry.kind === "week") {
-    const isoDate = resolveWeekDayToISO(dayKey);
-    return { id: isoDate, name: columnArg };
+): { id: string; name: string } {
+  const resolved = resolveBoardColumn(entry, columnArg);
+  if (resolved.ok) return resolved.column;
+
+  const available = formatAvailableColumns(resolved.available);
+  if (resolved.reason === "no-columns") {
+    console.error(chalk.red(`Board "${entry.name}" has no columns/lists yet.`));
+    console.error(chalk.dim("Add a list first (PWA or `taskify board column-add`) then retry."));
+    process.exit(1);
   }
-  if (!entry.columns || entry.columns.length === 0) return null;
-  // Exact id match
-  const byId = entry.columns.find((c) => c.id === columnArg);
-  if (byId) return byId;
-  // Case-insensitive name substring
-  const lower = columnArg.toLowerCase();
-  const byName = entry.columns.find((c) => c.name.toLowerCase().includes(lower));
-  return byName ?? null;
+  if (resolved.reason === "ambiguous") {
+    console.error(chalk.red(`Ambiguous column "${columnArg}" on board "${entry.name}".`));
+    console.error(chalk.dim("Use --column <id> to target deterministically."));
+    console.error(chalk.dim(`Available columns:\n${available}`));
+    process.exit(1);
+  }
+  console.error(chalk.red(`Column not found: "${columnArg}" on board "${entry.name}".`));
+  console.error(chalk.dim(`Available columns:\n${available}`));
+  process.exit(1);
 }
 
 // ---- list ----
@@ -346,30 +1140,27 @@ program
     try {
       let columnId: string | undefined;
       let columnName: string | undefined;
+      const resolvedBoardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
+      const resolvedBoardEntry = resolvedBoardId
+        ? config.boards.find((b) => b.id === resolvedBoardId)
+        : undefined;
 
       if (opts.column) {
         // Column requires a single board to be resolvable
-        const singleBoardId = opts.board
-          ? await resolveBoardId(opts.board, config)
-          : config.boards.length === 1
-            ? config.boards[0].id
-            : undefined;
+        const singleBoardId = resolvedBoardId
+          ?? (config.boards.length === 1 ? config.boards[0].id : undefined);
         if (!singleBoardId) {
           console.error(chalk.red("--column requires --board when multiple boards are configured"));
           process.exit(1);
         }
         const boardEntry = config.boards.find((b) => b.id === singleBoardId)!;
-        const resolved = resolveColumn(boardEntry, opts.column);
-        if (!resolved) {
-          console.error(chalk.red(`Unknown column: ${opts.column}. Run: taskify board sync`));
-          process.exit(1);
-        }
+        const resolved = resolveColumnOrExit(boardEntry, opts.column);
         columnId = resolved.id;
         columnName = resolved.name;
       }
 
       const tasks = await runtime.listTasks({
-        boardId: opts.board,
+        boardId: resolvedBoardId,
         status: opts.status as "open" | "done" | "any",
         columnId,
         refresh: !!opts.refresh,
@@ -381,7 +1172,65 @@ program
         if (tasks.length === 0) {
           console.log(chalk.dim("No tasks found."));
         } else {
-          renderTable(tasks, config.trustedNpubs, columnName);
+          renderTable(tasks, config.trustedNpubs, columnName, resolvedBoardEntry?.columns);
+        }
+      }
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exit(exitCode);
+    }
+  });
+
+// ---- upcoming ----
+program
+  .command("upcoming")
+  .description("Show open tasks due within N days")
+  .option("--days <n>", "Number of days ahead (default: 14)")
+  .option("--board <id|name>", "Filter to a specific board")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const days = opts.days ? parseInt(opts.days, 10) : 14;
+      const resolvedBoardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
+      const allTasks = await runtime.listTasks({ boardId: resolvedBoardId, status: "open" });
+
+      const now = new Date();
+      const todayStr = now.toISOString().slice(0, 10);
+      const cutoff = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+      const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+      const upcoming = allTasks.filter(
+        (t) => t.dueDateEnabled === true && t.dueISO && t.dueISO >= todayStr && t.dueISO <= cutoffStr,
+      );
+
+      // Sort: primary = dueISO asc, secondary = priority asc (1=highest)
+      upcoming.sort((a, b) => {
+        if (a.dueISO < b.dueISO) return -1;
+        if (a.dueISO > b.dueISO) return 1;
+        return (a.priority ?? 99) - (b.priority ?? 99);
+      });
+
+      if (opts.json) {
+        renderJson(upcoming);
+      } else if (upcoming.length === 0) {
+        console.log(chalk.dim(`No tasks due in the next ${days} days.`));
+      } else {
+        // Group by dueISO date prefix
+        const groups = new Map<string, typeof upcoming>();
+        for (const t of upcoming) {
+          const day = t.dueISO.slice(0, 10);
+          if (!groups.has(day)) groups.set(day, []);
+          groups.get(day)!.push(t);
+        }
+        for (const [day, tasks] of groups) {
+          console.log(chalk.bold(`\n${day}`));
+          renderTable(tasks, config.trustedNpubs);
         }
       }
     } catch (err) {
@@ -521,6 +1370,13 @@ program
     [] as string[],
   )
   .option("--column <id|name>", "Column to place task in")
+  .option("--recurrence-json <json>", "Recurrence object JSON (shared contract shape)")
+  .option("--reminders <csv>", "Reminder presets csv (e.g. 15m,1h)")
+  .option("--assignee <npubOrHex>", "Assign to pubkey/npub (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
+  .option("--documents-json <json>", "Documents/attachments array JSON")
+  .option("--due-time <HH:MM>", "Due time (combine with --due to form ISO datetime, sets dueTimeEnabled)")
+  .option("--timezone <iana>", "IANA timezone for due time (e.g. America/New_York)")
+  .option("--hidden-until <ISO>", "Hide task until this ISO datetime")
   .option("--json", "Output created task as JSON")
   .action(async (title: string, opts) => {
     validateDue(opts.due);
@@ -540,17 +1396,24 @@ program
       process.exit(1);
     }
 
+    if (boardEntry.kind === "lists" && (!boardEntry.columns || boardEntry.columns.length === 0)) {
+      console.error(chalk.red(`Board "${boardEntry.name}" has no columns/lists yet.`));
+      console.error(chalk.dim("Add a list first (PWA or `taskify board column-add`) then retry."));
+      process.exit(1);
+    }
+
+    if (boardEntry.kind === "week" && !opts.due) {
+      console.error(chalk.red(`Week board "${boardEntry.name}" requires --due <YYYY-MM-DD>.`));
+      process.exit(1);
+    }
+
     // Resolve --column
     let resolvedColumnId: string | undefined;
     let resolvedColumnName: string | undefined;
     if (opts.column) {
-      const col = resolveColumn(boardEntry, opts.column);
-      if (!col) {
-        process.stderr.write(`⚠ Column not found in board config — run: taskify board sync\n`);
-      } else {
-        resolvedColumnId = col.id;
-        resolvedColumnName = col.name;
-      }
+      const col = resolveColumnOrExit(boardEntry, opts.column);
+      resolvedColumnId = col.id;
+      resolvedColumnName = col.name;
     }
 
     const runtime = initRuntime(config);
@@ -561,20 +1424,39 @@ program
         title: text,
         completed: false,
       }));
+      const recurrence = normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson));
+      const reminders = normalizeTaskReminders(parseReminderOption(opts.reminders));
+      const documents = normalizeTaskDocuments(parseJsonOption("--documents-json", opts.documentsJson));
+      const assignees = normalizeAssigneeArgs(opts.assignee as string[]);
+      let dueISO = opts.due as string | undefined;
+      let dueTimeEnabled: boolean | undefined;
+      if (opts.dueTime) {
+        if (dueISO) {
+          dueISO = `${dueISO}T${opts.dueTime}:00`;
+        }
+        dueTimeEnabled = true;
+      }
       const task = await runtime.createTaskFull({
         title,
         note: opts.note ?? "",
         boardId,
-        dueISO: opts.due,
+        dueISO,
         priority: opts.priority ? (parseInt(opts.priority, 10) as 1 | 2 | 3) : undefined,
         subtasks: subtasks.length > 0 ? subtasks : undefined,
         columnId: resolvedColumnId,
+        recurrence,
+        reminders: reminders as any,
+        documents: documents as any,
+        assignees,
+        dueTimeEnabled,
+        dueTimeZone: opts.timezone,
+        hiddenUntilISO: opts.hiddenUntil,
       });
       if (opts.json) {
         renderJson(task);
       } else {
         const colStr = task.column
-          ? chalk.dim(`  [col: ${resolvedColumnName ?? task.column}]`)
+          ? chalk.dim(`  [col: ${task.column}${resolvedColumnName ? ` (${resolvedColumnName})` : ""}]`)
           : "";
         console.log(
           chalk.green(`✓ Created: ${task.title}`) + colStr,
@@ -594,20 +1476,31 @@ program
 
 // ---- done ----
 program
-  .command("done <taskId>")
-  .description("Mark a task as done (accepts 8-char prefix or full UUID)")
+  .command("done [taskId]")
+  .description("Mark a task as done (accepts 8-char prefix, full UUID, or full recurring instance ID)")
   .option("--board <id|name>", "Board the task belongs to")
+  .option("--title <title>", "Resolve task by title match (use with --due for recurring instances)")
+  .option("--due <YYYY-MM-DD>", "Filter by due date when resolving by title")
   .option("--json", "Output updated task as JSON")
-  .action(async (taskId: string, opts) => {
-    warnShortTaskId(taskId);
+  .action(async (taskId: string | undefined, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
-      const task = await runtime.setTaskStatus(taskId, "done", boardId);
+      let resolvedId = taskId;
+      if (!resolvedId) {
+        if (!opts.title) {
+          console.error(chalk.red("Provide a taskId or --title to identify the task."));
+          process.exit(1);
+        }
+        resolvedId = await resolveTaskIdByTitle(runtime, opts.title, opts.due, boardId, config);
+      } else {
+        warnShortTaskId(resolvedId);
+      }
+      const task = await runtime.setTaskStatus(resolvedId, "done", boardId);
       if (!task) {
-        console.error(chalk.red(`Task not found: ${taskId}`));
+        console.error(chalk.red(`Task not found: ${resolvedId}`));
         exitCode = 1;
       } else if (opts.json) {
         renderJson(task);
@@ -625,20 +1518,31 @@ program
 
 // ---- reopen ----
 program
-  .command("reopen <taskId>")
-  .description("Reopen a completed task (accepts 8-char prefix or full UUID)")
+  .command("reopen [taskId]")
+  .description("Reopen a completed task (accepts 8-char prefix, full UUID, or full recurring instance ID)")
   .option("--board <id|name>", "Board the task belongs to")
+  .option("--title <title>", "Resolve task by title match (use with --due for recurring instances)")
+  .option("--due <YYYY-MM-DD>", "Filter by due date when resolving by title")
   .option("--json", "Output updated task as JSON")
-  .action(async (taskId: string, opts) => {
-    warnShortTaskId(taskId);
+  .action(async (taskId: string | undefined, opts) => {
     const config = await loadConfig(program.opts().profile as string | undefined);
     const boardId = await resolveBoardId(opts.board, config);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
-      const task = await runtime.setTaskStatus(taskId, "open", boardId);
+      let resolvedId = taskId;
+      if (!resolvedId) {
+        if (!opts.title) {
+          console.error(chalk.red("Provide a taskId or --title to identify the task."));
+          process.exit(1);
+        }
+        resolvedId = await resolveTaskIdByTitle(runtime, opts.title, opts.due, boardId, config);
+      } else {
+        warnShortTaskId(resolvedId);
+      }
+      const task = await runtime.setTaskStatus(resolvedId, "open", boardId);
       if (!task) {
-        console.error(chalk.red(`Task not found: ${taskId}`));
+        console.error(chalk.red(`Task not found: ${resolvedId}`));
         exitCode = 1;
       } else if (opts.json) {
         renderJson(task);
@@ -777,6 +1681,13 @@ program
   .option("--priority <p>", "New priority")
   .option("--note <n>", "New note")
   .option("--column <id|name>", "Move task to a different column")
+  .option("--recurrence-json <json>", "Recurrence object JSON (shared contract shape)")
+  .option("--reminders <csv>", "Reminder presets csv (e.g. 15m,1h)")
+  .option("--assignee <npubOrHex>", "Replace assignees with pubkey/npub values (repeatable)", (val: string, arr: string[]) => [...arr, val], [] as string[])
+  .option("--documents-json <json>", "Replace documents/attachments with array JSON")
+  .option("--due-time <HH:MM>", "Due time (combine with --due to form ISO datetime, sets dueTimeEnabled)")
+  .option("--timezone <iana>", "IANA timezone for due time (e.g. America/New_York)")
+  .option("--hidden-until <ISO>", "Hide task until this ISO datetime")
   .option("--json", "Output updated task as JSON")
   .action(async (taskId: string, opts) => {
     warnShortTaskId(taskId);
@@ -789,20 +1700,30 @@ program
     try {
       const patch: Record<string, unknown> = {};
       if (opts.title !== undefined) patch.title = opts.title;
-      if (opts.due !== undefined) patch.dueISO = opts.due;
       if (opts.priority !== undefined) patch.priority = parseInt(opts.priority, 10);
       if (opts.note !== undefined) patch.note = opts.note;
+      if (opts.recurrenceJson !== undefined) patch.recurrence = normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson)) ?? null;
+      if (opts.reminders !== undefined) patch.reminders = normalizeTaskReminders(parseReminderOption(opts.reminders)) ?? null;
+      if (opts.documentsJson !== undefined) patch.documents = normalizeTaskDocuments(parseJsonOption("--documents-json", opts.documentsJson)) ?? null;
+      if ((opts.assignee as string[]).length > 0) patch.assignees = normalizeAssigneeArgs(opts.assignee as string[]) ?? [];
       if (opts.column !== undefined) {
         const bEntry = config.boards.find((b) => b.id === boardId);
         if (bEntry) {
-          const col = resolveColumn(bEntry, opts.column);
-          if (col) {
-            patch.columnId = col.id;
-          } else {
-            process.stderr.write(`⚠ Column not found in board config — run: taskify board sync\n`);
-          }
+          const col = resolveColumnOrExit(bEntry, opts.column);
+          patch.columnId = col.id;
         }
       }
+      // due / due-time combination
+      let dueISO = opts.due as string | undefined;
+      if (opts.dueTime) {
+        if (dueISO) {
+          dueISO = `${dueISO}T${opts.dueTime}:00`;
+        }
+        patch.dueTimeEnabled = true;
+      }
+      if (dueISO !== undefined) patch.dueISO = dueISO;
+      if (opts.timezone !== undefined) patch.dueTimeZone = opts.timezone;
+      if (opts.hiddenUntil !== undefined) patch.hiddenUntilISO = opts.hiddenUntil;
       const task = await runtime.updateTask(taskId, boardId, patch);
       if (!task) {
         console.error(chalk.red(`Task not found: ${taskId}`));
@@ -1259,7 +2180,7 @@ Today is ${today}.`;
     let resolvedColumnId: string | undefined;
     let resolvedColumnName: string | undefined;
     if (extracted.column) {
-      const col = resolveColumn(boardEntry, extracted.column);
+      const col = resolveColumnOrExit(boardEntry, extracted.column);
       if (col) {
         resolvedColumnId = col.id;
         resolvedColumnName = col.name;
@@ -1498,6 +2419,13 @@ function npubOrHexToHex(val: string): string {
   return val;
 }
 
+function nsecToHexOrThrow(nsec: string | undefined): string {
+  if (!nsec) throw new Error("No nsec configured for active profile.");
+  const decoded = nip19.decode(nsec);
+  if (decoded.type !== "nsec") throw new Error("Invalid nsec for active profile.");
+  return bytesToHex(decoded.data as Uint8Array);
+}
+
 // ---- export ----
 program
   .command("export")
@@ -1723,7 +2651,7 @@ program
         // Resolve column
         let colId: string | undefined;
         if (r.column) {
-          const col = resolveColumn(boardEntry, r.column);
+          const col = resolveColumnOrExit(boardEntry, r.column);
           if (col) colId = col.id;
         }
         const subtasks = (r.subtasks ?? []).map((text) => ({
@@ -1750,6 +2678,134 @@ program
     } finally {
       await runtime.disconnect();
       process.exit(exitCode);
+    }
+  });
+
+// ---- backup snapshot ----
+const backupCmd = program
+  .command("backup")
+  .description("Inspect and apply Taskify backup snapshot metadata");
+
+backupCmd
+  .command("inspect <file>")
+  .description("Inspect snapshot metadata (boards/default relays/settings keys)")
+  .action(async (file: string) => {
+    let raw = "";
+    try {
+      raw = await readFile(file, "utf-8");
+    } catch {
+      console.error(chalk.red(`Cannot read file: ${file}`));
+      process.exit(1);
+    }
+
+    try {
+      const snapshot = parseBackupSnapshot(raw);
+      console.log(chalk.bold("Backup snapshot summary"));
+      console.log(`  boards:         ${snapshot.boards.length}`);
+      console.log(`  default relays: ${snapshot.defaultRelays.length}`);
+      console.log(`  settings keys:  ${Object.keys(snapshot.settings).length}`);
+      console.log(`  wallet seed:    ${Object.keys(snapshot.walletSeed).length > 0 ? "present" : "empty"}`);
+      if (snapshot.defaultRelays.length > 0) {
+        console.log(chalk.dim(`  relays: ${snapshot.defaultRelays.join(", ")}`));
+      }
+      if (snapshot.boards.length > 0) {
+        console.log(chalk.bold("\nBoards:"));
+        for (const board of snapshot.boards) {
+          const boardKind = board.kind ?? "lists";
+          const relayCount = Array.isArray(board.relays) ? board.relays.length : 0;
+          console.log(`  - ${board.name ?? board.id} (${boardKind}) [nostrId: ${board.nostrId}] relays=${relayCount}`);
+        }
+      }
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    }
+  });
+
+backupCmd
+  .command("merge-boards <file>")
+  .description("Merge backup board metadata into local CLI board config")
+  .option("--dry-run", "Preview merge without saving")
+  .action(async (file: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+
+    let raw = "";
+    try {
+      raw = await readFile(file, "utf-8");
+    } catch {
+      console.error(chalk.red(`Cannot read file: ${file}`));
+      process.exit(1);
+    }
+
+    try {
+      const snapshot = parseBackupSnapshot(raw);
+      const merged = mergeBoardsFromBackup(config.boards, snapshot.boards, snapshot.defaultRelays);
+      const changedCount = merged.filter((board, idx) => JSON.stringify(board) !== JSON.stringify(config.boards[idx])).length;
+      if (changedCount === 0 && merged.length === config.boards.length) {
+        console.log(chalk.dim("No board changes to apply."));
+        process.exit(0);
+      }
+
+      console.log(chalk.bold(`Board merge preview: ${config.boards.length} → ${merged.length}`));
+      console.log(`  changed/new boards: ${changedCount}`);
+
+      if (opts.dryRun) {
+        console.log(chalk.dim("[dry-run] No config written."));
+        process.exit(0);
+      }
+
+      config.boards = merged;
+      await saveConfig(config);
+      console.log(chalk.green(`✓ Applied board merge (${changedCount} changed/new)`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    }
+  });
+
+backupCmd
+  .command("merge-relays <file>")
+  .description("Apply backup default relays to local CLI relay config")
+  .option("--dry-run", "Preview relay changes without saving")
+  .action(async (file: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+
+    let raw = "";
+    try {
+      raw = await readFile(file, "utf-8");
+    } catch {
+      console.error(chalk.red(`Cannot read file: ${file}`));
+      process.exit(1);
+    }
+
+    try {
+      const snapshot = parseBackupSnapshot(raw);
+      const mergedRelays = mergeRelaysFromBackup(config.relays, snapshot.defaultRelays);
+      const changed = JSON.stringify(mergedRelays) !== JSON.stringify(config.relays);
+      if (!changed) {
+        console.log(chalk.dim("No relay changes to apply."));
+        process.exit(0);
+      }
+
+      console.log(chalk.bold("Relay merge preview"));
+      console.log(`  current relays: ${config.relays.length}`);
+      console.log(`  backup relays:  ${snapshot.defaultRelays.length}`);
+      console.log(`  merged relays:  ${mergedRelays.length}`);
+
+      if (opts.dryRun) {
+        console.log(chalk.dim("[dry-run] No config written."));
+        process.exit(0);
+      }
+
+      config.relays = mergeRelaysFromBackup(config.relays, snapshot.defaultRelays);
+      await saveConfig(config);
+      console.log(chalk.green(`✓ Applied relay merge (${config.relays.length} relay${config.relays.length === 1 ? "" : "s"})`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
     }
   });
 
@@ -1853,7 +2909,7 @@ inboxCmd
         if (opts.yes) {
           // Apply flags directly
           if (opts.column) {
-            const col = resolveColumn(boardEntry, opts.column);
+            const col = resolveColumnOrExit(boardEntry, opts.column);
             if (col) { colId = col.id; colName = col.name; }
           }
           if (opts.priority) priority = parseInt(opts.priority, 10) as 1 | 2 | 3;
@@ -1869,7 +2925,7 @@ inboxCmd
             : "none";
           const colAns = await ask(`Column [${currentCol}]: `);
           if (colAns) {
-            const col = resolveColumn(boardEntry, colAns);
+            const col = resolveColumnOrExit(boardEntry, colAns);
             if (col) { colId = col.id; colName = col.name; }
             else process.stderr.write(`⚠ Column not found — skipping column change\n`);
           }
@@ -1920,19 +2976,21 @@ inboxCmd
 boardCmd
   .command("create <name>")
   .description("Create and publish a new board")
-  .option("--kind <lists|week>", "Board kind (default: lists)", "lists")
+  .option("--kind <lists|week|compound>", "Board kind (default: lists)", "lists")
+  .option("--child <id|name>", "Child board id/name (repeatable for compound boards)")
   .option("--relay <url>", "Relay URL hint (informational)")
   .action(async (name: string, opts) => {
-    if (!["lists", "week"].includes(opts.kind)) {
-      console.error(chalk.red(`Invalid --kind: "${opts.kind}". Use: lists or week`));
+    if (!["lists", "week", "compound"].includes(opts.kind)) {
+      console.error(chalk.red(`Invalid --kind: "${opts.kind}". Use: lists, week, or compound`));
       process.exit(1);
     }
-    const kind = opts.kind as "lists" | "week";
+    const kind = opts.kind as "lists" | "week" | "compound";
     const config = await loadConfig(program.opts().profile as string | undefined);
     const runtime = initRuntime(config);
     let exitCode = 0;
     try {
       let columns: { id: string; name: string }[] = [];
+      let children: string[] = [];
       if (kind === "lists") {
         const { createInterface } = await import("readline");
         const answer = await new Promise<string>((resolve) => {
@@ -1948,8 +3006,11 @@ boardCmd
             name: n,
           }));
         }
+      } else if (kind === "compound") {
+        const providedChildren = Array.isArray(opts.child) ? opts.child : (opts.child ? [opts.child] : []);
+        children = providedChildren.map((ref: string) => resolveBoardReference(config.boards, ref)?.id ?? ref);
       }
-      const { boardId } = await runtime.createBoard({ name, kind, columns });
+      const { boardId } = await runtime.createBoard({ name, kind, columns, children });
       console.log(chalk.green(`✓ Created board: ${name}  [id: ${boardId}]  [kind: ${kind}]`));
       console.log(chalk.dim("  Joined automatically. Run: taskify board sync to confirm."));
     } catch (err) {
@@ -1966,6 +3027,7 @@ program
   .command("assign <taskId> <npubOrHex>")
   .description("Assign a task to a user (npub or hex pubkey)")
   .option("--board <id|name>", "Board the task belongs to")
+  .option("--notify", "Send assignment DM over NIP-17")
   .action(async (taskId: string, npubOrHex: string, opts) => {
     warnShortTaskId(taskId);
     const hex = npubOrHexToHex(npubOrHex);
@@ -1980,17 +3042,36 @@ program
         exitCode = 1;
       } else {
         const existing = task.assignees ?? [];
-        if (existing.includes(hex)) {
+        if (existing.some((a) => a.pubkey === hex)) {
           console.log(chalk.dim(`Already assigned: ${npubOrHex}`));
         } else {
           const updated = await runtime.updateTask(taskId, boardId, {
-            assignees: [...existing, hex],
+            assignees: [...existing, { pubkey: hex }],
           });
           if (!updated) {
             console.error(chalk.red("Failed to update task"));
             exitCode = 1;
           } else {
             console.log(chalk.green(`✓ Assigned to: ${updated.title}`));
+            if (opts.notify) {
+              const senderHex = nsecToHexOrThrow(config.nsec);
+              const senderNpub = nip19.npubEncode(getPublicKey(hexToBytes(senderHex)));
+              const envelope = buildTaskShareEnvelope({
+                type: "task",
+                title: updated.title,
+                note: updated.note,
+                priority: updated.priority,
+                dueISO: updated.dueISO,
+                dueDateEnabled: updated.dueDateEnabled,
+                dueTimeEnabled: updated.dueTimeEnabled,
+                sourceTaskId: updated.id,
+                assignment: true,
+                assignees: (updated.assignees ?? []).map((a) => ({ pubkey: a.pubkey })),
+                relays: config.relays,
+              }, { npub: senderNpub });
+              await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: hex, relays: config.relays });
+              console.log(chalk.dim("  ↳ assignment request DM sent"));
+            }
           }
         }
       }
@@ -2021,7 +3102,7 @@ program
         console.error(chalk.red(`Task not found: ${taskId}`));
         exitCode = 1;
       } else {
-        const filtered = (task.assignees ?? []).filter((a) => a !== hex);
+        const filtered = (task.assignees ?? []).filter((a) => a.pubkey !== hex);
         const updated = await runtime.updateTask(taskId, boardId, {
           assignees: filtered,
         });
@@ -2327,6 +3408,229 @@ profileCmd
     const newActive = config.activeProfile === oldName ? newName : config.activeProfile;
     await saveProfiles(newActive, newProfiles);
     console.log(chalk.green(`✓ Renamed profile '${oldName}' → '${newName}'`));
+    process.exit(0);
+  });
+
+// ---- contact command group ----
+const contactCmd = program
+  .command("contact")
+  .description("Manage contacts");
+
+function resolveContact(contacts: Contact[], ref: string): Contact | undefined {
+  const lower = ref.toLowerCase();
+  return contacts.find(
+    (c) =>
+      c.npub === ref ||
+      c.pubkey === ref ||
+      c.pubkey.startsWith(lower) ||
+      (c.name?.toLowerCase() === lower),
+  );
+}
+
+contactCmd
+  .command("list")
+  .description("List local contacts")
+  .option("--json", "Output as JSON")
+  .action(async (opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const contacts = config.contacts ?? [];
+    if (opts.json) { renderJson(contacts); process.exit(0); }
+    if (contacts.length === 0) { console.log(chalk.dim("No contacts.")); process.exit(0); }
+    for (const c of contacts) {
+      const key = c.npub ?? c.pubkey.slice(0, 12) + "...";
+      const label = [c.name, c.nip05].filter(Boolean).join(" / ");
+      console.log(`  ${chalk.bold(key)}  ${chalk.dim(label)}`);
+    }
+    process.exit(0);
+  });
+
+contactCmd
+  .command("show <npubOrId>")
+  .description("Show contact details")
+  .option("--json", "Output as JSON")
+  .action(async (ref: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const contact = resolveContact(config.contacts ?? [], ref);
+    if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exit(1); }
+    if (opts.json) { renderJson(contact); process.exit(0); }
+    console.log(chalk.bold("Contact"));
+    for (const [k, v] of Object.entries(contact)) {
+      if (v !== undefined && v !== null) console.log(`  ${chalk.dim(k + ":")} ${v}`);
+    }
+    process.exit(0);
+  });
+
+contactCmd
+  .command("add <npub>")
+  .description("Add a contact locally")
+  .option("--name <name>", "Display name")
+  .option("--nip05 <nip05>", "NIP-05 identifier")
+  .action(async (npubArg: string, opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    let pubkeyHex: string;
+    let npub: string;
+    try {
+      const decoded = nip19.decode(npubArg);
+      if (decoded.type !== "npub") throw new Error("Expected npub");
+      pubkeyHex = decoded.data as string;
+      npub = npubArg;
+    } catch {
+      console.error(chalk.red("Invalid npub: " + npubArg));
+      process.exit(1);
+    }
+    const contacts = config.contacts ?? [];
+    if (contacts.find((c) => c.pubkey === pubkeyHex)) {
+      console.log(chalk.yellow("Contact already exists."));
+      process.exit(0);
+    }
+    const contact: Contact = {
+      pubkey: pubkeyHex,
+      npub,
+      name: opts.name,
+      nip05: opts.nip05,
+      addedAt: Math.floor(Date.now() / 1000),
+    };
+    config.contacts = [...contacts, contact];
+    await saveConfig(config);
+    console.log(chalk.green(`✓ Added contact: ${opts.name ?? npub}`));
+    process.exit(0);
+  });
+
+contactCmd
+  .command("remove <npubOrId>")
+  .description("Remove a contact")
+  .action(async (ref: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const contacts = config.contacts ?? [];
+    const contact = resolveContact(contacts, ref);
+    if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exit(1); }
+    config.contacts = contacts.filter((c) => c.pubkey !== contact.pubkey);
+    await saveConfig(config);
+    console.log(chalk.green(`✓ Removed contact: ${contact.name ?? contact.npub ?? contact.pubkey}`));
+    process.exit(0);
+  });
+
+contactCmd
+  .command("fetch <npub>")
+  .description("Fetch/refresh NIP-01 kind 0 profile for a contact from relays")
+  .action(async (npubArg: string) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    let pubkeyHex: string;
+    let npub: string;
+    try {
+      const decoded = nip19.decode(npubArg);
+      if (decoded.type !== "npub") throw new Error("Expected npub");
+      pubkeyHex = decoded.data as string;
+      npub = npubArg;
+    } catch {
+      console.error(chalk.red("Invalid npub: " + npubArg));
+      process.exit(1);
+    }
+    const runtime = initRuntime(config);
+    try {
+      process.stderr.write("Fetching kind 0 profile from relays...\n");
+      const NDKMod = await import("@nostr-dev-kit/ndk");
+      const ndk = new NDKMod.default({ explicitRelayUrls: config.relays });
+      await ndk.connect();
+      const events = await ndk.fetchEvents(
+        { kinds: [0], authors: [pubkeyHex], limit: 1 } as Parameters<typeof ndk.fetchEvents>[0],
+        { closeOnEose: true },
+      );
+      let profileData: Record<string, unknown> = {};
+      if (events.size > 0) {
+        const [evt] = events;
+        try { profileData = JSON.parse(evt.content); } catch { /* ignore */ }
+      }
+      const contacts = config.contacts ?? [];
+      const idx = contacts.findIndex((c) => c.pubkey === pubkeyHex);
+      const existing: Contact = idx >= 0 ? contacts[idx] : { pubkey: pubkeyHex, npub, addedAt: Math.floor(Date.now() / 1000) };
+      const updated: Contact = {
+        ...existing,
+        name: (profileData.name as string | undefined) ?? existing.name,
+        displayName: (profileData.display_name as string | undefined) ?? existing.displayName,
+        nip05: (profileData.nip05 as string | undefined) ?? existing.nip05,
+        about: (profileData.about as string | undefined) ?? existing.about,
+        picture: (profileData.picture as string | undefined) ?? existing.picture,
+        updatedAt: Math.floor(Date.now() / 1000),
+      };
+      if (idx >= 0) contacts[idx] = updated;
+      else contacts.push(updated);
+      config.contacts = contacts;
+      await saveConfig(config);
+      console.log(chalk.green(`✓ Fetched profile for ${updated.name ?? npub}`));
+      try { (ndk.pool as unknown as { destroy?(): void })?.destroy?.(); } catch { /* ignore */ }
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      await runtime.disconnect();
+    }
+    process.exit(0);
+  });
+
+contactCmd
+  .command("sync")
+  .description("Publish/restore NIP-51 kind 30000 encrypted private contacts list to/from relays")
+  .option("--pull", "Only pull from relays (default: push and pull)")
+  .option("--json", "Output merged contacts as JSON after sync")
+  .action(async (opts) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    if (!config.nsec) {
+      console.error(chalk.red("No nsec configured — cannot sync contacts"));
+      process.exit(1);
+    }
+    const decoded = nip19.decode(config.nsec);
+    if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exit(1); }
+    const userSk = decoded.data as Uint8Array;
+    const userPk = getPublicKey(userSk);
+    const NDKMod = await import("@nostr-dev-kit/ndk");
+    const NDKPrivateKeySigner = (await import("@nostr-dev-kit/ndk")).NDKPrivateKeySigner;
+    const ndk = new NDKMod.default({ explicitRelayUrls: config.relays, signer: new NDKPrivateKeySigner(bytesToHex(userSk)) });
+    await ndk.connect();
+    const contacts = config.contacts ?? [];
+    try {
+      // Fetch existing kind 30000 from relay
+      const existing = await ndk.fetchEvents(
+        { kinds: [30000], authors: [userPk], "#d": ["taskify-contacts"], limit: 1 } as Parameters<typeof ndk.fetchEvents>[0],
+        { closeOnEose: true },
+      );
+      if (existing.size > 0) {
+        const [evt] = existing;
+        const pTags = evt.tags.filter((t: string[]) => t[0] === "p");
+        for (const pTag of pTags) {
+          const pk = pTag[1];
+          if (pk && !contacts.find((c) => c.pubkey === pk)) {
+            contacts.push({
+              pubkey: pk,
+              npub: nip19.npubEncode(pk),
+              addedAt: evt.created_at ?? Math.floor(Date.now() / 1000),
+            });
+          }
+        }
+      }
+      if (!opts.pull && contacts.length > 0) {
+        const NDKEventMod = await import("@nostr-dev-kit/ndk");
+        const syncEvent = new NDKEventMod.NDKEvent(ndk);
+        syncEvent.kind = 30000;
+        syncEvent.content = "";
+        syncEvent.tags = [
+          ["d", "taskify-contacts"],
+          ...contacts.map((c): string[] => ["p", c.pubkey, ...(c.relays?.[0] ? [c.relays[0]] : [])]),
+        ];
+        await syncEvent.sign();
+        await syncEvent.publish();
+        console.log(chalk.green(`✓ Published ${contacts.length} contacts to relay`));
+      }
+      config.contacts = contacts;
+      await saveConfig(config);
+      if (opts.json) renderJson(contacts);
+      else console.log(chalk.green(`✓ Synced ${contacts.length} contacts`));
+    } catch (err) {
+      console.error(chalk.red(String(err)));
+      process.exit(1);
+    } finally {
+      try { (ndk.pool as unknown as { destroy?(): void })?.destroy?.(); } catch { /* ignore */ }
+    }
     process.exit(0);
   });
 

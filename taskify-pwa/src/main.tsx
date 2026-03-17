@@ -45,7 +45,10 @@ async function bootstrapApp(): Promise<void> {
   let storageTimedOut = false;
   try {
     // Guard against occasional startup hangs in storage bootstrap.
-    await withTimeout(storagePromise, 1500);
+    // 10s gives large backups (1000s of tasks) enough time to read from IDB on
+    // slow mobile devices. Fast devices still boot instantly since the await
+    // resolves as soon as IDB is ready — the timeout is only the upper bound.
+    await withTimeout(storagePromise, 10_000);
   } catch (err) {
     console.warn('Storage bootstrap fallback (continuing with in-memory behavior)', err);
     storageTimedOut = true;
@@ -83,14 +86,18 @@ async function bootstrapApp(): Promise<void> {
 
   // If IDB timed out but eventually succeeds, reload once so components pick up
   // the real data instead of showing empty state for the entire session.
+  // NOTE: use localStorage (not sessionStorage) — on iOS, the PWA process can be
+  // terminated and relaunched by the OS, which clears sessionStorage and causes an
+  // infinite reload loop when IDB is slow (e.g. after a large backup restore).
+  // A 60-second guard prevents rapid repeated reloads on slow devices.
   if (storageTimedOut) {
     storagePromise
       .then(() => {
         const RELOAD_KEY = 'taskify_storage_late_reload';
         try {
-          const last = Number(sessionStorage.getItem(RELOAD_KEY) || '0');
-          if (Date.now() - last > 10_000) {
-            sessionStorage.setItem(RELOAD_KEY, String(Date.now()));
+          const last = Number(localStorage.getItem(RELOAD_KEY) || '0');
+          if (Date.now() - last > 60_000) {
+            localStorage.setItem(RELOAD_KEY, String(Date.now()));
             window.location.reload();
           }
         } catch {}

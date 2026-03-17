@@ -5,9 +5,6 @@ function arrayLikeToHex(data: ArrayLike<number>): string {
   return Array.from(data).map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-/**
- * Normalize Nostr public key input into a compressed 33-byte hex string (66 chars).
- */
 export function normalizeNostrPubkey(input: string | null | undefined): string | null {
   let value = input?.trim();
   if (!value) return null;
@@ -17,14 +14,9 @@ export function normalizeNostrPubkey(input: string | null | undefined): string |
   }
 
   const lowerValue = value.toLowerCase();
-
   const maybeHex = lowerValue.startsWith("0x") ? lowerValue.slice(2) : lowerValue;
-  if (/^(02|03)[0-9a-f]{64}$/.test(maybeHex)) {
-    return maybeHex;
-  }
-  if (/^[0-9a-f]{64}$/.test(maybeHex)) {
-    return `02${maybeHex}`;
-  }
+  if (/^(02|03)[0-9a-f]{64}$/.test(maybeHex)) return maybeHex;
+  if (/^[0-9a-f]{64}$/.test(maybeHex)) return `02${maybeHex}`;
 
   try {
     const decoded = nip19.decode(lowerValue);
@@ -34,14 +26,10 @@ export function normalizeNostrPubkey(input: string | null | undefined): string |
       if (/^[0-9a-f]{64}$/.test(decodedData)) return `02${decodedData.toLowerCase()}`;
       return null;
     }
-    if (decodedData instanceof Uint8Array) {
-      return `02${bytesToHex(decodedData).toLowerCase()}`;
-    }
-    if (Array.isArray(decodedData)) {
-      return `02${arrayLikeToHex(decodedData).toLowerCase()}`;
-    }
+    if (decodedData instanceof Uint8Array) return `02${bytesToHex(decodedData).toLowerCase()}`;
+    if (Array.isArray(decodedData)) return `02${arrayLikeToHex(decodedData).toLowerCase()}`;
   } catch {
-    // fall through to null
+    // ignore
   }
   return null;
 }

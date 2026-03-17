@@ -14,6 +14,29 @@ export type BoardEntry = {
   kind?: "week" | "lists" | "compound" | "bible";
   columns?: { id: string; name: string }[];
   children?: string[];
+  archived?: boolean;
+  hidden?: boolean;
+  indexCardEnabled?: boolean;
+  clearCompletedDisabled?: boolean;
+  hideChildBoardNames?: boolean;
+  shareSettings?: Record<string, unknown>;
+  sortMode?: "manual" | "due" | "priority" | "created" | "alpha";
+  sortDirection?: "asc" | "desc";
+  eventKeys?: Record<string, string>;
+};
+
+export type Contact = {
+  pubkey: string;
+  npub?: string;
+  name?: string;
+  username?: string;
+  displayName?: string;
+  nip05?: string;
+  about?: string;
+  picture?: string;
+  relays?: string[];
+  addedAt?: number;
+  updatedAt?: number;
 };
 
 // Per-profile configuration (stored inside profiles.*)
@@ -26,6 +49,8 @@ export type ProfileConfig = {
   securityEnabled: boolean;
   boards: BoardEntry[];
   taskReminders: Record<string, ReminderPreset[]>;
+  processedInboxRumorIds?: string[];
+  contacts?: Contact[];
   agent?: {
     apiKey?: string;
     baseUrl?: string;   // default: https://api.openai.com/v1
@@ -61,6 +86,7 @@ const DEFAULT_PROFILE: ProfileConfig = {
   securityEnabled: true,
   boards: [],
   taskReminders: {},
+  processedInboxRumorIds: [],
 };
 
 function profileDefaults(partial: Partial<ProfileConfig>): ProfileConfig {
@@ -69,8 +95,10 @@ function profileDefaults(partial: Partial<ProfileConfig>): ProfileConfig {
     ...partial,
     relays: partial.relays && partial.relays.length > 0 ? partial.relays : [...DEFAULT_RELAYS],
     taskReminders: partial.taskReminders ?? {},
+    processedInboxRumorIds: partial.processedInboxRumorIds ?? [],
     trustedNpubs: partial.trustedNpubs ?? [],
     boards: partial.boards ?? [],
+    contacts: partial.contacts ?? [],
   };
 }
 
@@ -145,6 +173,8 @@ export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
     securityEnabled: cfg.securityEnabled,
     boards: cfg.boards,
     taskReminders: cfg.taskReminders,
+    processedInboxRumorIds: cfg.processedInboxRumorIds,
+    contacts: cfg.contacts,
     agent: cfg.agent,
   };
   const stored: StoredConfig = {

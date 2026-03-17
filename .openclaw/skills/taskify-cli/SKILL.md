@@ -17,6 +17,24 @@ If `taskify` is missing globally, run via local package:
 - `npm run build` (if needed)
 - `node dist/index.js <args>`
 
+## Profile rule — always do this first
+
+**Before any Taskify command**, check and switch to the correct profile:
+
+```bash
+taskify profile list               # see all profiles and which is active (marked *)
+taskify profile use <name>         # switch to the right profile
+taskify board list                 # verify expected boards are visible (auto-syncs display names)
+```
+
+- Each profile has its own boards, keys, and relay config. The default profile may not have access to the user's personal boards.
+- `taskify board list` now **auto-syncs display names** for any board showing as a raw UUID — no manual `taskify board sync` needed.
+- When a user references a named board (e.g. "Personal schedule"), resolve which profile owns it by iterating profiles until that board appears by name.
+- Use `--profile <name>` for quick one-shot commands without permanently switching: `taskify list --profile ink --board "Personal schedule"`
+
+### If you still see raw UUIDs after `board list`
+Run `taskify board sync` manually — it forces a relay fetch for all boards and updates the local cache.
+
 ## Safety and reliability rules
 
 1. Prefer read commands first (`list`, `show`, `search`, `boards`, `board columns`) before mutating state.
@@ -47,6 +65,22 @@ If `taskify` is missing globally, run via local package:
 - Complete: `taskify done <taskId> --board "<board>"`
 - Reopen: `taskify reopen <taskId> --board "<board>"`
 - Delete: `taskify delete <taskId> --board "<board>" --force`
+
+### Recurring task instances
+Recurring tasks on week boards generate virtual instances with IDs like `recurrence:<seriesKey>:<date>`.
+These show in the table with a `~YYYY-MM-DD` display ID. **Do not use the 8-char prefix** — it will be `~2026-03` for all instances and won't resolve.
+
+**Preferred approach — resolve by title + due date:**
+```bash
+taskify done --title "Bible plan" --due 2026-03-14 --board "Personal schedule"
+taskify reopen --title "Bible plan" --due 2026-03-14 --board "Personal schedule"
+```
+
+**Alternative — use the full recurring instance ID from `--json`:**
+```bash
+taskify list --board "Personal schedule" --json | jq '.[] | select(.title | test("Bible"; "i")) | {id, title, dueISO}'
+# Then: taskify done "<full-recurrence:...:date-id>" --board "Personal schedule"
+```
 
 ### Inbox triage
 - List inbox: `taskify inbox list --board "<board>"`

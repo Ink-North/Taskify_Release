@@ -65,11 +65,14 @@ export function EventCard({
         if (Number.isNaN(parsed.getTime())) return key;
         return parsed.toLocaleDateString([], { month: "short", day: "numeric" });
       };
-      if (!showDate) return "All-day";
-      if (endKey && endKey !== startKey) {
+      const isMultiDay = !!(endKey && endKey !== startKey);
+      if (!showDate) {
+        return isMultiDay ? `All-day • ${formatShort(startKey)} – ${formatShort(endKey)}` : "";
+      }
+      if (isMultiDay) {
         return `All-day • ${formatShort(startKey)} – ${formatShort(endKey)}`;
       }
-      return `All-day • ${formatShort(startKey)}`;
+      return formatShort(startKey);
     }
 
     const start = formatTimeLabel(event.startISO, event.startTzid);
@@ -161,7 +164,7 @@ export function EventCard({
           onKeyDown={isInteractive ? handleKeyDown : undefined}
         >
           <div className="task-card__title">{event.title ? <EventTitle event={event} /> : "Untitled"}</div>
-          <div className="text-xs text-secondary">{timeLabel}</div>
+          {timeLabel ? <div className="text-xs text-secondary">{timeLabel}</div> : null}
           {metaNode ? <div className="task-card__meta">{metaNode}</div> : null}
         </div>
         {trailing ? <div className="flex-shrink-0 pt-0.5">{trailing}</div> : null}

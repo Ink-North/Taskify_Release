@@ -1,14 +1,32 @@
-import NDK, { NDKEvent, NDKPrivateKeySigner, NDKRelayStatus } from "@nostr-dev-kit/ndk";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex } from "@noble/hashes/utils";
+import NDK, { NDKEvent, NDKRelayStatus } from "@nostr-dev-kit/ndk";
 import { getPublicKey, nip19 } from "nostr-tools";
-import type { ReminderPreset, Recurrence, Subtask } from "./shared/taskTypes.js";
+import { boardTagHash, deriveBoardKeyPair } from "taskify-runtime-nostr";
+import type { ReminderPreset, Recurrence, Subtask, TaskAssignee } from "./shared/taskTypes.js";
 import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from "./shared/agentRuntime.js";
 import type { AgentSecurityConfig } from "./shared/agentSecurity.js";
 import type { TaskifyConfig, BoardEntry } from "./config.js";
 import { saveConfig } from "./config.js";
 import { readCache, writeCache, isCacheFresh, type CachedTask } from "./taskCache.js";
 import { pickBestBoardMeta } from "./shared/boardMeta.js";
+import {
+  normalizeCalendarDeleteMutationPayload,
+  normalizeCalendarEventPayload,
+  normalizeCalendarMutationPayload,
+  encryptToBoard,
+  decryptFromBoard,
+  resolveBoardReference,
+  resolveIdentifierReference,
+  readTagValue,
+  readStatusTag,
+  TASKIFY_CALENDAR_EVENT_KIND,
+  TASKIFY_CALENDAR_VIEW_KIND,
+} from "taskify-core";
+import {
+  encryptCalendarPayloadForBoard,
+  decryptCalendarPayloadForBoard,
+  decryptCalendarPayloadWithEventKey,
+  generateEventKey,
+} from "./calendarCrypto.js";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -16,59 +34,12 @@ function nowISO(): string {
 
 // ---- Internal helpers (not exported) ----
 
-function boardTagHash(boardId: string): string {
-  return bytesToHex(sha256(new TextEncoder().encode(boardId)));
-}
-
-function deriveBoardKeys(boardId: string): {
-  sk: Uint8Array;
-  skHex: string;
-  pk: string;
-  signer: NDKPrivateKeySigner;
-} {
-  const label = new TextEncoder().encode("taskify-board-nostr-key-v1");
-  const id = new TextEncoder().encode(boardId);
-  const material = new Uint8Array(label.length + id.length);
-  material.set(label, 0);
-  material.set(id, label.length);
-  const sk = sha256(material);
-  const skHex = bytesToHex(sk);
-  const pk = getPublicKey(sk);
-  return { sk, skHex, pk, signer: new NDKPrivateKeySigner(skHex) };
-}
-
-async function deriveAESKey(boardId: string): Promise<CryptoKey> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(boardId),
-  );
-  return crypto.subtle.importKey(
-    "raw",
-    digest,
-    { name: "AES-GCM" },
-    false,
-    ["encrypt", "decrypt"],
-  );
-}
-
 async function encryptContent(boardId: string, plaintext: string): Promise<string> {
-  const key = await deriveAESKey(boardId);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const pt = new TextEncoder().encode(plaintext);
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, pt);
-  const result = new Uint8Array(12 + ct.byteLength);
-  result.set(iv, 0);
-  result.set(new Uint8Array(ct), 12);
-  return Buffer.from(result).toString("base64");
+  return encryptToBoard(boardId, plaintext);
 }
 
 async function decryptContent(boardId: string, data: string): Promise<string> {
-  const key = await deriveAESKey(boardId);
-  const bytes = Buffer.from(data, "base64");
-  const iv = bytes.subarray(0, 12);
-  const ct = bytes.subarray(12);
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return new TextDecoder().decode(pt);
+  return decryptFromBoard(boardId, data);
 }
 
 function getUserPubkeyHex(config: TaskifyConfig): string | undefined {
@@ -93,14 +64,17 @@ function validateEventCompat(event: NDKEvent): boolean {
   return true;
 }
 
+function validateCalendarEventCompat(event: NDKEvent): boolean {
+  if (event.kind !== TASKIFY_CALENDAR_EVENT_KIND && event.kind !== TASKIFY_CALENDAR_VIEW_KIND && event.kind !== 30301) return false;
+  const hasD = event.tags.some((t) => t[0] === "d");
+  const hasB = event.tags.some((t) => t[0] === "b");
+  if (!hasD || !hasB) return false;
+  if (!event.content) return false;
+  return true;
+}
+
 function resolveBoardEntry(config: TaskifyConfig, boardIdOrName: string): BoardEntry | null {
-  // Exact UUID match first
-  let entry = config.boards.find((b) => b.id === boardIdOrName);
-  if (entry) return entry;
-  // Case-insensitive name match
-  const lower = boardIdOrName.toLowerCase();
-  entry = config.boards.find((b) => b.name.toLowerCase() === lower);
-  return entry ?? null;
+  return resolveBoardReference(config.boards, boardIdOrName);
 }
 
 // ---- Cache conversion helpers ----
@@ -130,6 +104,7 @@ function recordToCache(r: FullTaskRecord): CachedTask {
     reminders: r.reminders as string[] | undefined,
     inboxItem: r.inboxItem,
     assignees: r.assignees,
+    documents: r.documents,
   };
 }
 
@@ -158,7 +133,8 @@ function cacheToRecord(t: CachedTask, boardName?: string): FullTaskRecord {
     bounty: t.bounty,
     reminders: t.reminders as ReminderPreset[] | undefined,
     inboxItem: t.inboxItem,
-    assignees: t.assignees,
+    assignees: t.assignees as TaskAssignee[] | undefined,
+    documents: t.documents as Record<string, unknown>[] | undefined,
   };
 }
 
@@ -173,9 +149,11 @@ export type FullTaskRecord = {
   dueISO: string;
   dueDateEnabled?: boolean;
   dueTimeEnabled?: boolean;
+  dueTimeZone?: string;
   priority?: 1 | 2 | 3;
   completed: boolean;
   completedAt?: string;
+  completedBy?: string;
   createdAt?: number;      // Unix seconds (for render compat)
   updatedAt?: string;
   createdBy?: string;      // hex pubkey
@@ -187,13 +165,46 @@ export type FullTaskRecord = {
   column?: string;         // col tag value (column ID)
   sourceBoardId?: string;
   inboxItem?: boolean;
-  assignees?: string[];    // hex pubkeys
+  assignees?: TaskAssignee[];
+  documents?: Record<string, unknown>[];
+  hiddenUntilISO?: string;
+  streak?: number;
+  longestStreak?: number;
+  seriesId?: string;
+  images?: string[];
 };
 
 export type ExtendedCreateInput = AgentTaskCreateInput & {
   subtasks?: Subtask[];
   inboxItem?: boolean;
-  assignees?: string[];
+  dueTimeEnabled?: boolean;
+  dueTimeZone?: string;
+  hiddenUntilISO?: string;
+};
+
+export type FullEventRecord = {
+  id: string;
+  boardId: string;
+  boardName?: string;
+  title: string;
+  kind: "date" | "time";
+  startDate?: string;
+  endDate?: string;
+  startISO?: string;
+  endISO?: string;
+  startTzid?: string;
+  endTzid?: string;
+  description?: string;
+  recurrence?: Recurrence;
+  reminders?: ReminderPreset[];
+  participants?: Array<{ pubkey: string; relay?: string; role?: string }>;
+  documents?: Record<string, unknown>[];
+  columnId?: string;
+  rsvpStatus?: "accepted" | "declined" | "tentative";
+  rsvpCreatedAt?: number;
+  createdAt?: number;
+  updatedAt?: string;
+  deleted?: boolean;
 };
 
 export type NostrRuntime = {
@@ -206,15 +217,40 @@ export type NostrRuntime = {
     refresh?: boolean;
     noCache?: boolean;
   }): Promise<FullTaskRecord[]>;
+  listEvents(options: { boardId?: string }): Promise<FullEventRecord[]>;
+  getEvent(eventId: string, boardId?: string): Promise<FullEventRecord | null>;
+  createEvent(input: {
+    boardId: string;
+    title: string;
+    kind: "date" | "time";
+    startDate?: string;
+    endDate?: string;
+    startISO?: string;
+    endISO?: string;
+    startTzid?: string;
+    endTzid?: string;
+    description?: string;
+    recurrence?: Recurrence;
+    reminders?: ReminderPreset[];
+    participants?: Array<{ pubkey: string; relay?: string; role?: string }>;
+    columnId?: string;
+    documents?: Record<string, unknown>[];
+  }): Promise<FullEventRecord>;
+  updateEvent(eventId: string, boardId: string | undefined, patch: Partial<Pick<FullEventRecord, "title" | "startDate" | "endDate" | "startISO" | "endISO" | "startTzid" | "endTzid" | "description" | "recurrence" | "reminders" | "participants" | "columnId">> & { documents?: Record<string, unknown>[] | null }): Promise<FullEventRecord | null>;
+  deleteEvent(eventId: string, boardId: string | undefined): Promise<FullEventRecord | null>;
   syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }>;
   createTask(input: AgentTaskCreateInput): Promise<FullTaskRecord>;
   createTaskFull(input: ExtendedCreateInput): Promise<FullTaskRecord>;
-  createBoard(input: { name: string; kind: "lists" | "week"; columns?: { id: string; name: string }[] }): Promise<{ boardId: string }>;
+  createBoard(input: { name: string; kind: "lists" | "week" | "compound"; columns?: { id: string; name: string }[]; children?: string[] }): Promise<{ boardId: string }>;
+  updateBoard(boardId: string, patch: Partial<Pick<BoardEntry, "name" | "archived" | "hidden" | "indexCardEnabled" | "clearCompletedDisabled" | "hideChildBoardNames" | "shareSettings" | "columns" | "children" | "sortMode" | "sortDirection">>): Promise<BoardEntry | null>;
+  clearCompleted(boardId: string): Promise<number>;
   updateTask(taskId: string, boardId: string, patch: AgentTaskPatchInput): Promise<FullTaskRecord | null>;
   setTaskStatus(taskId: string, status: AgentTaskStatus, boardId: string): Promise<FullTaskRecord | null>;
   deleteTask(taskId: string, boardId: string): Promise<FullTaskRecord | null>;
   toggleSubtask(taskId: string, boardId: string, subtaskRef: string, completed: boolean): Promise<FullTaskRecord | null>;
   getTask(taskId: string, boardId?: string): Promise<FullTaskRecord | null>;
+  applyTaskAssignmentResponse(taskId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullTaskRecord | null>;
+  applyEventRsvpResponse(eventId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullEventRecord | null>;
   remindTask(taskId: string, presets: ReminderPreset[]): Promise<void>;
   getLocalReminders(taskId: string): ReminderPreset[];
   getAgentSecurityConfig(): Promise<AgentSecurityConfig>;
@@ -233,14 +269,11 @@ async function parseDecryptedEvent(
   try {
     const plaintext = await decryptContent(boardId, event.content);
     const payload = JSON.parse(plaintext);
-    const dTag = event.tags.find((t) => t[0] === "d");
-    const taskId = dTag?.[1] ?? "";
+    const taskId = readTagValue(event.tags, "d") ?? "";
     if (!taskId) return null;
-    const statusTag = event.tags.find((t) => t[0] === "status");
-    const statusVal = statusTag?.[1] ?? "open";
+    const statusVal = readStatusTag(event.tags, "open");
     const completed = statusVal === "done";
-    const colTag = event.tags.find((t) => t[0] === "col");
-    const column = colTag?.[1] || undefined;
+    const column = readTagValue(event.tags, "col") || undefined;
     return {
       id: taskId,
       boardId,
@@ -268,10 +301,115 @@ async function parseDecryptedEvent(
       column,
       inboxItem: payload.inboxItem === true ? true : undefined,
       assignees: Array.isArray(payload.assignees) && payload.assignees.length > 0
-        ? (payload.assignees as Array<unknown>).map((a) =>
-            typeof a === "string" ? a : (a as Record<string, string>).pubkey ?? "")
-          .filter(Boolean)
+        ? (payload.assignees as Array<unknown>)
+          .map((a) => {
+            if (typeof a === "string") return { pubkey: a };
+            if (!a || typeof a !== "object") return null;
+            const obj = a as Record<string, unknown>;
+            const pubkey = typeof obj.pubkey === "string" ? obj.pubkey : "";
+            if (!pubkey) return null;
+            return {
+              pubkey,
+              relay: typeof obj.relay === "string" ? obj.relay : undefined,
+              status: obj.status === "pending" || obj.status === "accepted" || obj.status === "declined" || obj.status === "tentative"
+                ? obj.status
+                : undefined,
+              respondedAt: typeof obj.respondedAt === "number" ? Math.round(obj.respondedAt) : undefined,
+            };
+          })
+          .filter((a): a is TaskAssignee => !!a)
         : undefined,
+      documents: Array.isArray(payload.documents) ? (payload.documents as Record<string, unknown>[]) : undefined,
+      dueTimeZone: payload.dueTimeZone ?? undefined,
+      hiddenUntilISO: payload.hiddenUntilISO ?? undefined,
+      streak: typeof payload.streak === "number" ? payload.streak : undefined,
+      longestStreak: typeof payload.longestStreak === "number" ? payload.longestStreak : undefined,
+      seriesId: typeof payload.seriesId === "string" ? payload.seriesId : undefined,
+      completedBy: payload.completedBy ?? undefined,
+      images: Array.isArray(payload.images) ? payload.images as string[] : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function parseDecryptedCalendarEvent(
+  event: NDKEvent,
+  boardId: string,
+  boardName?: string,
+): Promise<FullEventRecord | null> {
+  if (!validateCalendarEventCompat(event)) return null;
+  const statusVal = readStatusTag(event.tags, "open");
+  const entityTag = readTagValue(event.tags, "entity");
+  try {
+    let raw: Record<string, unknown> | null = null;
+    if (event.kind === TASKIFY_CALENDAR_EVENT_KIND || event.kind === TASKIFY_CALENDAR_VIEW_KIND) {
+      // Try NIP-44 board key decryption (PWA canonical format)
+      try {
+        const boardKeys = deriveBoardKeyPair(boardId);
+        const result = await decryptCalendarPayloadForBoard(event.content, boardKeys.skHex, boardKeys.pk);
+        raw = result as Record<string, unknown>;
+      } catch {
+        // Fallback: try AES-GCM (old CLI format)
+        try {
+          const plaintext = await decryptContent(boardId, event.content);
+          raw = JSON.parse(plaintext) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      }
+    } else {
+      // kind 30301 fallback for old-format calendar events
+      try {
+        const plaintext = await decryptContent(boardId, event.content);
+        raw = JSON.parse(plaintext) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    }
+    if (!raw) return null;
+
+    const id = readTagValue(event.tags, "d") ?? "";
+    if (!id) return null;
+
+    const inferredEvent =
+      event.kind === TASKIFY_CALENDAR_EVENT_KIND ||
+      event.kind === TASKIFY_CALENDAR_VIEW_KIND ||
+      entityTag === "event" ||
+      raw.kind === "date" ||
+      raw.kind === "time" ||
+      typeof raw.startDate === "string" ||
+      typeof raw.startISO === "string";
+    if (!inferredEvent) return null;
+
+    const payload = normalizeCalendarEventPayload(raw);
+    if (!payload) return null;
+    const kind = payload.kind === "time" ? "time" : "date";
+
+    return {
+      id,
+      boardId,
+      boardName,
+      title: payload.title ?? "",
+      kind,
+      startDate: payload.startDate,
+      endDate: payload.endDate,
+      startISO: payload.startISO,
+      endISO: payload.endISO,
+      startTzid: payload.startTzid,
+      endTzid: payload.endTzid,
+      description: payload.description,
+      // Access extra fields from raw (not included in CalendarNormalizedPayload)
+      recurrence: raw.recurrence as Recurrence | undefined,
+      reminders: raw.reminders as ReminderPreset[] | undefined,
+      participants: Array.isArray(raw.participants) ? raw.participants as Array<{ pubkey: string; relay?: string; role?: string }> : undefined,
+      documents: Array.isArray(raw.documents) ? raw.documents as Record<string, unknown>[] : undefined,
+      columnId: (readTagValue(event.tags, "col") || undefined),
+      rsvpStatus: raw.rsvpStatus as "accepted" | "declined" | "tentative" | undefined,
+      rsvpCreatedAt: typeof raw.rsvpCreatedAt === "number" ? raw.rsvpCreatedAt : undefined,
+      createdAt: event.created_at,
+      updatedAt: event.created_at ? new Date(event.created_at * 1000).toISOString() : undefined,
+      deleted: statusVal === "deleted" || payload.deleted === true,
     };
   } catch {
     return null;
@@ -351,19 +489,67 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     });
   }
 
+  async function fetchBoardCalendarEvents(boardId: string, eventId?: string): Promise<Set<NDKEvent>> {
+    const bTag = boardTagHash(boardId);
+    const filter: Record<string, unknown> = {
+      kinds: [TASKIFY_CALENDAR_EVENT_KIND, TASKIFY_CALENDAR_VIEW_KIND],
+      "#b": [bTag],
+      limit: eventId ? undefined : 500,
+    };
+    if (eventId) filter["#d"] = [eventId];
+
+    let hardTimer: ReturnType<typeof setTimeout>;
+
+    return new Promise<Set<NDKEvent>>((resolve) => {
+      const collected = new Set<NDKEvent>();
+      let graceTimer: ReturnType<typeof setTimeout> | null = null;
+      let settled = false;
+      const HARD_TIMEOUT_MS = eventId ? 10_000 : 15_000;
+      const EOSE_GRACE_MS = 200;
+
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        if (graceTimer) clearTimeout(graceTimer);
+        if (hardTimer) clearTimeout(hardTimer);
+        try { sub.stop(); } catch { /* ignore */ }
+        resolve(collected);
+      };
+
+      hardTimer = setTimeout(settle, HARD_TIMEOUT_MS);
+
+      const sub = ndk.subscribe(
+        filter as Parameters<typeof ndk.subscribe>[0],
+        { closeOnEose: false },
+      );
+
+      sub.on("event", (evt: NDKEvent) => {
+        if (!settled) collected.add(evt);
+      });
+
+      sub.on("eose", () => {
+        if (!graceTimer && !settled) {
+          graceTimer = setTimeout(settle, EOSE_GRACE_MS);
+        }
+      });
+    });
+  }
+
   // Resolves a full UUID from a short prefix — fetches all board events and scans "d" tags.
   async function resolveTaskId(boardId: string, taskIdOrPrefix: string): Promise<string | null> {
-    // Full UUID — use directly
-    if (taskIdOrPrefix.length === 36) return taskIdOrPrefix;
-    // Short prefix — scan board events
+    const exact = taskIdOrPrefix.trim();
+    // Standard UUID (36 chars) — return directly without a relay lookup
+    if (exact.length === 36) return exact;
+
     const allEvents = await fetchBoardEvents(boardId);
-    const prefix = taskIdOrPrefix.toLowerCase().slice(0, 8);
-    for (const event of allEvents) {
-      const dTag = event.tags.find((t) => t[0] === "d");
-      const dVal = (dTag?.[1] ?? "").toLowerCase();
-      if (dVal.startsWith(prefix)) return dTag![1];
-    }
-    return null;
+    const entries = Array.from(allEvents)
+      .map((event) => ({ id: readTagValue(event.tags, "d") ?? "" }))
+      .filter((entry) => entry.id);
+
+    // For recurring instance IDs ("recurrence:...") the full ID can be >36 chars.
+    // resolveIdentifierReference does an exact-match first, so passing the full
+    // recurrence ID will always land on the right instance.
+    return resolveIdentifierReference(entries, taskIdOrPrefix)?.id ?? null;
   }
 
   async function publishTaskEvent(
@@ -373,7 +559,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     status: "open" | "done" | "deleted",
     colId: string = "",
   ): Promise<NDKEvent> {
-    const { signer } = deriveBoardKeys(boardId);
+    const { signer } = deriveBoardKeyPair(boardId);
     const bTag = boardTagHash(boardId);
     const encrypted = await encryptContent(boardId, JSON.stringify(payload));
     const event = new NDKEvent(ndk);
@@ -394,6 +580,72 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       );
     }
     return event;
+  }
+
+  async function publishCalendarEvent(
+    boardId: string,
+    calEventId: string,
+    payload: Record<string, unknown>,
+    status: "open" | "deleted",
+    colId: string = "",
+  ): Promise<NDKEvent> {
+    const boardKeys = deriveBoardKeyPair(boardId);
+    const bTag = boardTagHash(boardId);
+    const encrypted = await encryptCalendarPayloadForBoard(payload, boardKeys.skHex, boardKeys.pk);
+    const event = new NDKEvent(ndk);
+    event.kind = TASKIFY_CALENDAR_EVENT_KIND;
+    event.content = encrypted;
+    event.tags = [
+      ["d", calEventId],
+      ["b", bTag],
+      ["col", colId],
+      ["status", status],
+      ["entity", "event"],
+    ];
+    await event.sign(boardKeys.signer);
+    try {
+      await event.publish();
+    } catch (err) {
+      throw new Error(
+        `Publish failed — check relay connectivity (taskify relay status): ${String(err)}`,
+      );
+    }
+    return event;
+  }
+
+  async function publishBoardDefinition(board: BoardEntry): Promise<void> {
+    const { signer } = deriveBoardKeyPair(board.id);
+    const bTag = boardTagHash(board.id);
+    const payload: Record<string, unknown> = {
+      name: board.name,
+      kind: board.kind ?? "lists",
+      columns: board.columns ?? [],
+      children: board.children ?? [],
+      archived: !!board.archived,
+      hidden: !!board.hidden,
+      clearCompletedDisabled: !!board.clearCompletedDisabled,
+      listIndex: !!board.indexCardEnabled,
+      hideBoardNames: !!board.hideChildBoardNames,
+      shareSettings: board.shareSettings ?? {},
+      sortMode: board.sortMode ?? null,
+      sortDirection: board.sortDirection ?? null,
+      version: 1,
+    };
+    const encrypted = await encryptContent(board.id, JSON.stringify(payload));
+    const event = new NDKEvent(ndk);
+    event.kind = 30300;
+    event.content = encrypted;
+    event.tags = [
+      ["d", bTag],
+      ["b", bTag],
+      ["k", board.kind ?? "lists"],
+      ["name", board.name],
+      ...(board.columns ?? []).map((c): string[] => ["col", c.id, c.name]),
+      ...(board.children ?? []).map((child): string[] => ["ch", child]),
+      ...(board.sortMode ? [["sort", board.sortMode, board.sortDirection ?? "asc"]] : []),
+    ];
+    await event.sign(signer);
+    await event.publish();
   }
 
   return {
@@ -523,6 +775,239 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       return records;
     },
 
+    async listEvents({ boardId }: { boardId?: string }): Promise<FullEventRecord[]> {
+      const boards = boardId
+        ? (() => {
+            const entry = resolveBoardEntry(config, boardId);
+            return entry ? [entry] : [];
+          })()
+        : [...config.boards];
+      if (boards.length === 0) return [];
+
+      await ensureConnected();
+      const out: FullEventRecord[] = [];
+      for (const board of boards) {
+        const events = await fetchBoardCalendarEvents(board.id);
+        for (const evt of events) {
+          const parsed = await parseDecryptedCalendarEvent(evt, board.id, board.name);
+          if (!parsed || parsed.deleted) continue;
+          out.push(parsed);
+        }
+      }
+      out.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+      return out;
+    },
+
+    async getEvent(eventId: string, boardId?: string): Promise<FullEventRecord | null> {
+      const boards = boardId
+        ? (() => {
+            const entry = resolveBoardEntry(config, boardId);
+            return entry ? [entry] : [];
+          })()
+        : [...config.boards];
+      if (boards.length === 0) return null;
+
+      await ensureConnected();
+      const matches: FullEventRecord[] = [];
+      for (const board of boards) {
+        const resolvedId = await resolveTaskId(board.id, eventId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardCalendarEvents(board.id, resolvedId);
+        if (events.size === 0) continue;
+        const [evt] = events;
+        const parsed = await parseDecryptedCalendarEvent(evt, board.id, board.name);
+        if (!parsed || parsed.deleted) continue;
+        matches.push(parsed);
+      }
+
+      if (matches.length === 0) return null;
+      if (!boardId && matches.length > 1) {
+        throw new Error(`Event id matches multiple boards; specify --board (matches: ${matches.map((m) => m.boardName ?? m.boardId).join(", ")})`);
+      }
+      return matches[0];
+    },
+
+    async createEvent(input): Promise<FullEventRecord> {
+      await ensureConnected();
+      const id = crypto.randomUUID();
+      const now = Date.now();
+      const normalized = normalizeCalendarMutationPayload(
+        {
+          title: input.title,
+          kind: input.kind,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          startISO: input.startISO,
+          endISO: input.endISO,
+          startTzid: input.startTzid,
+          endTzid: input.endTzid,
+          description: input.description,
+        },
+        now,
+      );
+      if (!normalized) {
+        throw new Error("Invalid event payload");
+      }
+      // Merge extra fields not handled by normalizeCalendarMutationPayload
+      const payload: Record<string, unknown> = {
+        ...normalized,
+        recurrence: input.recurrence ?? null,
+        reminders: input.reminders ?? null,
+        participants: input.participants ?? null,
+        documents: input.documents ?? null,
+      };
+      const boardEntry = resolveBoardEntry(config, input.boardId);
+      const colId = input.columnId
+        ?? (boardEntry?.kind === "lists" && Array.isArray(boardEntry.columns) && boardEntry.columns.length > 0 ? boardEntry.columns[0].id : "");
+      await publishCalendarEvent(input.boardId, id, payload, "open", colId);
+      return {
+        id,
+        boardId: input.boardId,
+        title: normalized.title ?? "",
+        kind: normalized.kind === "time" ? "time" : "date",
+        startDate: normalized.startDate,
+        endDate: normalized.endDate,
+        startISO: normalized.startISO,
+        endISO: normalized.endISO,
+        startTzid: normalized.startTzid,
+        endTzid: normalized.endTzid,
+        description: normalized.description,
+        recurrence: input.recurrence as Recurrence | undefined,
+        reminders: input.reminders as ReminderPreset[] | undefined,
+        participants: input.participants,
+        documents: input.documents,
+        columnId: colId || undefined,
+        createdAt: Math.floor(now / 1000),
+        updatedAt: new Date(now).toISOString(),
+      };
+    },
+
+    async updateEvent(eventId: string, boardId: string | undefined, patch): Promise<FullEventRecord | null> {
+      await ensureConnected();
+      const boards = boardId
+        ? (() => {
+            const entry = resolveBoardEntry(config, boardId);
+            return entry ? [entry] : [];
+          })()
+        : [...config.boards];
+      if (boards.length === 0) return null;
+
+      const matches: Array<{ entry: (typeof boards)[number]; resolvedId: string; existing: FullEventRecord }> = [];
+      for (const entry of boards) {
+        const resolvedId = await resolveTaskId(entry.id, eventId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardCalendarEvents(entry.id, resolvedId);
+        if (events.size === 0) continue;
+        const [evt] = events;
+        const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
+        if (!existing || existing.deleted) continue;
+        matches.push({ entry, resolvedId, existing });
+      }
+
+      if (matches.length === 0) return null;
+      if (!boardId && matches.length > 1) {
+        throw new Error(`Event id matches multiple boards; specify --board (matches: ${matches.map((m) => m.entry.name).join(", ")})`);
+      }
+
+      const { entry, resolvedId, existing } = matches[0];
+      const mergedRecurrence = patch.recurrence ?? existing.recurrence;
+      const mergedReminders = patch.reminders ?? existing.reminders;
+      const mergedParticipants = patch.participants ?? existing.participants;
+      const mergedDocuments = patch.documents === undefined ? existing.documents : patch.documents ?? undefined;
+      const normalized = normalizeCalendarMutationPayload(
+        {
+          title: patch.title ?? existing.title,
+          kind: existing.kind,
+          startDate: patch.startDate ?? existing.startDate,
+          endDate: patch.endDate ?? existing.endDate,
+          startISO: patch.startISO ?? existing.startISO,
+          endISO: patch.endISO ?? existing.endISO,
+          startTzid: patch.startTzid ?? existing.startTzid,
+          endTzid: patch.endTzid ?? existing.endTzid,
+          description: patch.description ?? existing.description,
+        },
+        existing.createdAt ? existing.createdAt * 1000 : Date.now(),
+      );
+      if (!normalized) return null;
+      const mergedPayload: Record<string, unknown> = {
+        ...normalized,
+        recurrence: mergedRecurrence ?? null,
+        reminders: mergedReminders ?? null,
+        participants: mergedParticipants ?? null,
+        documents: mergedDocuments ?? null,
+      };
+      const colId = patch.columnId !== undefined ? (patch.columnId ?? "") : (existing.columnId ?? "");
+      await publishCalendarEvent(entry.id, resolvedId, mergedPayload, "open", colId);
+      return {
+        id: resolvedId,
+        boardId: entry.id,
+        boardName: entry.name,
+        title: normalized.title ?? "",
+        kind: normalized.kind === "time" ? "time" : "date",
+        startDate: normalized.startDate,
+        endDate: normalized.endDate,
+        startISO: normalized.startISO,
+        endISO: normalized.endISO,
+        startTzid: normalized.startTzid,
+        endTzid: normalized.endTzid,
+        description: normalized.description,
+        recurrence: mergedRecurrence as Recurrence | undefined,
+        reminders: mergedReminders as ReminderPreset[] | undefined,
+        participants: mergedParticipants,
+        documents: mergedDocuments as Record<string, unknown>[] | undefined,
+        columnId: colId || undefined,
+        createdAt: existing.createdAt,
+        updatedAt: nowISO(),
+      };
+    },
+
+    async deleteEvent(eventId: string, boardId: string | undefined): Promise<FullEventRecord | null> {
+      await ensureConnected();
+      const boards = boardId
+        ? (() => {
+            const entry = resolveBoardEntry(config, boardId);
+            return entry ? [entry] : [];
+          })()
+        : [...config.boards];
+      if (boards.length === 0) return null;
+
+      const matches: Array<{ entry: (typeof boards)[number]; resolvedId: string; existing: FullEventRecord }> = [];
+      for (const entry of boards) {
+        const resolvedId = await resolveTaskId(entry.id, eventId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardCalendarEvents(entry.id, resolvedId);
+        if (events.size === 0) continue;
+        const [evt] = events;
+        const existing = await parseDecryptedCalendarEvent(evt, entry.id, entry.name);
+        if (!existing || existing.deleted) continue;
+        matches.push({ entry, resolvedId, existing });
+      }
+
+      if (matches.length === 0) return null;
+      if (!boardId && matches.length > 1) {
+        throw new Error(`Event id matches multiple boards; specify --board (matches: ${matches.map((m) => m.entry.name).join(", ")})`);
+      }
+
+      const { entry, resolvedId, existing } = matches[0];
+      const payload = normalizeCalendarDeleteMutationPayload(
+        {
+          title: existing.title,
+          kind: existing.kind,
+          startDate: existing.startDate,
+          endDate: existing.endDate,
+          startISO: existing.startISO,
+          endISO: existing.endISO,
+          startTzid: existing.startTzid,
+          endTzid: existing.endTzid,
+          description: existing.description,
+        },
+        existing.createdAt ? existing.createdAt * 1000 : Date.now(),
+      );
+      if (!payload) return null;
+      await publishCalendarEvent(entry.id, resolvedId, payload as unknown as Record<string, unknown>, "deleted", "");
+      return { ...existing, deleted: true };
+    },
+
     async syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }> {
       await ensureConnected();
       const bTag = boardTagHash(boardId);
@@ -573,6 +1058,20 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         if (kind) entry.kind = kind as BoardEntry["kind"];
         if (columns && columns.length > 0) entry.columns = columns;
         if (children && children.length > 0) entry.children = children;
+        if (meta.archived !== undefined) entry.archived = meta.archived;
+        if (meta.hidden !== undefined) entry.hidden = meta.hidden;
+        if (meta.indexCardEnabled !== undefined) entry.indexCardEnabled = meta.indexCardEnabled;
+        if (meta.clearCompletedDisabled !== undefined) entry.clearCompletedDisabled = meta.clearCompletedDisabled;
+        if (meta.hideChildBoardNames !== undefined) entry.hideChildBoardNames = meta.hideChildBoardNames;
+        if (meta.shareSettings !== undefined) entry.shareSettings = meta.shareSettings;
+        // Parse sort tag from board events
+        for (const event of events) {
+          const sortTag = event.tags.find((t: string[]) => t[0] === "sort");
+          if (sortTag?.[1]) {
+            entry.sortMode = sortTag[1] as BoardEntry["sortMode"];
+            if (sortTag[2]) entry.sortDirection = sortTag[2] as BoardEntry["sortDirection"];
+          }
+        }
         await saveConfig(config);
       }
 
@@ -607,8 +1106,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         dueISO: input.dueISO ?? "",
         completedAt: null,
         completedBy: null,
-        recurrence: null,
-        hiddenUntilISO: null,
+        recurrence: input.recurrence ?? null,
         createdBy: userPubkey,
         lastEditedBy: userPubkey,
         createdAt: now,
@@ -616,21 +1114,24 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         longestStreak: null,
         seriesId: null,
         dueDateEnabled: input.dueISO ? true : null,
-        dueTimeEnabled: null,
-        dueTimeZone: null,
+        dueTimeEnabled: input.dueTimeEnabled ?? null,
+        dueTimeZone: input.dueTimeZone ?? null,
+        hiddenUntilISO: input.hiddenUntilISO ?? null,
         images: null,
-        documents: null,
+        documents: input.documents ?? null,
         bounty: null,
         subtasks: input.subtasks ?? null,
-        assignees: input.assignees ? input.assignees.map((pk) => ({ pubkey: pk })) : null,
+        assignees: input.assignees ?? null,
         inboxItem: input.inboxItem === true ? true : null,
       };
       // Resolve column: explicit > week-board today > ""
       let colId = "";
       if (input.columnId !== undefined) {
         colId = input.columnId;
+      } else if (entry.kind === "lists" && Array.isArray(entry.columns) && entry.columns.length > 0) {
+        colId = entry.columns[0].id;
       } else if (entry.kind === "week") {
-        colId = new Date().toISOString().slice(0, 10);
+        colId = "day";
       }
       await publishTaskEvent(boardId, taskId, payload, "open", colId);
       const result: FullTaskRecord = {
@@ -641,12 +1142,17 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         note: input.note || undefined,
         dueISO: input.dueISO ?? "",
         dueDateEnabled: input.dueISO ? true : undefined,
+        dueTimeEnabled: input.dueTimeEnabled ?? undefined,
+        dueTimeZone: input.dueTimeZone ?? undefined,
+        hiddenUntilISO: input.hiddenUntilISO ?? undefined,
         priority: input.priority,
         completed: false,
         createdAt: Math.floor(now / 1000),
         createdBy: userPubkey,
         lastEditedBy: userPubkey,
         subtasks: input.subtasks,
+        recurrence: input.recurrence as Recurrence | undefined,
+        documents: input.documents,
         column: colId || undefined,
         inboxItem: input.inboxItem === true ? true : undefined,
         assignees: input.assignees,
@@ -687,10 +1193,16 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         ...(patch.dueISO !== undefined ? { dueISO: patch.dueISO ?? "" } : {}),
         ...(patch.priority !== undefined ? { priority: patch.priority ?? null } : {}),
         ...(patch.inboxItem !== undefined ? { inboxItem: patch.inboxItem } : {}),
-        // Store assignees as {pubkey} objects in Nostr payload for PWA compat
-        ...(patch.assignees !== undefined ? { assignees: patch.assignees.map((pk) => ({ pubkey: pk })) } : {}),
+        ...(patch.assignees !== undefined ? { assignees: patch.assignees } : {}),
+        ...(patch.recurrence !== undefined ? { recurrence: patch.recurrence } : {}),
+        ...(patch.documents !== undefined ? { documents: patch.documents } : {}),
+        ...(patch.dueTimeEnabled !== undefined ? { dueTimeEnabled: patch.dueTimeEnabled } : {}),
+        ...(patch.dueTimeZone !== undefined ? { dueTimeZone: patch.dueTimeZone } : {}),
+        ...(patch.hiddenUntilISO !== undefined ? { hiddenUntilISO: patch.hiddenUntilISO } : {}),
         lastEditedBy: userPubkey,
       };
+      // reminders are device-local only — strip from published payload
+      delete merged.reminders;
       const statusTag = event.tags.find((t) => t[0] === "status");
       const status = (statusTag?.[1] ?? "open") as "open" | "done" | "deleted";
       const colTag = event.tags.find((t) => t[0] === "col");
@@ -698,7 +1210,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const colId = patch.columnId !== undefined ? (patch.columnId ?? "") : existingColId;
       await publishTaskEvent(entry.id, taskId, merged, status, colId);
       // Build updated FullTaskRecord — keep assignees as string[] (extract pubkeys)
-      const updatedAssignees: string[] | undefined = patch.assignees !== undefined
+      const updatedAssignees: TaskAssignee[] | undefined = patch.assignees !== undefined
         ? patch.assignees
         : existing.assignees;
       const updated: FullTaskRecord = {
@@ -709,6 +1221,11 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         priority: merged.priority ?? undefined,
         inboxItem: merged.inboxItem === true ? true : undefined,
         assignees: updatedAssignees,
+        recurrence: (merged.recurrence as Recurrence | null | undefined) ?? undefined,
+        documents: (merged.documents as Record<string, unknown>[] | null | undefined) ?? undefined,
+        dueTimeEnabled: merged.dueTimeEnabled ?? existing.dueTimeEnabled,
+        dueTimeZone: (merged.dueTimeZone as string | null | undefined) ?? existing.dueTimeZone,
+        hiddenUntilISO: (merged.hiddenUntilISO as string | null | undefined) ?? existing.hiddenUntilISO,
         lastEditedBy: merged.lastEditedBy,
       };
       if (patch.columnId !== undefined) updated.column = colId || undefined;
@@ -785,7 +1302,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       await publishTaskEvent(entry.id, taskId, rawPayload, "deleted", colId);
 
       // Step 2: publish NIP-09 kind 5 deletion request (matches PWA's publishTaskDeletionRequest)
-      const boardKeys = deriveBoardKeys(entry.id);
+      const boardKeys = deriveBoardKeyPair(entry.id);
       const aTag = `30301:${boardKeys.pk}:${taskId}`;
       try {
         const nip09Event = new NDKEvent(ndk);
@@ -886,6 +1403,59 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       return null;
     },
 
+    async applyTaskAssignmentResponse(taskId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullTaskRecord | null> {
+      await ensureConnected();
+      for (const entry of config.boards) {
+        const resolvedId = await resolveTaskId(entry.id, taskId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardEvents(entry.id, resolvedId);
+        if (events.size === 0) continue;
+        const [event] = events;
+        const existing = await parseDecryptedEvent(event, entry.id, entry.name);
+        if (!existing) continue;
+        const plaintext = await decryptContent(entry.id, event.content);
+        const rawPayload = JSON.parse(plaintext);
+        const assignees = Array.isArray(rawPayload.assignees) ? rawPayload.assignees : [];
+        const idx = assignees.findIndex((a: any) => (typeof a === "string" ? a : a?.pubkey) === senderPubkey);
+        const respondedEpoch = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(Date.now() / 1000);
+        if (idx >= 0) {
+          const prev = assignees[idx];
+          assignees[idx] = typeof prev === "string" ? { pubkey: prev, status, respondedAt: respondedEpoch } : { ...prev, status, respondedAt: respondedEpoch };
+        } else {
+          assignees.push({ pubkey: senderPubkey, status, respondedAt: respondedEpoch });
+        }
+        rawPayload.assignees = assignees;
+        const statusTag = event.tags.find((t) => t[0] === "status");
+        const nostrStatus = (statusTag?.[1] ?? "open") as "open" | "done" | "deleted";
+        const colId = readTagValue(event.tags, "col") ?? "";
+        await publishTaskEvent(entry.id, resolvedId, rawPayload, nostrStatus, colId);
+        return await parseDecryptedEvent(event, entry.id, entry.name);
+      }
+      return null;
+    },
+
+    async applyEventRsvpResponse(eventId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullEventRecord | null> {
+      await ensureConnected();
+      for (const entry of config.boards) {
+        const resolvedId = await resolveTaskId(entry.id, eventId);
+        if (!resolvedId) continue;
+        const events = await fetchBoardEvents(entry.id, resolvedId);
+        if (events.size === 0) continue;
+        const [event] = events;
+        const existing = await parseDecryptedCalendarEvent(event, entry.id, entry.name);
+        if (!existing || existing.deleted) continue;
+        const plaintext = await decryptContent(entry.id, event.content);
+        const rawPayload = JSON.parse(plaintext);
+        rawPayload.rsvpStatus = status;
+        rawPayload.rsvpCreatedAt = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(Date.now() / 1000);
+        rawPayload.lastEditedBy = senderPubkey;
+        const colId = readTagValue(event.tags, "col") ?? "";
+        await publishTaskEvent(entry.id, resolvedId, rawPayload, "open", colId);
+        return { ...existing, rsvpStatus: status, rsvpCreatedAt: rawPayload.rsvpCreatedAt };
+      }
+      return null;
+    },
+
     async remindTask(taskId: string, presets: ReminderPreset[]): Promise<void> {
       // Device-local only — NEVER publish to Nostr
       if (!config.taskReminders) config.taskReminders = {};
@@ -935,49 +1505,76 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
     async createBoard(input: {
       name: string;
-      kind: "lists" | "week";
+      kind: "lists" | "week" | "compound";
       columns?: { id: string; name: string }[];
+      children?: string[];
     }): Promise<{ boardId: string }> {
       await ensureConnected();
       const boardId = crypto.randomUUID();
-      const { signer } = deriveBoardKeys(boardId);
-      const bTag = boardTagHash(boardId);
 
-      const contentPayload = {
-        name: input.name,
-        kind: input.kind,
-        columns: input.columns ?? [],
-        version: 1,
-      };
-      const encrypted = await encryptContent(boardId, JSON.stringify(contentPayload));
-
-      const event = new NDKEvent(ndk);
-      event.kind = 30300;
-      event.content = encrypted;
-      event.tags = [
-        ["d", boardId],
-        ["b", bTag],
-        ["k", input.kind],
-        ...(input.columns ?? []).map((c): string[] => ["col", c.id, c.name]),
-      ];
-      await event.sign(signer);
-      try {
-        await event.publish();
-      } catch (err) {
-        throw new Error(`Board publish failed: ${String(err)}`);
-      }
-
-      // Auto-join: save to config
       const newEntry: BoardEntry = {
         id: boardId,
         name: input.name,
         kind: input.kind,
         columns: input.columns ?? [],
+        children: input.children ?? [],
+        archived: false,
+        hidden: false,
+        clearCompletedDisabled: false,
+        indexCardEnabled: false,
+        hideChildBoardNames: false,
       };
+      try {
+        await publishBoardDefinition(newEntry);
+      } catch (err) {
+        throw new Error(`Board publish failed: ${String(err)}`);
+      }
+
       config.boards.push(newEntry);
       await saveConfig(config);
-
       return { boardId };
+    },
+
+    async updateBoard(boardId: string, patch: Partial<Pick<BoardEntry, "name" | "archived" | "hidden" | "indexCardEnabled" | "clearCompletedDisabled" | "hideChildBoardNames" | "shareSettings" | "columns" | "children" | "sortMode" | "sortDirection">>): Promise<BoardEntry | null> {
+      await ensureConnected();
+      const entry = resolveBoardEntry(config, boardId);
+      if (!entry) return null;
+      if (patch.name !== undefined) entry.name = patch.name;
+      if (patch.archived !== undefined) entry.archived = patch.archived;
+      if (patch.hidden !== undefined) entry.hidden = patch.hidden;
+      if (patch.indexCardEnabled !== undefined) entry.indexCardEnabled = patch.indexCardEnabled;
+      if (patch.clearCompletedDisabled !== undefined) entry.clearCompletedDisabled = patch.clearCompletedDisabled;
+      if (patch.hideChildBoardNames !== undefined) entry.hideChildBoardNames = patch.hideChildBoardNames;
+      if (patch.columns !== undefined) entry.columns = patch.columns;
+      if (patch.children !== undefined) entry.children = patch.children;
+      if (patch.shareSettings !== undefined) entry.shareSettings = patch.shareSettings;
+      if (patch.sortMode !== undefined) entry.sortMode = patch.sortMode;
+      if (patch.sortDirection !== undefined) entry.sortDirection = patch.sortDirection;
+      await publishBoardDefinition(entry);
+      await saveConfig(config);
+      return entry;
+    },
+
+    async clearCompleted(boardId: string): Promise<number> {
+      await ensureConnected();
+      const entry = resolveBoardEntry(config, boardId);
+      if (!entry) return 0;
+      if (entry.clearCompletedDisabled === true) {
+        throw new Error("Clear completed is disabled on this board.");
+      }
+      const events = await fetchBoardEvents(entry.id);
+      let removed = 0;
+      for (const event of events) {
+        const task = await parseDecryptedEvent(event, entry.id, entry.name);
+        if (!task || !task.completed) continue;
+        const plaintext = await decryptContent(entry.id, event.content);
+        const rawPayload = JSON.parse(plaintext);
+        const colTag = event.tags.find((t) => t[0] === "col");
+        const colId = colTag?.[1] ?? "";
+        await publishTaskEvent(entry.id, task.id, rawPayload, "deleted", colId);
+        removed += 1;
+      }
+      return removed;
     },
   };
 }
