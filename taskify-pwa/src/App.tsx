@@ -17394,9 +17394,37 @@ export default function App() {
         else if (ev.kind === 30301) enqueueForBoard(it.id, () => applyTaskEvent(ev)).catch(() => {});
         else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueForBoard(it.id, () => applyCalendarEvent(ev)).catch(() => {});
       }, (eoseRelay) => {
-        // Per-relay EOSE: merge this relay's batch and remove it from pending.
-        // IDB tasks are already visible — this only adds/updates with relay data.
-        const relayUrl = eoseRelay ?? '';
+        // NDK fires a single subscription-level EOSE (not per-relay), so eoseRelay
+        // is typically undefined. When undefined, treat it as "all relays done" and
+        // flush every pending relay batch for this board.
+        if (!eoseRelay) {
+          const boardBatch = relayBatchRef.current.get(it.id);
+          if (boardBatch?.size) {
+            const combined = new Map<string, RelayBatchEntry>();
+            for (const [, relayBatch] of boardBatch) {
+              for (const [key, entry] of relayBatch) {
+                const existing = combined.get(key);
+                const inAt = '_deleted' in entry ? (entry as { _nostrAt?: number })._nostrAt ?? 0 : (entry as Task)._nostrAt ?? 0;
+                const exAt = existing ? ('_deleted' in existing ? (existing as { _nostrAt?: number })._nostrAt ?? 0 : (existing as Task)._nostrAt ?? 0) : -1;
+                if (!existing || inAt > exAt) combined.set(key, entry);
+              }
+            }
+            relayBatchRef.current.delete(it.id);
+            (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
+              if (combined.size) flushRelayBatch(it.id, combined);
+            });
+          }
+          clearSyncTimeout(it.id);
+          pendingRelaysByBoardRef.current.delete(it.id);
+          completedNostrInitialSyncRef.current.add(it.id);
+          markNostrBoardInitialSyncComplete(it.id);
+          try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
+          setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
+          return;
+        }
+
+        // Per-relay EOSE (if NDK ever provides relay URL): merge just that relay's batch.
+        const relayUrl = eoseRelay;
         pendingRelaysByBoardRef.current.get(it.id)?.delete(relayUrl);
 
         const boardBatch = relayBatchRef.current.get(it.id);
