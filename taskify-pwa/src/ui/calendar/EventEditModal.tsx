@@ -215,7 +215,9 @@ function EventEditModal({
   const contactByPubkey = useMemo(() => {
     const map = new Map<string, Contact>();
     (contacts || []).forEach((contact) => {
-      const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+      // Use normalizeNostrPubkey first to handle bech32 (npub1...) format
+      const compressed = normalizeNostrPubkey(contact?.npub ?? "");
+      const pubkey = compressed ? normalizeNostrPubkeyHex(compressed) : normalizeNostrPubkeyHex(contact?.npub ?? "");
       if (pubkey) map.set(pubkey, contact);
     });
     return map;
@@ -1003,7 +1005,7 @@ function EventEditModal({
 
   const handleToggleInviteContact = (contact: Contact) => {
     if (isReadOnly) return;
-    const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+    const pubkey = resolveInviteInput(contact?.npub ?? "");
     if (!pubkey) return;
     setParticipants((prev) => {
       const existing = prev.some((participant) => normalizeNostrPubkeyHex(participant.pubkey) === pubkey);
@@ -2010,7 +2012,7 @@ function EventEditModal({
           {filteredInviteContacts.length ? (
             <div className="space-y-2">
               {filteredInviteContacts.map((contact) => {
-                const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+                const pubkey = resolveInviteInput(contact?.npub ?? "");
                 if (!pubkey) return null;
                 const label = contactPrimaryName(contact);
                 const subtitle = formatContactNpub(contact.npub);
