@@ -163,15 +163,15 @@ function CustomReminderSheet({
     if (!open) return;
     const hourIndex = HOURS_12.indexOf(timePickerHour);
     if (hourIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex);
+      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex, "instant");
     }
     const minuteIndex = MINUTES.indexOf(timePickerMinute);
     if (minuteIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex);
+      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex, "instant");
     }
     const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
     if (meridiemIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex);
+      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex, "instant");
     }
   }, [open, timePickerHour, timePickerMeridiem, timePickerMinute]);
 

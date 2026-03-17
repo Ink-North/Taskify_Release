@@ -252,7 +252,11 @@ export function getWheelMetrics(column: HTMLDivElement | null) {
   return { optionHeight, optionOffset };
 }
 
-export function scrollWheelColumnToIndex(column: HTMLDivElement | null, index: number) {
+export function scrollWheelColumnToIndex(
+  column: HTMLDivElement | null,
+  index: number,
+  behavior: ScrollBehavior = "smooth",
+) {
   if (!column) return;
   const metrics = getWheelMetrics(column);
   if (!metrics) return;
@@ -262,7 +266,7 @@ export function scrollWheelColumnToIndex(column: HTMLDivElement | null, index: n
   const maxScroll = Math.max(0, column.scrollHeight - column.clientHeight);
   const clampedTop = Math.max(0, Math.min(targetTop, maxScroll));
   if (Math.abs(column.scrollTop - clampedTop) < 0.5) return;
-  column.scrollTo({ top: clampedTop, behavior: "smooth" });
+  column.scrollTo({ top: clampedTop, behavior });
 }
 
 export function getWheelNearestIndex(column: HTMLDivElement | null, totalOptions: number) {

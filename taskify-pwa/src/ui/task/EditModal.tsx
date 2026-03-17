@@ -891,15 +891,17 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     if ((hasDueTime && !timeDetailsOpen) || (!hasDueTime && !reminderTimeDetailsOpen)) return;
     const hourIndex = HOURS_12.indexOf(timePickerHour);
     if (hourIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex);
+      // Use "instant" to avoid firing scroll events mid-animation, which would
+      // cause the snap handler to read a stale position and re-snap to the wrong item.
+      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex, "instant");
     }
     const minuteIndex = MINUTES.indexOf(timePickerMinute);
     if (minuteIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex);
+      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex, "instant");
     }
     const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
     if (meridiemIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex);
+      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex, "instant");
     }
   }, [timeDetailsOpen, hasDueTime, reminderTimeDetailsOpen, timePickerHour, timePickerMinute, timePickerMeridiem]);
 
