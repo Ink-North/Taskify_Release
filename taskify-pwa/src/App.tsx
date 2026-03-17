@@ -538,6 +538,7 @@ type Task = {
   lastEditedBy?: string;          // nostr pubkey of latest task editor
   createdAt?: number;             // unix ms timestamp (local)
   updatedAt?: string;             // iso timestamp of latest local edit when known
+  _nostrAt?: number;              // unix seconds of the Nostr event that last wrote this task (not persisted to IDB in old data)
   title: string;
   priority?: TaskPriority;        // 1-3 exclamation marks
   note?: string;
@@ -6258,6 +6259,7 @@ export default function App() {
   const boardMigrationRef = useRef<Map<string, BoardMigrationState>>(new Map());
   const pendingNostrTasksRef = useRef<Set<string>>(new Set());
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
+  // Set of bTags where all relays have fired EOSE — used to determine live vs batch mode.
   const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
   const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
   // In-memory cursor: tracks the highest created_at seen per board tag this session.
@@ -6270,13 +6272,17 @@ export default function App() {
       return {};
     }
   });
-  // Batch accumulator for initial sync. While a board's bTag is in this map, all
-  // applyTaskEvent state updates are written directly into this Map instead of calling
-  // setTasks. After EOSE the batch is merged into the task array in a single O(n+m)
-  // setTasks call — no intermediate arrays, no n² churn. This prevents OOM crashes
-  // on mobile when restoring large backups or doing a first-ever open on a big board.
-  // Map<bTag, Map<"boardId::taskId", Task | "deleted">>
-  const syncBatchRef = useRef<Map<string, Map<string, Task | "deleted">>>(new Map());
+  // Per-relay batch accumulator. Events from each relay are collected here until
+  // that relay fires EOSE. On EOSE the relay's batch is clock-protected-merged into
+  // the task state and IDB data is shown immediately (no blocking spinner).
+  // Map<bTag, Map<relayUrl, Map<"boardId::taskId", Task | { _deleted:true; _nostrAt:number }>>>
+  type RelayBatchEntry = Task | { _deleted: true; _nostrAt: number };
+  const relayBatchRef = useRef<Map<string, Map<string, Map<string, RelayBatchEntry>>>>(new Map());
+
+  // Tracks which relay URLs still have pending EOSE for each board.
+  // When empty for a board, all relays are done and we're in live mode.
+  // Map<bTag, Set<relayUrl>>
+  const pendingRelaysByBoardRef = useRef<Map<string, Set<string>>>(new Map());
 
   // Live-mode micro-batch coalescer. After the initial batch flush, post-EOSE events
   // (e.g. from slow relays still streaming, or live peer updates) are accumulated for
@@ -6291,14 +6297,7 @@ export default function App() {
   type TaskUpdater = (prev: Task[]) => Task[];
   const liveBatchRef = useRef<Map<string, { updaters: TaskUpdater[]; timer: number }>>(new Map());
 
-  // Tracks how many EOSE callbacks are expected vs. received for each board's
-  // subscription. With multiple relays per board, NDK fires one EOSE per relay.
-  // The first relay's EOSE was previously triggering the batch flush immediately,
-  // but slower relays continued sending events as post-flush live updates — those
-  // live events include old task state without their corresponding deletes, causing
-  // stale tasks to briefly appear. Fix: only flush after ALL relays fire EOSE.
-  // Map<bTag, { expected: number; received: number }>
-  const boardEoseRef = useRef<Map<string, { expected: number; received: number }>>(new Map());
+
   const markNostrBoardInitialSyncComplete = useCallback((bTag: string) => {
     if (!bTag) return;
     completedNostrInitialSyncRef.current.add(bTag);
@@ -10033,7 +10032,7 @@ export default function App() {
     if (!currentBoard) return [] as Task[];
     const scope = new Set(boardScopeIds(currentBoard, boards));
     return tasks
-      .filter((t) => scope.has(t.boardId) && !pendingSharedBoardIds.has(t.boardId))
+      .filter((t) => scope.has(t.boardId))
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   }, [boards, tasks, currentBoard, pendingSharedBoardIds]);
 
@@ -13068,20 +13067,24 @@ export default function App() {
     // Key used for both the live setTasks path and the batch Map path.
     const taskKey = `${lb.id}::${taskId}`;
 
-    // ── Batch path (initial sync in progress) ────────────────────────────────
-    // Write directly into a Map<key, Task|"deleted"> instead of queuing updater
-    // functions. This keeps the batch O(1) per event and makes the final flush
-    // O(n+m) — no n² array churn, no OOM on large backups or first opens.
-    if (!completedNostrInitialSyncRef.current.has(bTag)) {
-      let batchMap = syncBatchRef.current.get(bTag);
-      if (!batchMap) { batchMap = new Map(); syncBatchRef.current.set(bTag, batchMap); }
+    // ── Per-relay batch path (relay hasn't fired EOSE yet) ───────────────────
+    // Route event into the relay-specific batch Map. On EOSE, the relay's batch
+    // is clock-protected-merged into state. IDB data is always visible immediately.
+    // evRelay is captured from pool.subscribe's onEvent(ev, relay) argument.
+    const evRelay = (ev as any).__relay as string | undefined;
+    const isPendingRelay = evRelay && pendingRelaysByBoardRef.current.get(bTag)?.has(evRelay);
+    if (isPendingRelay) {
+      let boardBatch = relayBatchRef.current.get(bTag);
+      if (!boardBatch) { boardBatch = new Map(); relayBatchRef.current.set(bTag, boardBatch); }
+      let batchMap = boardBatch.get(evRelay!);
+      if (!batchMap) { batchMap = new Map(); boardBatch.set(evRelay!, batchMap); }
       if (status === "deleted") {
-        batchMap.set(taskKey, "deleted");
+        batchMap.set(taskKey, { _deleted: true, _nostrAt: ev.created_at });
       } else {
-        // For merge fields that normally need prev (bounty, order, images, etc.),
-        // use whatever is already in the batch for this task, falling back to base.
+        // For merge fields that need prev (bounty, order, images, etc.),
+        // use what's already in this relay's batch, falling back to base.
         const existing = batchMap.get(taskKey);
-        const cur = existing && existing !== "deleted" ? existing as Task : undefined;
+        const cur = existing && !('_deleted' in existing) ? existing as Task : undefined;
         const incomingB: Task["bounty"] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'bounty') ? payload.bounty : undefined;
         const incomingImgs: string[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'images') ? payload.images : undefined;
         const imgs = incomingImgs === undefined ? cur?.images : incomingImgs === null ? undefined : incomingImgs;
@@ -13110,9 +13113,10 @@ export default function App() {
           longestStreak: longest,
           subtasks: subs,
           assignees: mergedAssignees,
+          _nostrAt: ev.created_at,
         } as Task);
       }
-      return; // ← do NOT call setTasks; flush happens at EOSE
+      return; // ← do NOT call setTasks; flush happens at relay EOSE
     }
 
     // ── Live path (sync already complete, normal per-event update) ────────────
@@ -17304,74 +17308,73 @@ export default function App() {
       window.clearTimeout(timeoutId);
       syncTimeoutByBoard.delete(bTag);
     };
+    // Mark all boards as syncing (non-blocking — IDB tasks render immediately).
     setPendingNostrInitialSyncByBoardTag((prev) => {
-      let changed = false;
       const next = { ...prev };
+      let changed = false;
       for (const item of parsed) {
-        if (completedNostrInitialSyncRef.current.has(item.id) || next[item.id]) continue;
+        if (next[item.id]) continue;
         next[item.id] = true;
         changed = true;
       }
       return changed ? next : prev;
     });
-    // Per-board grace timers: started after the first relay fires EOSE.
-    // If all relays haven't responded within NOSTR_EOSE_GRACE_MS we flush anyway.
-    const graceTimerByBoard = new Map<string, number>();
 
-    // Per-relay post-flush buffers. After the initial batch is flushed, events
-    // from relays that haven't yet fired EOSE are held here instead of being
-    // rendered immediately. When a relay fires EOSE, its buffer is drained
-    // through the board queue so events are deduped via the clock check and
-    // coalesced by the live micro-batch — ensuring nothing stale ever renders.
-    // Map<bTag, Map<relayUrl, NostrEvent[]>>
-    const postFlushRelayBuffer = new Map<string, Map<string, NostrEvent[]>>();
-    // Track which relay URLs haven't fired EOSE yet for each board.
-    const pendingRelaysByBoard = new Map<string, Set<string>>();
+    // Clock-protected merge: apply a relay's batch into current task state.
+    // Only updates tasks where the relay has newer data than what's already in state.
+    const flushRelayBatch = (bTag: string, relayBatch: Map<string, RelayBatchEntry>) => {
+      if (!relayBatch.size) return;
+      const bTagClock = nostrIdxRef.current.taskClock.get(bTag);
+      setTasks(prev => {
+        const merged = new Map(prev.map(t => [`${t.boardId}::${t.id}`, t]));
+        for (const [key, entry] of relayBatch) {
+          const taskId = key.split('::')[1];
+          const incomingNostrAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? bTagClock?.get(taskId) ?? 0;
+          const existingNostrAt = (merged.get(key) as Task | undefined)?._nostrAt ?? 0;
+          if (incomingNostrAt < existingNostrAt) continue; // IDB/prior relay has newer data
+          if ('_deleted' in entry) merged.delete(key);
+          else merged.set(key, entry as Task);
+        }
+        return dedupeRecurringInstances(Array.from(merged.values()));
+      });
+    };
 
     for (const it of parsed) {
       const rls = it.relays.split(",").filter(Boolean);
       if (!rls.length) continue;
-      if (!completedNostrInitialSyncRef.current.has(it.id)) {
-        // doFlush is safe to call multiple times — guards against double-flush.
-        const doFlush = () => {
-          // Cancel both timers so whichever didn't fire first doesn't re-run.
-          clearSyncTimeout(it.id);
-          const graceId = graceTimerByBoard.get(it.id);
-          if (graceId != null) { window.clearTimeout(graceId); graceTimerByBoard.delete(it.id); }
-          if (completedNostrInitialSyncRef.current.has(it.id)) return; // already flushed
-          const batchMap = syncBatchRef.current.get(it.id);
-          if (batchMap && batchMap.size > 0) {
-            setTasks(prev => {
-              const merged = new Map(prev.map(t => [`${t.boardId}::${t.id}`, t]));
-              for (const [key, entry] of batchMap.entries()) {
-                if (entry === "deleted") merged.delete(key);
-                else merged.set(key, entry as Task);
-              }
-              return dedupeRecurringInstances(Array.from(merged.values()));
-            });
-            syncBatchRef.current.delete(it.id);
-          }
-          markNostrBoardInitialSyncComplete(it.id);
-        };
 
-        // Absolute timeout — fires if no relay ever sends EOSE (stuck relay).
-        const timeoutId = window.setTimeout(doFlush, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
-        syncTimeoutByBoard.set(it.id, timeoutId);
-      }
+      // Register this board's pending relays. applyTaskEvent reads this ref to route
+      // events into per-relay batches instead of the live path.
+      pendingRelaysByBoardRef.current.set(it.id, new Set(rls));
+
+      // Absolute timeout: flush all remaining relay batches for stuck relays.
+      const timeoutId = window.setTimeout(() => {
+        clearSyncTimeout(it.id);
+        const boardBatch = relayBatchRef.current.get(it.id);
+        if (boardBatch?.size) {
+          const combined = new Map<string, RelayBatchEntry>();
+          for (const relayBatch of boardBatch.values()) {
+            for (const [key, entry] of relayBatch) {
+              const existing = combined.get(key);
+              const inAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? 0;
+              const exAt = existing ? ('_deleted' in existing ? existing._nostrAt : (existing as Task)._nostrAt ?? 0) : -1;
+              if (inAt >= exAt) combined.set(key, entry);
+            }
+          }
+          flushRelayBatch(it.id, combined);
+          relayBatchRef.current.delete(it.id);
+        }
+        pendingRelaysByBoardRef.current.delete(it.id);
+        completedNostrInitialSyncRef.current.add(it.id);
+        markNostrBoardInitialSyncComplete(it.id);
+        try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
+        setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
+      }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
+      syncTimeoutByBoard.set(it.id, timeoutId);
+
       pool.setRelays(rls);
       ensureMigrationState(it.id);
-      // Use a cursor (since) if we've synced this board before, so we only fetch
-      // events newer than our last high-water mark. This avoids re-fetching hundreds
-      // of old events on every app open, which was the cause of a ~60 second flicker
-      // where completed/deleted tasks would appear then disappear as old events were processed.
-      //
-      // After a backup restore, applyBackupDataToStorage seeds per-board cursors from
-      // the max task timestamp so this path is taken immediately (no limit:500).
-      //
-      // For a true first-time sync (new user, no backup, no tasks), fall back to a
-      // 30-day time window instead of limit:500. A time-based window is safer than an
-      // event-count limit: limit:500 can include old CREATE events whose DELETE events
-      // are beyond the limit and will never arrive, causing deleted tasks to reappear.
+
       const INITIAL_SYNC_FALLBACK_DAYS = 30;
       const cursor = boardSyncCursorsRef.current[it.id];
       const sinceFilter = cursor
@@ -17382,123 +17385,46 @@ export default function App() {
         { kinds: [30300], "#d": [it.id], limit: 1 },
         { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], ...sinceFilter },
       ];
-      // Register the number of relays so the EOSE handler knows how many to wait for.
-      boardEoseRef.current.set(it.id, { expected: rls.length, received: 0 });
-      // All relays start as pending — removed as each one fires EOSE.
-      pendingRelaysByBoard.set(it.id, new Set(rls));
 
       const unsub = pool.subscribe(rls, filters, (ev, evRelay) => {
-        // If the initial batch has already been flushed and this relay hasn't fired
-        // EOSE yet, buffer the event instead of rendering it immediately. The buffer
-        // is drained (via enqueueForBoard) when that relay fires EOSE, ensuring its
-        // events are clock-checked and micro-batch coalesced before rendering.
-        // This guarantees no stale state ever renders for any relay.
-        if (completedNostrInitialSyncRef.current.has(it.id) && evRelay) {
-          const pendingRelays = pendingRelaysByBoard.get(it.id);
-          if (pendingRelays?.has(evRelay)) {
-            let boardBuf = postFlushRelayBuffer.get(it.id);
-            if (!boardBuf) { boardBuf = new Map(); postFlushRelayBuffer.set(it.id, boardBuf); }
-            const relayBuf = boardBuf.get(evRelay) ?? [];
-            relayBuf.push(ev);
-            boardBuf.set(evRelay, relayBuf);
-            return;
-          }
-        }
-
-        // Route each event through the board-specific queue so different boards
-        // run in parallel while preserving per-board task-clock ordering.
+        // Tag the event with the relay URL so applyTaskEvent can route it to the
+        // correct per-relay batch without changing the function signature.
+        (ev as any).__relay = evRelay;
         if (ev.kind === 30300) enqueueForBoard(it.id, () => applyBoardEvent(ev)).catch(() => {});
         else if (ev.kind === 30301) enqueueForBoard(it.id, () => applyTaskEvent(ev)).catch(() => {});
         else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueForBoard(it.id, () => applyCalendarEvent(ev)).catch(() => {});
-
-        // 0xchat pattern: reset the inactivity grace timer on every event received.
-        // This ensures slow relays that are still sending events never get cut off
-        // by a grace timer that started while they were mid-stream. The grace timer
-        // only fires once all relays have gone quiet (no events for NOSTR_EOSE_GRACE_MS).
-        if (!completedNostrInitialSyncRef.current.has(it.id)) {
-          const existing = graceTimerByBoard.get(it.id);
-          if (existing != null) {
-            window.clearTimeout(existing);
-            const refreshed = window.setTimeout(() => {
-              graceTimerByBoard.delete(it.id);
-              (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
-                doFlush();
-                try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
-                setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-              });
-            }, NOSTR_EOSE_GRACE_MS);
-            graceTimerByBoard.set(it.id, refreshed);
-          }
-        }
       }, (eoseRelay) => {
-        // Mark this relay as having completed its EOSE.
-        pendingRelaysByBoard.get(it.id)?.delete(eoseRelay ?? '');
+        // Per-relay EOSE: merge this relay's batch and remove it from pending.
+        // IDB tasks are already visible — this only adds/updates with relay data.
+        const relayUrl = eoseRelay ?? '';
+        pendingRelaysByBoardRef.current.get(it.id)?.delete(relayUrl);
 
-        // If the initial batch was already flushed (another relay's EOSE triggered the
-        // grace timer), drain this relay's post-flush buffer through the board queue.
-        // Clock check + live micro-batch ensure events are deduped and rendered cleanly.
-        if (completedNostrInitialSyncRef.current.has(it.id)) {
-          const boardBuf = postFlushRelayBuffer.get(it.id);
-          const relayBuf = eoseRelay ? boardBuf?.get(eoseRelay) : undefined;
-          if (relayBuf?.length) {
-            boardBuf!.delete(eoseRelay!);
-            for (const buffEv of relayBuf) {
-              if (buffEv.kind === 30300) enqueueForBoard(it.id, () => applyBoardEvent(buffEv)).catch(() => {});
-              else if (buffEv.kind === 30301) enqueueForBoard(it.id, () => applyTaskEvent(buffEv)).catch(() => {});
-              else if (buffEv.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueForBoard(it.id, () => applyCalendarEvent(buffEv)).catch(() => {});
-            }
-          }
-          return;
+        const boardBatch = relayBatchRef.current.get(it.id);
+        const relayBatch = boardBatch?.get(relayUrl);
+        if (relayBatch?.size) {
+          boardBatch!.delete(relayUrl);
+          (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
+            flushRelayBatch(it.id, relayBatch!);
+          });
         }
 
-        // After initial sync: flush the batched state updates in ONE setTasks call,
-        // then mark sync complete so subsequent events apply individually.
-        //
-        // With multiple relays, NDK fires one EOSE per relay. Strategy (from 0xchat):
-        //   • All relays EOSE → flush immediately (best case).
-        //   • First relay EOSE → start NOSTR_EOSE_GRACE_MS inactivity timer, reset on
-        //     every incoming event. Fires once all relays go quiet.
-        //   • Absolute timeout (NOSTR_INITIAL_SYNC_TIMEOUT_MS) → final fallback.
-        const eoseState = boardEoseRef.current.get(it.id);
-        let allRelaysResponded = false;
-        if (eoseState) {
-          eoseState.received++;
-          allRelaysResponded = eoseState.received >= eoseState.expected;
-          if (!allRelaysResponded && eoseState.received === 1 && !graceTimerByBoard.has(it.id)) {
-            // First relay responded — start inactivity grace timer.
-            const graceId = window.setTimeout(() => {
-              graceTimerByBoard.delete(it.id);
-              // Wait for the board queue to drain, then flush.
-              (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
-                doFlush();
-                try {
-                  idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current));
-                } catch { /* non-fatal */ }
-                setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-              });
-            }, NOSTR_EOSE_GRACE_MS);
-            graceTimerByBoard.set(it.id, graceId);
-          }
-          if (!allRelaysResponded) return; // more relays still pending; grace timer handles it
-        }
-
-        // All relays have responded — flush immediately via the board queue.
-        (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
-          doFlush();
-          // Persist the updated cursor so the next startup fetches only new events
-          try {
-            idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current));
-          } catch { /* non-fatal */ }
+        // If all relays done: clear spinner, persist cursor, trigger migration.
+        const pendingRelays = pendingRelaysByBoardRef.current.get(it.id);
+        if (!pendingRelays?.size) {
+          clearSyncTimeout(it.id);
+          pendingRelaysByBoardRef.current.delete(it.id);
+          completedNostrInitialSyncRef.current.add(it.id);
+          markNostrBoardInitialSyncComplete(it.id);
+          try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
           setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-        });
+        }
       });
       unsubs.push(unsub);
     }
     return () => {
       unsubs.forEach((u) => u());
       syncTimeoutByBoard.forEach((timeoutId) => window.clearTimeout(timeoutId));
-      graceTimerByBoard.forEach((timerId) => window.clearTimeout(timerId));
-      for (const it of parsed) boardEoseRef.current.delete(it.id);
+      for (const it of parsed) pendingRelaysByBoardRef.current.delete(it.id);
     };
   }, [
     nostrBoardsKey,
