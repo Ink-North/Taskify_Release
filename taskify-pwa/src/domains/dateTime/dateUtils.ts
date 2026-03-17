@@ -388,6 +388,22 @@ export function formatTimeLabel(iso: string, timeZone?: string): string {
   });
 }
 
+/**
+ * Returns the current local time as "HH:MM" (24h), rounded to the nearest
+ * 5-minute interval. Optional offsetMinutes shifts the result (e.g. +60 for
+ * "current time + 1 hour"), useful for defaulting event end times.
+ */
+export function currentTimeValue(offsetMinutes = 0): string {
+  const now = new Date(Date.now() + offsetMinutes * 60_000);
+  const h = now.getHours();
+  const rawM = now.getMinutes();
+  const m = Math.round(rawM / 5) * 5;
+  if (m >= 60) {
+    return `${String((h + 1) % 24).padStart(2, "0")}:00`;
+  }
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
 export function parseTimePickerValue(value?: string | null, fallback = "09:00") {
   const source = typeof value === "string" && value.includes(":") ? value : fallback;
   const [hourRaw, minuteRaw] = (source || "09:00").split(":");

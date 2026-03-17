@@ -54,6 +54,7 @@ import {
   scheduleWheelSnap,
   parseTimePickerValue,
   formatTimePickerValue,
+  currentTimeValue,
 } from "../../domains/dateTime/dateUtils";
 
 // Timezone utilities
@@ -260,7 +261,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   );
   const initialDate = initialDateEnabled ? isoDatePart(task.dueISO, initialTimeZone) : "";
   const initialTime = initialDateEnabled ? isoTimePart(task.dueISO, initialTimeZone) : "";
-  const defaultTimeValue = initialTime || "09:00";
+  const defaultTimeValue = initialTime || currentTimeValue();
   const defaultHasTime = initialDateEnabled && (task.dueTimeEnabled ?? false);
   const [scheduledDate, setScheduledDate] = useState(initialDate);
   const [scheduledTime, setScheduledTime] = useState<string>(defaultHasTime ? initialTime : "");

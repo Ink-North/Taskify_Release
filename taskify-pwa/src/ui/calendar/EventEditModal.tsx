@@ -49,6 +49,7 @@ import {
   formatTimeLabel,
   parseTimePickerValue,
   formatTimePickerValue,
+  currentTimeValue,
 } from "../../domains/dateTime/dateUtils";
 
 // Timezone utilities (from domains)
@@ -323,15 +324,15 @@ function EventEditModal({
   const [startDate, setStartDate] = useState(initialStartDate);
   const [endDate, setEndDate] = useState(initialEndDate);
 
-  const initialStartTime = event.kind === "time" ? isoTimePart(event.startISO, initialStartTzid) : "09:00";
+  const initialStartTime = event.kind === "time" ? isoTimePart(event.startISO, initialStartTzid) : currentTimeValue();
   const initialEndTime = event.kind === "time"
     ? (() => {
         if (event.endISO) return isoTimePart(event.endISO, initialEndTzid);
         const startMs = Date.parse(event.startISO);
-        if (Number.isNaN(startMs)) return "10:00";
+        if (Number.isNaN(startMs)) return currentTimeValue(60);
         return isoTimePart(new Date(startMs + 60 * 60 * 1000).toISOString(), initialEndTzid);
       })()
-    : "10:00";
+    : currentTimeValue(60);
   const [startTime, setStartTime] = useState(initialStartTime);
   const [endTime, setEndTime] = useState(initialEndTime);
   const timePickerHourColumnRef = useRef<HTMLDivElement | null>(null);
