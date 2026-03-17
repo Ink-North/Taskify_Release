@@ -252,7 +252,11 @@ export function getWheelMetrics(column: HTMLDivElement | null) {
   return { optionHeight, optionOffset };
 }
 
-export function scrollWheelColumnToIndex(column: HTMLDivElement | null, index: number) {
+export function scrollWheelColumnToIndex(
+  column: HTMLDivElement | null,
+  index: number,
+  behavior: ScrollBehavior = "smooth",
+) {
   if (!column) return;
   const metrics = getWheelMetrics(column);
   if (!metrics) return;
@@ -262,7 +266,7 @@ export function scrollWheelColumnToIndex(column: HTMLDivElement | null, index: n
   const maxScroll = Math.max(0, column.scrollHeight - column.clientHeight);
   const clampedTop = Math.max(0, Math.min(targetTop, maxScroll));
   if (Math.abs(column.scrollTop - clampedTop) < 0.5) return;
-  column.scrollTo({ top: clampedTop, behavior: "smooth" });
+  column.scrollTo({ top: clampedTop, behavior });
 }
 
 export function getWheelNearestIndex(column: HTMLDivElement | null, totalOptions: number) {
@@ -281,6 +285,7 @@ export function scheduleWheelSnap(
   columnRef: React.RefObject<HTMLDivElement>,
   snapRef: React.MutableRefObject<number | null>,
   targetIndex: number,
+  onCommit?: () => void,
 ) {
   if (snapRef.current != null) {
     window.clearTimeout(snapRef.current);
@@ -289,6 +294,7 @@ export function scheduleWheelSnap(
   snapRef.current = window.setTimeout(() => {
     snapRef.current = null;
     scrollWheelColumnToIndex(columnRef.current, targetIndex);
+    onCommit?.();
   }, 120);
 }
 
@@ -384,6 +390,38 @@ export function formatTimeLabel(iso: string, timeZone?: string): string {
     minute: "2-digit",
     ...(safeZone ? { timeZone: safeZone } : {}),
   });
+}
+
+/**
+ * Returns the current time as "HH:00" (24h), rounded UP to the next full hour.
+ * Optionally accepts:
+ *   - offsetMinutes: applied to "now" before rounding (e.g. +60 shifts the
+ *     base time forward 1 h, so the result is "next hour + 1"). Useful for
+ *     defaulting event end times.
+ *   - timeZone: IANA tz name — uses Intl.DateTimeFormat to read the hour in
+ *     that zone. Falls back to device local time if omitted or invalid.
+ */
+export function currentTimeValue(offsetMinutes = 0, timeZone?: string | null): string {
+  const now = new Date(Date.now() + offsetMinutes * 60_000);
+  let h: number;
+  const safeZone = normalizeTimeZone(timeZone);
+  if (safeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en", {
+        hour: "numeric",
+        hour12: false,
+        timeZone: safeZone,
+      }).formatToParts(now);
+      h = Number.parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10) % 24;
+    } catch {
+      h = now.getHours();
+    }
+  } else {
+    h = now.getHours();
+  }
+  // Round up to the next full hour.
+  const nextH = (h + 1) % 24;
+  return `${String(nextH).padStart(2, "0")}:00`;
 }
 
 export function parseTimePickerValue(value?: string | null, fallback = "09:00") {
