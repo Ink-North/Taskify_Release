@@ -707,16 +707,25 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
         const boardCache = cache.boards[board.id];
 
-        // Use cache if fresh and not forcing a refresh
-        if (!refresh && boardCache && isCacheFresh(boardCache)) {
-          for (const t of boardCache.tasks) {
-            const rec = cacheToRecord(t, board.name);
-            if (status === "open" && rec.completed) continue;
-            if (status === "done" && !rec.completed) continue;
-            if (columnId !== undefined && rec.column !== columnId) continue;
-            records.push(rec);
+        // With cursor-based incremental sync, fetching from the relay is cheap
+        // (only pulls events since the last cursor). We no longer skip the relay
+        // based on cache freshness — agents and repeated calls always get the
+        // latest events. The cache is used purely as the merge base, not as a
+        // shortcut to avoid the network call.
+        // Exception: --no-cache flag bypasses the merge base (forces cold fetch).
+        if (!refresh && noCache !== true && boardCache && !boardCache.lastSyncAt) {
+          // Legacy cache entry with no cursor yet — fall back to TTL behaviour
+          // until the next full fetch populates lastSyncAt.
+          if (isCacheFresh(boardCache)) {
+            for (const t of boardCache.tasks) {
+              const rec = cacheToRecord(t, board.name);
+              if (status === "open" && rec.completed) continue;
+              if (status === "done" && !rec.completed) continue;
+              if (columnId !== undefined && rec.column !== columnId) continue;
+              records.push(rec);
+            }
+            continue;
           }
-          continue;
         }
 
         // Cursor-based incremental fetch:
