@@ -389,14 +389,35 @@ export function formatTimeLabel(iso: string, timeZone?: string): string {
 }
 
 /**
- * Returns the current local time as "HH:MM" (24h), rounded to the nearest
- * 5-minute interval. Optional offsetMinutes shifts the result (e.g. +60 for
- * "current time + 1 hour"), useful for defaulting event end times.
+ * Returns the current time as "HH:MM" (24h), rounded to the nearest 5-minute
+ * interval. Optionally accepts:
+ *   - offsetMinutes: shift result forward (e.g. +60 for "now + 1 hour")
+ *   - timeZone: IANA tz name — uses Intl.DateTimeFormat to get the time in
+ *     that zone. Falls back to device local time if omitted or invalid.
  */
-export function currentTimeValue(offsetMinutes = 0): string {
+export function currentTimeValue(offsetMinutes = 0, timeZone?: string | null): string {
   const now = new Date(Date.now() + offsetMinutes * 60_000);
-  const h = now.getHours();
-  const rawM = now.getMinutes();
+  let h: number;
+  let rawM: number;
+  const safeZone = normalizeTimeZone(timeZone);
+  if (safeZone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en", {
+        hour: "numeric",
+        minute: "numeric",
+        hour12: false,
+        timeZone: safeZone,
+      }).formatToParts(now);
+      h = Number.parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10) % 24;
+      rawM = Number.parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
+    } catch {
+      h = now.getHours();
+      rawM = now.getMinutes();
+    }
+  } else {
+    h = now.getHours();
+    rawM = now.getMinutes();
+  }
   const m = Math.round(rawM / 5) * 5;
   if (m >= 60) {
     return `${String((h + 1) % 24).padStart(2, "0")}:00`;

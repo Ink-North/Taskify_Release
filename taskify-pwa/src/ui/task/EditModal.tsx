@@ -261,7 +261,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   );
   const initialDate = initialDateEnabled ? isoDatePart(task.dueISO, initialTimeZone) : "";
   const initialTime = initialDateEnabled ? isoTimePart(task.dueISO, initialTimeZone) : "";
-  const defaultTimeValue = initialTime || currentTimeValue();
+  const defaultTimeValue = initialTime || currentTimeValue(0, initialTimeZone);
   const defaultHasTime = initialDateEnabled && (task.dueTimeEnabled ?? false);
   const [scheduledDate, setScheduledDate] = useState(initialDate);
   const [scheduledTime, setScheduledTime] = useState<string>(defaultHasTime ? initialTime : "");
