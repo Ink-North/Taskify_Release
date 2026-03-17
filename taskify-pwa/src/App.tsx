@@ -19830,7 +19830,7 @@ export default function App() {
             });
           }}
           boards={boards}
-          contacts={shareContacts}
+          contacts={shareableContacts}
           rsvps={activeEventRsvps}
           nostrPK={nostrPK}
           nostrSkHex={nostrSkHex}

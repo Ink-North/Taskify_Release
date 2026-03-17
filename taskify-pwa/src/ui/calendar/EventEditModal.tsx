@@ -1999,19 +1999,18 @@ function EventEditModal({
             <div className="space-y-2">
               {filteredInviteContacts.map((contact) => {
                 const pubkey = normalizeNostrPubkeyHex(contact?.npub);
-                const hasNostr = !!pubkey;
+                if (!pubkey) return null;
                 const label = contactPrimaryName(contact);
-                const subtitle = hasNostr ? formatContactNpub(contact.npub) : "No Nostr identity";
-                const selected = hasNostr && invitedPubkeys.has(pubkey);
+                const subtitle = formatContactNpub(contact.npub);
+                const selected = invitedPubkeys.has(pubkey);
                 return (
                   <button
                     key={contact.id}
                     type="button"
-                    className={`contact-row${hasNostr ? " pressable" : " opacity-40 cursor-not-allowed"}`}
-                    onClick={() => hasNostr && handleToggleInviteContact(contact)}
+                    className="contact-row pressable"
+                    onClick={() => handleToggleInviteContact(contact)}
                     aria-pressed={selected}
-                    disabled={isReadOnly || !hasNostr}
-                    title={hasNostr ? undefined : "This contact has no Nostr identity and cannot be invited"}
+                    disabled={isReadOnly}
                   >
                     <div className="contact-avatar">{contactInitials(label)}</div>
                     <div className="contact-row__text">
@@ -2023,9 +2022,11 @@ function EventEditModal({
                           </span>
                         ) : null}
                       </div>
-                      <div className="contact-row__meta">
-                        <span className="contact-row__meta-text">{subtitle}</span>
-                      </div>
+                      {subtitle ? (
+                        <div className="contact-row__meta">
+                          <span className="contact-row__meta-text">{subtitle}</span>
+                        </div>
+                      ) : null}
                     </div>
                   </button>
                 );
