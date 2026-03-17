@@ -442,12 +442,14 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     }
   }
 
-  async function fetchBoardEvents(boardId: string, taskId?: string): Promise<Set<NDKEvent>> {
+  async function fetchBoardEvents(boardId: string, taskId?: string, since?: number): Promise<Set<NDKEvent>> {
     const bTag = boardTagHash(boardId);
     const filter: Record<string, unknown> = {
       kinds: [30301],
       "#b": [bTag],
-      limit: taskId ? undefined : 500,
+      // With a since cursor, skip the limit — we only want events newer than the cursor.
+      // Without a cursor, cap at 500 as a safety net for first-run cold fetches.
+      ...(since !== undefined ? { since } : { limit: 500 }),
     };
     if (taskId) filter["#d"] = [taskId];
 
@@ -717,22 +719,55 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           continue;
         }
 
-        // Fetch live from relay
+        // Cursor-based incremental fetch:
+        // - If we have a prior sync cursor, fetch only events since then (- 5 min buffer for clock skew).
+        // - First run (no cursor): fetch last 30 days, no limit.
+        // - If cursor is set but cache is empty (e.g. cleared), fall back to cold fetch.
         await ensureConnected();
-        const events = await fetchBoardEvents(board.id);
-        const liveRecords: FullTaskRecord[] = [];
+        const CURSOR_LOOKBACK_SECS = 300; // 5 min buffer
+        const FALLBACK_DAYS = 30;
+        const hasCursor = boardCache?.lastSyncAt && boardCache.tasks.length > 0;
+        const since = hasCursor
+          ? Math.max(0, boardCache!.lastSyncAt! - CURSOR_LOOKBACK_SECS)
+          : Math.floor(Date.now() / 1000) - FALLBACK_DAYS * 24 * 3600;
+
+        const events = await fetchBoardEvents(board.id, undefined, since);
+        const incomingRecords: FullTaskRecord[] = [];
+        let maxCreatedAt = boardCache?.lastSyncAt ?? 0;
         for (const event of events) {
           const record = await parseDecryptedEvent(event, board.id, board.name);
           if (!record) continue;
-          liveRecords.push(record);
+          incomingRecords.push(record);
+          if (event.created_at && event.created_at > maxCreatedAt) {
+            maxCreatedAt = event.created_at;
+          }
+        }
+
+        // Merge: latest created_at per task ID wins.
+        // Start from cached tasks, overlay incoming (which are newer by since filter).
+        let mergedRecords: FullTaskRecord[];
+        if (hasCursor && boardCache) {
+          // Incremental: merge incoming over the existing cache
+          const byId = new Map<string, FullTaskRecord>();
+          for (const t of boardCache.tasks) byId.set(t.id, cacheToRecord(t, board.name));
+          for (const r of incomingRecords) {
+            const existing = byId.get(r.id);
+            if (!existing || (r.createdAt ?? 0) >= (existing.createdAt ?? 0)) {
+              byId.set(r.id, r);
+            }
+          }
+          mergedRecords = Array.from(byId.values());
+        } else {
+          // Cold fetch: incoming IS the full state
+          mergedRecords = incomingRecords;
         }
 
         // A3/A2: guard against caching an empty result when previous data exists
-        if (liveRecords.length === 0 && boardCache && !noCache) {
+        if (mergedRecords.length === 0 && boardCache && !noCache) {
           const cacheAgeMs = Date.now() - boardCache.fetchedAt;
           const TEN_MIN_MS = 10 * 60 * 1000;
           if (cacheAgeMs <= TEN_MIN_MS) {
-            // A3: cache ≤ 10 min old — silently fall back, skip relay result
+            // A3: cache ≤ 10 min old — silently fall back
             for (const t of boardCache.tasks) {
               const rec = cacheToRecord(t, board.name);
               if (status === "open" && rec.completed) continue;
@@ -742,7 +777,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
             }
             continue;
           } else if (boardCache.tasks.length > 0) {
-            // A2: stale cache has tasks — warn and keep, don't overwrite with empty
+            // A2: stale cache has tasks — warn and keep
             process.stderr.write("⚠ Relay returned 0 tasks — keeping cached results\n");
             for (const t of boardCache.tasks) {
               const rec = cacheToRecord(t, board.name);
@@ -755,14 +790,15 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           }
         }
 
-        // Write all records (any status) to cache
+        // Write merged state to cache, advancing the sync cursor.
         cache.boards[board.id] = {
-          tasks: liveRecords.map(recordToCache),
+          tasks: mergedRecords.map(recordToCache),
           fetchedAt: Date.now(),
+          lastSyncAt: maxCreatedAt > 0 ? maxCreatedAt : Math.floor(Date.now() / 1000),
         };
 
         // Filter for the caller
-        for (const record of liveRecords) {
+        for (const record of mergedRecords) {
           if (columnId !== undefined && record.column !== columnId) continue;
           if (status === "open" && record.completed) continue;
           if (status === "done" && !record.completed) continue;

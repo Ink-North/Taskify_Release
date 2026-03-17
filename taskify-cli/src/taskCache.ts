@@ -40,6 +40,8 @@ export type CachedTask = {
 export type BoardCache = {
   tasks: CachedTask[];
   fetchedAt: number;
+  /** Unix seconds: highest created_at seen from relays. Used as `since` on next incremental fetch. */
+  lastSyncAt?: number;
 };
 
 export type TaskCache = {
