@@ -261,8 +261,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   );
   const initialDate = initialDateEnabled ? isoDatePart(task.dueISO, initialTimeZone) : "";
   const initialTime = initialDateEnabled ? isoTimePart(task.dueISO, initialTimeZone) : "";
-  const defaultTimeValue = initialTime || currentTimeValue(0, initialTimeZone);
   const defaultHasTime = initialDateEnabled && (task.dueTimeEnabled ?? false);
+  // Only use the task's stored time as the default if time was actually enabled.
+  // Otherwise (time disabled / new task) default to current time rounded to next hour,
+  // so the picker opens at "now" instead of a stale or midnight time from dueISO.
+  const defaultTimeValue = defaultHasTime ? initialTime : currentTimeValue(0, initialTimeZone);
   const [scheduledDate, setScheduledDate] = useState(initialDate);
   const [scheduledTime, setScheduledTime] = useState<string>(defaultHasTime ? initialTime : "");
   const [scheduledTimeZone, setScheduledTimeZone] = useState(initialTimeZone);
