@@ -281,6 +281,7 @@ export function scheduleWheelSnap(
   columnRef: React.RefObject<HTMLDivElement>,
   snapRef: React.MutableRefObject<number | null>,
   targetIndex: number,
+  onCommit?: () => void,
 ) {
   if (snapRef.current != null) {
     window.clearTimeout(snapRef.current);
@@ -289,6 +290,7 @@ export function scheduleWheelSnap(
   snapRef.current = window.setTimeout(() => {
     snapRef.current = null;
     scrollWheelColumnToIndex(columnRef.current, targetIndex);
+    onCommit?.();
   }, 120);
 }
 

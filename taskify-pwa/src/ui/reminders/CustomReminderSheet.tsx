@@ -191,11 +191,11 @@ function CustomReminderSheet({
       const clampedIndex = getWheelNearestIndex(column, HOURS_12.length);
       if (clampedIndex == null) return;
       const nextHour = HOURS_12[clampedIndex];
-      if (typeof nextHour === "number" && timePickerHourValueRef.current !== nextHour) {
-        setTimePickerFromParts(nextHour, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-      }
       if (typeof nextHour === "number") {
-        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex);
+        timePickerHourValueRef.current = nextHour;
+        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -209,11 +209,11 @@ function CustomReminderSheet({
       const clampedIndex = getWheelNearestIndex(column, MINUTES.length);
       if (clampedIndex == null) return;
       const nextMinute = MINUTES[clampedIndex];
-      if (typeof nextMinute === "number" && timePickerMinuteValueRef.current !== nextMinute) {
-        setTimePickerFromParts(timePickerHourValueRef.current, nextMinute, timePickerMeridiemValueRef.current);
-      }
       if (typeof nextMinute === "number") {
-        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex);
+        timePickerMinuteValueRef.current = nextMinute;
+        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -227,11 +227,11 @@ function CustomReminderSheet({
       const clampedIndex = getWheelNearestIndex(column, MERIDIEMS.length);
       if (clampedIndex == null) return;
       const nextMeridiem = MERIDIEMS[clampedIndex];
-      if (nextMeridiem && timePickerMeridiemValueRef.current !== nextMeridiem) {
-        setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, nextMeridiem);
-      }
       if (nextMeridiem) {
-        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex);
+        timePickerMeridiemValueRef.current = nextMeridiem;
+        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
