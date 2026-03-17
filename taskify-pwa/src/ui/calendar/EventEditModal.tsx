@@ -49,6 +49,7 @@ import {
   formatTimeLabel,
   parseTimePickerValue,
   formatTimePickerValue,
+  currentTimeValue,
 } from "../../domains/dateTime/dateUtils";
 
 // Timezone utilities (from domains)
@@ -323,15 +324,15 @@ function EventEditModal({
   const [startDate, setStartDate] = useState(initialStartDate);
   const [endDate, setEndDate] = useState(initialEndDate);
 
-  const initialStartTime = event.kind === "time" ? isoTimePart(event.startISO, initialStartTzid) : "09:00";
+  const initialStartTime = event.kind === "time" ? isoTimePart(event.startISO, initialStartTzid) : currentTimeValue(0, initialStartTzid);
   const initialEndTime = event.kind === "time"
     ? (() => {
         if (event.endISO) return isoTimePart(event.endISO, initialEndTzid);
         const startMs = Date.parse(event.startISO);
-        if (Number.isNaN(startMs)) return "10:00";
+        if (Number.isNaN(startMs)) return currentTimeValue(60, initialStartTzid);
         return isoTimePart(new Date(startMs + 60 * 60 * 1000).toISOString(), initialEndTzid);
       })()
-    : "10:00";
+    : currentTimeValue(60, initialStartTzid);
   const [startTime, setStartTime] = useState(initialStartTime);
   const [endTime, setEndTime] = useState(initialEndTime);
   const timePickerHourColumnRef = useRef<HTMLDivElement | null>(null);
@@ -635,15 +636,15 @@ function EventEditModal({
     if (whenPicker !== "startTime" && whenPicker !== "endTime" && whenPicker !== "reminderTime") return;
     const hourIndex = HOURS_12.indexOf(timePickerHour);
     if (hourIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex);
+      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex, "instant");
     }
     const minuteIndex = MINUTES.indexOf(timePickerMinute);
     if (minuteIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex);
+      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex, "instant");
     }
     const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
     if (meridiemIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex);
+      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex, "instant");
     }
   }, [whenPicker, timePickerHour, timePickerMinute, timePickerMeridiem]);
 
@@ -674,11 +675,11 @@ function EventEditModal({
       const clampedIndex = getWheelNearestIndex(column, HOURS_12.length);
       if (clampedIndex == null) return;
       const nextHour = HOURS_12[clampedIndex];
-      if (nextHour && timePickerHourValueRef.current !== nextHour) {
-        setTimePickerFromParts(nextHour, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-      }
       if (nextHour) {
-        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex);
+        timePickerHourValueRef.current = nextHour;
+        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -693,11 +694,11 @@ function EventEditModal({
       const clampedIndex = getWheelNearestIndex(column, MINUTES.length);
       if (clampedIndex == null) return;
       const nextMinute = MINUTES[clampedIndex];
-      if (Number.isFinite(nextMinute) && timePickerMinuteValueRef.current !== nextMinute) {
-        setTimePickerFromParts(timePickerHourValueRef.current, nextMinute, timePickerMeridiemValueRef.current);
-      }
       if (Number.isFinite(nextMinute)) {
-        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex);
+        timePickerMinuteValueRef.current = nextMinute as number;
+        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -712,11 +713,11 @@ function EventEditModal({
       const clampedIndex = getWheelNearestIndex(column, MERIDIEMS.length);
       if (clampedIndex == null) return;
       const nextMeridiem = MERIDIEMS[clampedIndex];
-      if (nextMeridiem && timePickerMeridiemValueRef.current !== nextMeridiem) {
-        setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, nextMeridiem);
-      }
       if (nextMeridiem) {
-        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex);
+        timePickerMeridiemValueRef.current = nextMeridiem;
+        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);

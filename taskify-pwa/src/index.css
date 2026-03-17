@@ -3836,6 +3836,8 @@ html.light .edit-assignee {
   padding: calc(var(--month-picker-row-height) * 3) 0.35rem;
   gap: 0;
   scrollbar-width: none;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
 }
 
 .edit-month-picker__column::-webkit-scrollbar,
