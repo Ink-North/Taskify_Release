@@ -79,6 +79,7 @@ import {
 // Nostr key utilities
 import { deriveBoardNostrKeys } from "../../domains/nostr/nostrKeyUtils";
 import { hexToBytes } from "../../domains/nostr/nostrCrypto";
+import { normalizeNostrPubkey } from "../../lib/nostr";
 
 // Share / inbox utilities
 import {
@@ -206,6 +207,7 @@ function EventEditModal({
 
   const [invitePickerOpen, setInvitePickerOpen] = useState(false);
   const [inviteSearch, setInviteSearch] = useState("");
+  const [manualInviteNpub, setManualInviteNpub] = useState("");
   const invitedPubkeys = useMemo(
     () => new Set(participantValidation.normalized.map((participant) => participant.pubkey)),
     [participantValidation.normalized],
@@ -213,7 +215,9 @@ function EventEditModal({
   const contactByPubkey = useMemo(() => {
     const map = new Map<string, Contact>();
     (contacts || []).forEach((contact) => {
-      const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+      // Use normalizeNostrPubkey first to handle bech32 (npub1...) format
+      const compressed = normalizeNostrPubkey(contact?.npub ?? "");
+      const pubkey = compressed ? normalizeNostrPubkeyHex(compressed) : normalizeNostrPubkeyHex(contact?.npub ?? "");
       if (pubkey) map.set(pubkey, contact);
     });
     return map;
@@ -971,12 +975,37 @@ function EventEditModal({
   const handleOpenInvitePicker = () => {
     if (isReadOnly) return;
     setInviteSearch("");
+    setManualInviteNpub("");
     setInvitePickerOpen(true);
+  };
+
+  // Resolves npub1 bech32, nostr: URIs, and raw hex to a 64-char hex pubkey.
+  const resolveInviteInput = (input: string): string | null => {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    // Try bech32 / nostr: URI first (normalizeNostrPubkey handles these)
+    const compressed = normalizeNostrPubkey(trimmed);
+    if (compressed) return normalizeNostrPubkeyHex(compressed);
+    // Fall back to straight hex
+    return normalizeNostrPubkeyHex(trimmed);
+  };
+
+  const handleAddManualInvitee = () => {
+    if (isReadOnly) return;
+    const raw = manualInviteNpub.trim();
+    if (!raw) return;
+    const pubkey = resolveInviteInput(raw);
+    if (!pubkey) return;
+    setParticipants((prev) => {
+      if (prev.some((p) => normalizeNostrPubkeyHex(p.pubkey) === pubkey)) return prev;
+      return [...prev, { pubkey, relay: "", role: "attendee" }];
+    });
+    setManualInviteNpub("");
   };
 
   const handleToggleInviteContact = (contact: Contact) => {
     if (isReadOnly) return;
-    const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+    const pubkey = resolveInviteInput(contact?.npub ?? "");
     if (!pubkey) return;
     setParticipants((prev) => {
       const existing = prev.some((participant) => normalizeNostrPubkeyHex(participant.pubkey) === pubkey);
@@ -1537,10 +1566,7 @@ function EventEditModal({
               <button
                 type="button"
                 className="ghost-button button-sm pressable"
-                onClick={() => {
-                  handleAddParticipant();
-                  setShowAdvanced(true);
-                }}
+                onClick={handleOpenInvitePicker}
                 disabled={isReadOnly}
               >
                 Add invitee
@@ -1986,7 +2012,7 @@ function EventEditModal({
           {filteredInviteContacts.length ? (
             <div className="space-y-2">
               {filteredInviteContacts.map((contact) => {
-                const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+                const pubkey = resolveInviteInput(contact?.npub ?? "");
                 if (!pubkey) return null;
                 const label = contactPrimaryName(contact);
                 const subtitle = formatContactNpub(contact.npub);
@@ -2023,6 +2049,28 @@ function EventEditModal({
           ) : (
             <div className="text-sm text-secondary">No contacts found.</div>
           )}
+          {/* Manual npub entry for contacts not in the list */}
+          <div className="space-y-1">
+            <div className="text-xs text-secondary">Or invite by npub / hex pubkey</div>
+            <div className="flex gap-2">
+              <input
+                value={manualInviteNpub}
+                onChange={(e) => setManualInviteNpub(e.target.value)}
+                className="edit-field-input flex-1"
+                placeholder="npub1... or hex pubkey"
+                readOnly={isReadOnly}
+                onKeyDown={(e) => { if (e.key === "Enter") handleAddManualInvitee(); }}
+              />
+              <button
+                type="button"
+                className="ghost-button button-sm pressable"
+                onClick={handleAddManualInvitee}
+                disabled={isReadOnly || !resolveInviteInput(manualInviteNpub)}
+              >
+                Add
+              </button>
+            </div>
+          </div>
           <div className="flex gap-2">
             <button
               type="button"
@@ -2030,6 +2078,7 @@ function EventEditModal({
               onClick={() => {
                 setInvitePickerOpen(false);
                 setInviteSearch("");
+                setManualInviteNpub("");
               }}
             >
               Done
