@@ -435,7 +435,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
               "⚠ Relay connection slow — continuing with available relays\n",
             );
             resolve();
-          }, 8000),
+          }, 3000),
         ),
       ]);
       connected = true;
@@ -453,22 +453,56 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     };
     if (taskId) filter["#d"] = [taskId];
 
+    // NDK fires a single subscription-level EOSE only after ALL configured relays
+    // respond. With disconnected relays that never send EOSE, this means the hard
+    // timeout is always the exit path — slow even for incremental fetches.
+    //
+    // Strategy: use a per-relay inactivity timer instead.
+    // - Reset a short inactivity window on every incoming event.
+    // - Once EOSE fires (or inactivity window expires), settle after a brief grace.
+    // - Hard timeout is a last-resort fallback for completely unresponsive relays.
+    //
+    // Timeouts are shorter for cursor-based (incremental) fetches where only a
+    // handful of events are expected.
+    const isCursor = since !== undefined && !taskId;
+    const HARD_TIMEOUT_MS  = taskId ? 8_000  : isCursor ? 5_000  : 12_000;
+    const INACTIVITY_MS    = taskId ? 2_000  : isCursor ? 1_000  : 3_000;
+    const EOSE_GRACE_MS    = isCursor ? 150 : 200;
+
     let hardTimer: ReturnType<typeof setTimeout>;
 
     return new Promise<Set<NDKEvent>>((resolve) => {
       const collected = new Set<NDKEvent>();
       let graceTimer: ReturnType<typeof setTimeout> | null = null;
+      let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
       let settled = false;
-      const HARD_TIMEOUT_MS = taskId ? 10_000 : 15_000;
-      const EOSE_GRACE_MS = 200;
+      let firstEventReceived = false;
 
       const settle = () => {
         if (settled) return;
         settled = true;
         if (graceTimer) clearTimeout(graceTimer);
+        if (inactivityTimer) clearTimeout(inactivityTimer);
         if (hardTimer) clearTimeout(hardTimer);
         try { sub.stop(); } catch { /* ignore */ }
         resolve(collected);
+      };
+
+      const startGrace = () => {
+        if (!graceTimer && !settled) {
+          if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
+          graceTimer = setTimeout(settle, EOSE_GRACE_MS);
+        }
+      };
+
+      const resetInactivity = () => {
+        if (settled || graceTimer) return;
+        if (inactivityTimer) clearTimeout(inactivityTimer);
+        // Only start inactivity timer once we've received at least one event,
+        // so we don't prematurely settle on an empty board before relay responds.
+        if (firstEventReceived) {
+          inactivityTimer = setTimeout(startGrace, INACTIVITY_MS);
+        }
       };
 
       hardTimer = setTimeout(settle, HARD_TIMEOUT_MS);
@@ -479,14 +513,17 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       );
 
       sub.on("event", (evt: NDKEvent) => {
-        if (!settled) collected.add(evt);
+        if (!settled) {
+          collected.add(evt);
+          firstEventReceived = true;
+          resetInactivity();
+        }
       });
 
       sub.on("eose", () => {
-        // First EOSE received — start grace window if not already started
-        if (!graceTimer && !settled) {
-          graceTimer = setTimeout(settle, EOSE_GRACE_MS);
-        }
+        // NDK's subscription-level EOSE fires when all relays respond.
+        // Treat it as the definitive "done" signal — start grace immediately.
+        startGrace();
       });
     });
   }
@@ -500,22 +537,42 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     };
     if (eventId) filter["#d"] = [eventId];
 
+    const HARD_TIMEOUT_MS = eventId ? 8_000 : 12_000;
+    const INACTIVITY_MS   = eventId ? 2_000 : 3_000;
+    const EOSE_GRACE_MS   = 200;
+
     let hardTimer: ReturnType<typeof setTimeout>;
 
     return new Promise<Set<NDKEvent>>((resolve) => {
       const collected = new Set<NDKEvent>();
       let graceTimer: ReturnType<typeof setTimeout> | null = null;
+      let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
       let settled = false;
-      const HARD_TIMEOUT_MS = eventId ? 10_000 : 15_000;
-      const EOSE_GRACE_MS = 200;
+      let firstEventReceived = false;
 
       const settle = () => {
         if (settled) return;
         settled = true;
         if (graceTimer) clearTimeout(graceTimer);
+        if (inactivityTimer) clearTimeout(inactivityTimer);
         if (hardTimer) clearTimeout(hardTimer);
         try { sub.stop(); } catch { /* ignore */ }
         resolve(collected);
+      };
+
+      const startGrace = () => {
+        if (!graceTimer && !settled) {
+          if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
+          graceTimer = setTimeout(settle, EOSE_GRACE_MS);
+        }
+      };
+
+      const resetInactivity = () => {
+        if (settled || graceTimer) return;
+        if (inactivityTimer) clearTimeout(inactivityTimer);
+        if (firstEventReceived) {
+          inactivityTimer = setTimeout(startGrace, INACTIVITY_MS);
+        }
       };
 
       hardTimer = setTimeout(settle, HARD_TIMEOUT_MS);
@@ -526,13 +583,15 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       );
 
       sub.on("event", (evt: NDKEvent) => {
-        if (!settled) collected.add(evt);
+        if (!settled) {
+          collected.add(evt);
+          firstEventReceived = true;
+          resetInactivity();
+        }
       });
 
       sub.on("eose", () => {
-        if (!graceTimer && !settled) {
-          graceTimer = setTimeout(settle, EOSE_GRACE_MS);
-        }
+        startGrace();
       });
     });
   }
