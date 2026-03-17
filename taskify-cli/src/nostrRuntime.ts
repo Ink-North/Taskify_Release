@@ -435,38 +435,74 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
               "⚠ Relay connection slow — continuing with available relays\n",
             );
             resolve();
-          }, 8000),
+          }, 3000),
         ),
       ]);
       connected = true;
     }
   }
 
-  async function fetchBoardEvents(boardId: string, taskId?: string): Promise<Set<NDKEvent>> {
+  async function fetchBoardEvents(boardId: string, taskId?: string, since?: number): Promise<Set<NDKEvent>> {
     const bTag = boardTagHash(boardId);
     const filter: Record<string, unknown> = {
       kinds: [30301],
       "#b": [bTag],
-      limit: taskId ? undefined : 500,
+      // With a since cursor, skip the limit — we only want events newer than the cursor.
+      // Without a cursor, cap at 500 as a safety net for first-run cold fetches.
+      ...(since !== undefined ? { since } : { limit: 500 }),
     };
     if (taskId) filter["#d"] = [taskId];
+
+    // NDK fires a single subscription-level EOSE only after ALL configured relays
+    // respond. With disconnected relays that never send EOSE, this means the hard
+    // timeout is always the exit path — slow even for incremental fetches.
+    //
+    // Strategy: use a per-relay inactivity timer instead.
+    // - Reset a short inactivity window on every incoming event.
+    // - Once EOSE fires (or inactivity window expires), settle after a brief grace.
+    // - Hard timeout is a last-resort fallback for completely unresponsive relays.
+    //
+    // Timeouts are shorter for cursor-based (incremental) fetches where only a
+    // handful of events are expected.
+    const isCursor = since !== undefined && !taskId;
+    const HARD_TIMEOUT_MS  = taskId ? 8_000  : isCursor ? 5_000  : 12_000;
+    const INACTIVITY_MS    = taskId ? 2_000  : isCursor ? 1_000  : 3_000;
+    const EOSE_GRACE_MS    = isCursor ? 150 : 200;
 
     let hardTimer: ReturnType<typeof setTimeout>;
 
     return new Promise<Set<NDKEvent>>((resolve) => {
       const collected = new Set<NDKEvent>();
       let graceTimer: ReturnType<typeof setTimeout> | null = null;
+      let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
       let settled = false;
-      const HARD_TIMEOUT_MS = taskId ? 10_000 : 15_000;
-      const EOSE_GRACE_MS = 200;
+      let firstEventReceived = false;
 
       const settle = () => {
         if (settled) return;
         settled = true;
         if (graceTimer) clearTimeout(graceTimer);
+        if (inactivityTimer) clearTimeout(inactivityTimer);
         if (hardTimer) clearTimeout(hardTimer);
         try { sub.stop(); } catch { /* ignore */ }
         resolve(collected);
+      };
+
+      const startGrace = () => {
+        if (!graceTimer && !settled) {
+          if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
+          graceTimer = setTimeout(settle, EOSE_GRACE_MS);
+        }
+      };
+
+      const resetInactivity = () => {
+        if (settled || graceTimer) return;
+        if (inactivityTimer) clearTimeout(inactivityTimer);
+        // Only start inactivity timer once we've received at least one event,
+        // so we don't prematurely settle on an empty board before relay responds.
+        if (firstEventReceived) {
+          inactivityTimer = setTimeout(startGrace, INACTIVITY_MS);
+        }
       };
 
       hardTimer = setTimeout(settle, HARD_TIMEOUT_MS);
@@ -477,14 +513,17 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       );
 
       sub.on("event", (evt: NDKEvent) => {
-        if (!settled) collected.add(evt);
+        if (!settled) {
+          collected.add(evt);
+          firstEventReceived = true;
+          resetInactivity();
+        }
       });
 
       sub.on("eose", () => {
-        // First EOSE received — start grace window if not already started
-        if (!graceTimer && !settled) {
-          graceTimer = setTimeout(settle, EOSE_GRACE_MS);
-        }
+        // NDK's subscription-level EOSE fires when all relays respond.
+        // Treat it as the definitive "done" signal — start grace immediately.
+        startGrace();
       });
     });
   }
@@ -498,22 +537,42 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     };
     if (eventId) filter["#d"] = [eventId];
 
+    const HARD_TIMEOUT_MS = eventId ? 8_000 : 12_000;
+    const INACTIVITY_MS   = eventId ? 2_000 : 3_000;
+    const EOSE_GRACE_MS   = 200;
+
     let hardTimer: ReturnType<typeof setTimeout>;
 
     return new Promise<Set<NDKEvent>>((resolve) => {
       const collected = new Set<NDKEvent>();
       let graceTimer: ReturnType<typeof setTimeout> | null = null;
+      let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
       let settled = false;
-      const HARD_TIMEOUT_MS = eventId ? 10_000 : 15_000;
-      const EOSE_GRACE_MS = 200;
+      let firstEventReceived = false;
 
       const settle = () => {
         if (settled) return;
         settled = true;
         if (graceTimer) clearTimeout(graceTimer);
+        if (inactivityTimer) clearTimeout(inactivityTimer);
         if (hardTimer) clearTimeout(hardTimer);
         try { sub.stop(); } catch { /* ignore */ }
         resolve(collected);
+      };
+
+      const startGrace = () => {
+        if (!graceTimer && !settled) {
+          if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
+          graceTimer = setTimeout(settle, EOSE_GRACE_MS);
+        }
+      };
+
+      const resetInactivity = () => {
+        if (settled || graceTimer) return;
+        if (inactivityTimer) clearTimeout(inactivityTimer);
+        if (firstEventReceived) {
+          inactivityTimer = setTimeout(startGrace, INACTIVITY_MS);
+        }
       };
 
       hardTimer = setTimeout(settle, HARD_TIMEOUT_MS);
@@ -524,13 +583,15 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       );
 
       sub.on("event", (evt: NDKEvent) => {
-        if (!settled) collected.add(evt);
+        if (!settled) {
+          collected.add(evt);
+          firstEventReceived = true;
+          resetInactivity();
+        }
       });
 
       sub.on("eose", () => {
-        if (!graceTimer && !settled) {
-          graceTimer = setTimeout(settle, EOSE_GRACE_MS);
-        }
+        startGrace();
       });
     });
   }
@@ -705,34 +766,76 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
         const boardCache = cache.boards[board.id];
 
-        // Use cache if fresh and not forcing a refresh
-        if (!refresh && boardCache && isCacheFresh(boardCache)) {
-          for (const t of boardCache.tasks) {
-            const rec = cacheToRecord(t, board.name);
-            if (status === "open" && rec.completed) continue;
-            if (status === "done" && !rec.completed) continue;
-            if (columnId !== undefined && rec.column !== columnId) continue;
-            records.push(rec);
+        // With cursor-based incremental sync, fetching from the relay is cheap
+        // (only pulls events since the last cursor). We no longer skip the relay
+        // based on cache freshness — agents and repeated calls always get the
+        // latest events. The cache is used purely as the merge base, not as a
+        // shortcut to avoid the network call.
+        // Exception: --no-cache flag bypasses the merge base (forces cold fetch).
+        if (!refresh && noCache !== true && boardCache && !boardCache.lastSyncAt) {
+          // Legacy cache entry with no cursor yet — fall back to TTL behaviour
+          // until the next full fetch populates lastSyncAt.
+          if (isCacheFresh(boardCache)) {
+            for (const t of boardCache.tasks) {
+              const rec = cacheToRecord(t, board.name);
+              if (status === "open" && rec.completed) continue;
+              if (status === "done" && !rec.completed) continue;
+              if (columnId !== undefined && rec.column !== columnId) continue;
+              records.push(rec);
+            }
+            continue;
           }
-          continue;
         }
 
-        // Fetch live from relay
+        // Cursor-based incremental fetch:
+        // - If we have a prior sync cursor, fetch only events since then (- 5 min buffer for clock skew).
+        // - First run (no cursor): fetch last 30 days, no limit.
+        // - If cursor is set but cache is empty (e.g. cleared), fall back to cold fetch.
         await ensureConnected();
-        const events = await fetchBoardEvents(board.id);
-        const liveRecords: FullTaskRecord[] = [];
+        const CURSOR_LOOKBACK_SECS = 300; // 5 min buffer
+        const FALLBACK_DAYS = 30;
+        const hasCursor = boardCache?.lastSyncAt && boardCache.tasks.length > 0;
+        const since = hasCursor
+          ? Math.max(0, boardCache!.lastSyncAt! - CURSOR_LOOKBACK_SECS)
+          : Math.floor(Date.now() / 1000) - FALLBACK_DAYS * 24 * 3600;
+
+        const events = await fetchBoardEvents(board.id, undefined, since);
+        const incomingRecords: FullTaskRecord[] = [];
+        let maxCreatedAt = boardCache?.lastSyncAt ?? 0;
         for (const event of events) {
           const record = await parseDecryptedEvent(event, board.id, board.name);
           if (!record) continue;
-          liveRecords.push(record);
+          incomingRecords.push(record);
+          if (event.created_at && event.created_at > maxCreatedAt) {
+            maxCreatedAt = event.created_at;
+          }
+        }
+
+        // Merge: latest created_at per task ID wins.
+        // Start from cached tasks, overlay incoming (which are newer by since filter).
+        let mergedRecords: FullTaskRecord[];
+        if (hasCursor && boardCache) {
+          // Incremental: merge incoming over the existing cache
+          const byId = new Map<string, FullTaskRecord>();
+          for (const t of boardCache.tasks) byId.set(t.id, cacheToRecord(t, board.name));
+          for (const r of incomingRecords) {
+            const existing = byId.get(r.id);
+            if (!existing || (r.createdAt ?? 0) >= (existing.createdAt ?? 0)) {
+              byId.set(r.id, r);
+            }
+          }
+          mergedRecords = Array.from(byId.values());
+        } else {
+          // Cold fetch: incoming IS the full state
+          mergedRecords = incomingRecords;
         }
 
         // A3/A2: guard against caching an empty result when previous data exists
-        if (liveRecords.length === 0 && boardCache && !noCache) {
+        if (mergedRecords.length === 0 && boardCache && !noCache) {
           const cacheAgeMs = Date.now() - boardCache.fetchedAt;
           const TEN_MIN_MS = 10 * 60 * 1000;
           if (cacheAgeMs <= TEN_MIN_MS) {
-            // A3: cache ≤ 10 min old — silently fall back, skip relay result
+            // A3: cache ≤ 10 min old — silently fall back
             for (const t of boardCache.tasks) {
               const rec = cacheToRecord(t, board.name);
               if (status === "open" && rec.completed) continue;
@@ -742,7 +845,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
             }
             continue;
           } else if (boardCache.tasks.length > 0) {
-            // A2: stale cache has tasks — warn and keep, don't overwrite with empty
+            // A2: stale cache has tasks — warn and keep
             process.stderr.write("⚠ Relay returned 0 tasks — keeping cached results\n");
             for (const t of boardCache.tasks) {
               const rec = cacheToRecord(t, board.name);
@@ -755,14 +858,15 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           }
         }
 
-        // Write all records (any status) to cache
+        // Write merged state to cache, advancing the sync cursor.
         cache.boards[board.id] = {
-          tasks: liveRecords.map(recordToCache),
+          tasks: mergedRecords.map(recordToCache),
           fetchedAt: Date.now(),
+          lastSyncAt: maxCreatedAt > 0 ? maxCreatedAt : Math.floor(Date.now() / 1000),
         };
 
         // Filter for the caller
-        for (const record of liveRecords) {
+        for (const record of mergedRecords) {
           if (columnId !== undefined && record.column !== columnId) continue;
           if (status === "open" && record.completed) continue;
           if (status === "done" && !record.completed) continue;
