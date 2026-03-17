@@ -74,10 +74,10 @@ export function useCalendarPicker(baseDate?: string) {
 
   useEffect(() => {
     if (!showMonthPicker) return;
-    scrollWheelColumnToIndex(monthPickerMonthColumnRef.current, monthPickerMonth);
+    scrollWheelColumnToIndex(monthPickerMonthColumnRef.current, monthPickerMonth, "instant");
     const yearIndex = monthPickerYears.indexOf(monthPickerYear);
     if (yearIndex >= 0) {
-      scrollWheelColumnToIndex(monthPickerYearColumnRef.current, yearIndex);
+      scrollWheelColumnToIndex(monthPickerYearColumnRef.current, yearIndex, "instant");
     }
   }, [monthPickerMonth, monthPickerYear, monthPickerYears, showMonthPicker]);
 
