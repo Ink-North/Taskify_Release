@@ -85,7 +85,7 @@ function recordToCache(r: FullTaskRecord): CachedTask {
     title: r.title,
     boardId: r.boardId,
     boardName: r.boardName,
-    status: r.completed ? "done" : "open",
+    status: r.deleted ? "deleted" : r.completed ? "done" : "open",
     updatedAt: r.createdAt,
     note: r.note,
     dueISO: r.dueISO,
@@ -105,6 +105,7 @@ function recordToCache(r: FullTaskRecord): CachedTask {
     inboxItem: r.inboxItem,
     assignees: r.assignees,
     documents: r.documents,
+    deleted: r.deleted,
   };
 }
 
@@ -135,6 +136,7 @@ function cacheToRecord(t: CachedTask, boardName?: string): FullTaskRecord {
     inboxItem: t.inboxItem,
     assignees: t.assignees as TaskAssignee[] | undefined,
     documents: t.documents as Record<string, unknown>[] | undefined,
+    deleted: t.status === "deleted",
   };
 }
 
@@ -172,6 +174,7 @@ export type FullTaskRecord = {
   longestStreak?: number;
   seriesId?: string;
   images?: string[];
+  deleted?: boolean;
 };
 
 export type ExtendedCreateInput = AgentTaskCreateInput & {
@@ -273,6 +276,7 @@ async function parseDecryptedEvent(
     if (!taskId) return null;
     const statusVal = readStatusTag(event.tags, "open");
     const completed = statusVal === "done";
+    const deleted = statusVal === "deleted";
     const column = readTagValue(event.tags, "col") || undefined;
     return {
       id: taskId,
@@ -287,9 +291,11 @@ async function parseDecryptedEvent(
       completed,
       completedAt: payload.completedAt ?? undefined,
       // payload.createdAt is ms; convert to seconds for render compat
-      createdAt: payload.createdAt
-        ? Math.floor(payload.createdAt / 1000)
-        : event.created_at,
+      // Use relay event timestamp for merge ordering/version selection.
+      // payload.createdAt is the original task creation time and does NOT change
+      // on edits/completions, so using it causes stale open versions to beat
+      // newer done/updated versions during incremental sync merges.
+      createdAt: event.created_at ?? (payload.createdAt ? Math.floor(payload.createdAt / 1000) : undefined),
       updatedAt: event.created_at
         ? new Date(event.created_at * 1000).toISOString()
         : undefined,
@@ -327,6 +333,7 @@ async function parseDecryptedEvent(
       seriesId: typeof payload.seriesId === "string" ? payload.seriesId : undefined,
       completedBy: payload.completedBy ?? undefined,
       images: Array.isArray(payload.images) ? payload.images as string[] : undefined,
+      deleted,
     };
   } catch {
     return null;
@@ -755,6 +762,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
               if (seen.has(record.id)) continue;
               seen.add(record.id);
               record.sourceBoardId = childId;
+              if (record.deleted) continue;
               if (status === "open" && record.completed) continue;
               if (status === "done" && !record.completed) continue;
               if (columnId !== undefined && record.column !== columnId) continue;
@@ -778,6 +786,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           if (isCacheFresh(boardCache)) {
             for (const t of boardCache.tasks) {
               const rec = cacheToRecord(t, board.name);
+              if (rec.deleted) continue;
               if (status === "open" && rec.completed) continue;
               if (status === "done" && !rec.completed) continue;
               if (columnId !== undefined && rec.column !== columnId) continue;
@@ -818,6 +827,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           // Incremental: merge incoming over the existing cache
           const byId = new Map<string, FullTaskRecord>();
           for (const t of boardCache.tasks) byId.set(t.id, cacheToRecord(t, board.name));
+          // If the latest incoming version is deleted, keep it in the merge map so it
+          // suppresses older cached open/done versions. Filtering happens later.
           for (const r of incomingRecords) {
             const existing = byId.get(r.id);
             if (!existing || (r.createdAt ?? 0) >= (existing.createdAt ?? 0)) {
@@ -838,6 +849,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
             // A3: cache ≤ 10 min old — silently fall back
             for (const t of boardCache.tasks) {
               const rec = cacheToRecord(t, board.name);
+              if (rec.deleted) continue;
               if (status === "open" && rec.completed) continue;
               if (status === "done" && !rec.completed) continue;
               if (columnId !== undefined && rec.column !== columnId) continue;
@@ -849,6 +861,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
             process.stderr.write("⚠ Relay returned 0 tasks — keeping cached results\n");
             for (const t of boardCache.tasks) {
               const rec = cacheToRecord(t, board.name);
+              if (rec.deleted) continue;
               if (status === "open" && rec.completed) continue;
               if (status === "done" && !rec.completed) continue;
               if (columnId !== undefined && rec.column !== columnId) continue;
@@ -867,6 +880,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
         // Filter for the caller
         for (const record of mergedRecords) {
+          if (record.deleted) continue;
           if (columnId !== undefined && record.column !== columnId) continue;
           if (status === "open" && record.completed) continue;
           if (status === "done" && !record.completed) continue;
@@ -892,9 +906,17 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const out: FullEventRecord[] = [];
       for (const board of boards) {
         const events = await fetchBoardCalendarEvents(board.id);
+        const latestById = new Map<string, FullEventRecord>();
         for (const evt of events) {
           const parsed = await parseDecryptedCalendarEvent(evt, board.id, board.name);
-          if (!parsed || parsed.deleted) continue;
+          if (!parsed) continue;
+          const existing = latestById.get(parsed.id);
+          if (!existing || (parsed.createdAt ?? 0) >= (existing.createdAt ?? 0)) {
+            latestById.set(parsed.id, parsed);
+          }
+        }
+        for (const parsed of latestById.values()) {
+          if (parsed.deleted) continue;
           out.push(parsed);
         }
       }
@@ -918,10 +940,14 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         if (!resolvedId) continue;
         const events = await fetchBoardCalendarEvents(board.id, resolvedId);
         if (events.size === 0) continue;
-        const [evt] = events;
-        const parsed = await parseDecryptedCalendarEvent(evt, board.id, board.name);
-        if (!parsed || parsed.deleted) continue;
-        matches.push(parsed);
+        let latest: FullEventRecord | null = null;
+        for (const evt of events) {
+          const parsed = await parseDecryptedCalendarEvent(evt, board.id, board.name);
+          if (!parsed) continue;
+          if (!latest || (parsed.createdAt ?? 0) >= (latest.createdAt ?? 0)) latest = parsed;
+        }
+        if (!latest || latest.deleted) continue;
+        matches.push(latest);
       }
 
       if (matches.length === 0) return null;
