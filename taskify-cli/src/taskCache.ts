@@ -35,6 +35,7 @@ export type CachedTask = {
   inboxItem?: boolean;
   assignees?: Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }>;
   documents?: Record<string, unknown>[];
+  deleted?: boolean;
 };
 
 export type BoardCache = {

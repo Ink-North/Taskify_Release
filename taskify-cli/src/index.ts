@@ -29,6 +29,8 @@ import { resolveBoardForCommand } from "./shared/commandResolution.js";
 import { parseBackupSnapshot, mergeBoardsFromBackup, mergeRelaysFromBackup } from "./shared/backupSync.js";
 import { sendShareEnvelopeNip17, fetchShareInboxNip17 } from "./shared/shareTransport.js";
 import { resolveBoardColumn, formatAvailableColumns } from "./shared/columnResolution.js";
+import { publishProfile, fetchLatestProfileEvent } from "./profileMeta.js";
+import { uploadImageToNip96 } from "./nip96Upload.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -3408,6 +3410,157 @@ profileCmd
     const newActive = config.activeProfile === oldName ? newName : config.activeProfile;
     await saveProfiles(newActive, newProfiles);
     console.log(chalk.green(`✓ Renamed profile '${oldName}' → '${newName}'`));
+    process.exit(0);
+  });
+
+profileCmd
+  .command("set-meta")
+  .description("Update your Nostr profile metadata (kind:0) — only provided fields are updated")
+  .option("--name <n>", "Username / handle (name field)")
+  .option("--display-name <n>", "Display name (display_name field)")
+  .option("--about <text>", "Bio / about")
+  .option("--picture <url-or-path>", "Profile picture — URL or local file path (uploaded via NIP-96)")
+  .option("--banner <url-or-path>", "Banner image — URL or local file path (uploaded via NIP-96)")
+  .option("--nip05 <addr>", "NIP-05 verification address (user@domain.com)")
+  .option("--website <url>", "Website URL")
+  .option("--lud16 <addr>", "Lightning address (lud16)")
+  .option("--nip96-server <url>", "NIP-96 server for image uploads (default: nostr.build)", "https://nostr.build")
+  .option("--json", "Output published event as JSON")
+  .action(async (opts: {
+    name?: string;
+    displayName?: string;
+    about?: string;
+    picture?: string;
+    banner?: string;
+    nip05?: string;
+    website?: string;
+    lud16?: string;
+    nip96Server: string;
+    json?: boolean;
+  }) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    if (!config.nsec) {
+      console.error(chalk.red("No nsec configured for this profile. Run: taskify setup"));
+      process.exit(1);
+    }
+
+    // If no fields provided, show current metadata
+    const hasChanges = [opts.name, opts.displayName, opts.about, opts.picture, opts.banner, opts.nip05, opts.website, opts.lud16].some(v => v !== undefined);
+    if (!hasChanges) {
+      console.error(chalk.yellow("No fields specified. Use --name, --display-name, --about, --picture, --banner, --nip05, --website, --lud16"));
+      console.error(chalk.dim("  Example: taskify profile set-meta --display-name \"Nathan\" --picture ./avatar.png"));
+      process.exit(1);
+    }
+
+    // Upload local files via NIP-96 if needed
+    const resolveMedia = async (value: string | undefined, label: string): Promise<string | undefined> => {
+      if (!value) return undefined;
+      if (value.startsWith("http://") || value.startsWith("https://")) return value;
+      // Treat as local file path — upload to NIP-96
+      console.log(chalk.dim(`  Uploading ${label} via NIP-96...`));
+      try {
+        const url = await uploadImageToNip96({
+          serverUrl: opts.nip96Server,
+          filePath: value,
+          nsec: config.nsec!,
+        });
+        console.log(chalk.dim(`  ✓ Uploaded: ${url}`));
+        return url;
+      } catch (err) {
+        console.error(chalk.red(`Failed to upload ${label}: ${String(err)}`));
+        process.exit(1);
+      }
+    };
+
+    const pictureUrl = await resolveMedia(opts.picture, "profile picture");
+    const bannerUrl = await resolveMedia(opts.banner, "banner");
+
+    const draft = {
+      name: opts.name,
+      displayName: opts.displayName,
+      about: opts.about,
+      picture: pictureUrl,
+      banner: bannerUrl,
+      nip05: opts.nip05,
+      website: opts.website,
+      lud16: opts.lud16,
+    };
+
+    // Strip undefined so we only update provided fields
+    const cleanDraft = Object.fromEntries(
+      Object.entries(draft).filter(([, v]) => v !== undefined)
+    ) as typeof draft;
+
+    console.log(chalk.dim("  Publishing profile metadata..."));
+
+    try {
+      const result = await publishProfile(config.nsec, cleanDraft, config.relays);
+      if (opts.json) {
+        console.log(JSON.stringify(result.event, null, 2));
+      } else {
+        console.log(chalk.green(`✓ Profile updated (event: ${result.event.id?.slice(0, 8)}...)`));
+        const content = JSON.parse(result.event.content ?? "{}");
+        if (content.name) console.log(`  name:         ${content.name}`);
+        if (content.display_name) console.log(`  display_name: ${content.display_name}`);
+        if (content.about) console.log(`  about:        ${content.about}`);
+        if (content.picture) console.log(`  picture:      ${content.picture}`);
+        if (content.banner) console.log(`  banner:       ${content.banner}`);
+        if (content.nip05) console.log(`  nip05:        ${content.nip05}`);
+        if (content.website) console.log(`  website:      ${content.website}`);
+        if (content.lud16) console.log(`  lud16:        ${content.lud16}`);
+        if (result.deletedIds.length) console.log(chalk.dim(`  (deleted superseded event: ${result.deletedIds[0]?.slice(0, 8)}...)`));
+      }
+    } catch (err) {
+      console.error(chalk.red(`Failed to publish profile: ${String(err)}`));
+      process.exit(1);
+    }
+    process.exit(0);
+  });
+
+profileCmd
+  .command("fetch-meta [name]")
+  .description("Fetch and display current Nostr profile metadata from relays (defaults to active profile)")
+  .option("--json", "Output raw kind:0 event as JSON")
+  .action(async (name: string | undefined, opts: { json?: boolean }) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const profileName = name ?? config.activeProfile;
+    const profile = config.profiles[profileName];
+    if (!profile) {
+      console.error(chalk.red(`Profile not found: "${profileName}"`));
+      process.exit(1);
+    }
+    if (!profile.nsec) {
+      console.error(chalk.red("No nsec configured for this profile."));
+      process.exit(1);
+    }
+    const decoded = nip19.decode(profile.nsec);
+    if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exit(1); }
+    const pubkeyHex = getPublicKey(decoded.data as Uint8Array);
+
+    console.log(chalk.dim("  Fetching profile metadata from relays..."));
+    const { event, metadata } = await fetchLatestProfileEvent(pubkeyHex, profile.relays ?? []);
+
+    if (!event) {
+      console.log(chalk.yellow("No kind:0 profile event found on relays."));
+      process.exit(0);
+    }
+
+    if (opts.json) {
+      console.log(JSON.stringify(event, null, 2));
+    } else {
+      const npub = nip19.npubEncode(pubkeyHex);
+      console.log(chalk.bold(`Profile: ${profileName}`));
+      console.log(`  npub:         ${npub}`);
+      if (metadata.name) console.log(`  name:         ${metadata.name}`);
+      if (metadata.displayName || (metadata as any).display_name) console.log(`  display_name: ${metadata.displayName ?? (metadata as any).display_name}`);
+      if (metadata.about) console.log(`  about:        ${metadata.about}`);
+      if (metadata.picture) console.log(`  picture:      ${metadata.picture}`);
+      if (metadata.banner) console.log(`  banner:       ${metadata.banner}`);
+      if (metadata.nip05) console.log(`  nip05:        ${metadata.nip05}`);
+      if (metadata.website) console.log(`  website:      ${metadata.website}`);
+      if (metadata.lud16) console.log(`  lud16:        ${metadata.lud16}`);
+      console.log(chalk.dim(`  (event id: ${event.id?.slice(0, 8)}..., created_at: ${new Date((event.created_at ?? 0) * 1000).toISOString()})`));
+    }
     process.exit(0);
   });
 
