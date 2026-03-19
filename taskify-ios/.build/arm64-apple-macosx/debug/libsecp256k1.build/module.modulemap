@@ -1,4 +1,0 @@
-module libsecp256k1 {
-    umbrella "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1/include"
-    export *
-}
