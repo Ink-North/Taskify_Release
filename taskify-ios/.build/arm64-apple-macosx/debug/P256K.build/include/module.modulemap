@@ -1,0 +1,3 @@
+module P256K {
+    header "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/include/P256K-Swift.h"
+}

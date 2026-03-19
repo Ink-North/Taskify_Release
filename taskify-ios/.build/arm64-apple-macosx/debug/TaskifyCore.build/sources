@@ -1,0 +1,9 @@
+/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Config/KeychainStore.swift
+/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/BoardCrypto.swift
+/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/NIP44.swift
+/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/Secp256k1Helpers.swift
+/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/NostrEvent.swift
+/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/TaskifyModels.swift
+/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayConnection.swift
+/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayPool.swift
+/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Sync/SyncEngine.swift

@@ -1,0 +1,3261 @@
+{
+  "builtTestProducts" : [
+    {
+      "binaryPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.xctest/Contents/MacOS/TaskifyiOSPackageTests",
+      "packagePath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios",
+      "productName" : "TaskifyiOSPackageTests"
+    }
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+    "SharedSourcesPlugin"
+  ],
+  "pluginDescriptions" : [
+    {
+      "moduleC99Name" : "SharedSourcesPlugin",
+      "moduleName" : "SharedSourcesPlugin",
+      "package" : "swift-secp256k1",
+      "productNames" : [
+
+      ],
+      "sources" : {
+        "relativePaths" : [
+          "Plugin.swift"
+        ],
+        "root" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Plugins/SharedSourcesPlugin"
+      },
+      "toolsVersion" : {
+        "_version" : "6.1.0"
+      }
+    }
+  ],
+  "swiftCommands" : {
+    "C.P256K-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/sources",
+      "importPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/P256K/Placeholder.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Any.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1BitString.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Boolean.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Identifier.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Integer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Null.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1OctetString.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Strings.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ArraySliceBigint.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Asymmetric.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Combine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Context.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/CryptoKitErrors.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/DH.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Digest.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDH.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDSA.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDSASignature.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/EdDSA.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Errors.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/GeneralizedTime.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/HashDigest.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/MuSig.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Nonces.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ObjectIdentifier.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/P256K.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PEMDocument.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PrettyBytes.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/RNG_boring.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Recovery.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SEC1PrivateKey.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SHA256.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SafeCompare.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Schnorr.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SecureBytes.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Signature.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SubjectPublicKeyInfo.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Tweak.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/UInt256.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Utility.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Zeroization.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/Utility.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/precomputed_ecmult.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/precomputed_ecmult_gen.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/secp256k1.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "P256K",
+      "moduleOutputPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/P256K.swiftmodule",
+      "objects" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Placeholder.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Any.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1BitString.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Boolean.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Identifier.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Integer.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Null.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1OctetString.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Strings.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ArraySliceBigint.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Asymmetric.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Combine.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Context.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/CryptoKitErrors.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/DH.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Digest.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDH.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDSA.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDSASignature.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/EdDSA.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Errors.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/GeneralizedTime.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/HashDigest.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/MuSig.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Nonces.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ObjectIdentifier.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/P256K.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PEMDocument.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PKCS8PrivateKey.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PrettyBytes.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/RNG_boring.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Recovery.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SEC1PrivateKey.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SHA256.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SafeCompare.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Schnorr.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SecureBytes.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Signature.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SubjectPublicKeyInfo.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Tweak.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/UInt256.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Utility.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Zeroization.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx10.13",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/module.modulemap",
+        "-Xcc",
+        "-I",
+        "-Xcc",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1/include",
+        "-module-cache-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/include/P256K-Swift.h",
+        "-swift-version",
+        "6",
+        "-DENABLE_MODULE_ECDH",
+        "-DENABLE_MODULE_MUSIG",
+        "-DENABLE_MODULE_RECOVERY",
+        "-DENABLE_MODULE_SCHNORRSIG",
+        "-Dmusig",
+        "-Dschnorrsig",
+        "-Decdh",
+        "-Drecovery",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-suppress-warnings",
+        "-user-module-version",
+        "0.22.0",
+        "-package-name",
+        "swift_secp256k1"
+      ],
+      "outputFileMapPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Placeholder.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Any.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1BitString.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Boolean.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Identifier.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Integer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Null.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1OctetString.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Strings.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ArraySliceBigint.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Asymmetric.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Combine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Context.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/CryptoKitErrors.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/DH.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Digest.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDH.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDSA.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDSASignature.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/EdDSA.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Errors.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/GeneralizedTime.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/HashDigest.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/MuSig.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Nonces.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ObjectIdentifier.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/P256K.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PEMDocument.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PKCS8PrivateKey.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PrettyBytes.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/RNG_boring.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Recovery.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SEC1PrivateKey.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SHA256.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SafeCompare.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Schnorr.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SecureBytes.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Signature.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SubjectPublicKeyInfo.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Tweak.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/UInt256.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Utility.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Zeroization.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/P256K.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/P256K/Placeholder.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Any.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1BitString.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Boolean.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Identifier.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Integer.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Null.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1OctetString.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Strings.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ArraySliceBigint.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Asymmetric.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Combine.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Context.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/CryptoKitErrors.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/DH.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Digest.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDH.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDSA.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDSASignature.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/EdDSA.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Errors.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/GeneralizedTime.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/HashDigest.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/MuSig.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Nonces.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ObjectIdentifier.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/P256K.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PEMDocument.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PrettyBytes.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/RNG_boring.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Recovery.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SEC1PrivateKey.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SHA256.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SafeCompare.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Schnorr.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SecureBytes.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Signature.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SubjectPublicKeyInfo.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Tweak.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/UInt256.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Utility.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Zeroization.swift"
+      ],
+      "tempsPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.TaskifyApp-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/sources",
+      "importPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyApp/TaskifyApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/TaskifyCore.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "TaskifyApp",
+      "moduleOutputPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/TaskifyApp.swiftmodule",
+      "objects" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/TaskifyApp.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/module.modulemap",
+        "-Xcc",
+        "-I",
+        "-Xcc",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1/include",
+        "-module-cache-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "TaskifyApp_main",
+        "-parse-as-library",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "taskify_ios"
+      ],
+      "outputFileMapPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/TaskifyApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/TaskifyApp.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyApp/TaskifyApp.swift"
+      ],
+      "tempsPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.TaskifyCore-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/sources",
+      "importPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Config/KeychainStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/BoardCrypto.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/NIP44.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/Secp256k1Helpers.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/NostrEvent.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/TaskifyModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayConnection.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayPool.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Sync/SyncEngine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/P256K.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "TaskifyCore",
+      "moduleOutputPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/TaskifyCore.swiftmodule",
+      "objects" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/KeychainStore.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/BoardCrypto.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NIP44.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/Secp256k1Helpers.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NostrEvent.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/TaskifyModels.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayConnection.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayPool.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/SyncEngine.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/module.modulemap",
+        "-Xcc",
+        "-I",
+        "-Xcc",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1/include",
+        "-module-cache-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/include/TaskifyCore-Swift.h",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "taskify_ios"
+      ],
+      "outputFileMapPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/KeychainStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/BoardCrypto.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NIP44.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/Secp256k1Helpers.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NostrEvent.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/TaskifyModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayConnection.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayPool.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/SyncEngine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/TaskifyCore.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Config/KeychainStore.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/BoardCrypto.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/NIP44.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/Secp256k1Helpers.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/NostrEvent.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/TaskifyModels.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayConnection.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayPool.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Sync/SyncEngine.swift"
+      ],
+      "tempsPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.TaskifyCoreTests-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCoreTests.build/sources",
+      "importPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Tests/TaskifyCoreTests/CryptoInteropTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/TaskifyCore.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCoreTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "TaskifyCoreTests",
+      "moduleOutputPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/TaskifyCoreTests.swiftmodule",
+      "objects" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCoreTests.build/CryptoInteropTests.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/module.modulemap",
+        "-Xcc",
+        "-I",
+        "-Xcc",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1/include",
+        "-module-cache-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "taskify_ios"
+      ],
+      "outputFileMapPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCoreTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCoreTests.build/CryptoInteropTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/TaskifyCoreTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Tests/TaskifyCoreTests/CryptoInteropTests.swift"
+      ],
+      "tempsPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCoreTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.TaskifyiOSPackageTests-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.build/sources",
+      "importPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.derived/runner.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/TaskifyCoreTests.swiftmodule"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "TaskifyiOSPackageTests",
+      "moduleOutputPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/TaskifyiOSPackageTests.swiftmodule",
+      "objects" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.build/runner.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-Xfrontend",
+        "-enable-cross-import-overlays",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/module.modulemap",
+        "-Xcc",
+        "-I",
+        "-Xcc",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1/include",
+        "-module-cache-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.build/include/TaskifyiOSPackageTests-Swift.h",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "taskify_ios"
+      ],
+      "outputFileMapPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/TaskifyiOSPackageTests.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.derived/runner.swift"
+      ],
+      "tempsPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.build",
+      "wholeModuleOptimization" : false
+    },
+    "C.ZKP-arm64-apple-macosx26.0-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/sources",
+      "importPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/ZKP/Placeholder.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Any.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1BitString.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Boolean.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Identifier.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Integer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Null.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1OctetString.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Strings.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ArraySliceBigint.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Asymmetric.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Combine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Context.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/CryptoKitErrors.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/DH.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Digest.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDH.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDSA.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDSASignature.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/EdDSA.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Errors.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/GeneralizedTime.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/HashDigest.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/MuSig.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Nonces.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ObjectIdentifier.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/P256K.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PEMDocument.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PrettyBytes.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/RNG_boring.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Recovery.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SEC1PrivateKey.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SHA256.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SafeCompare.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Schnorr.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SecureBytes.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Signature.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SubjectPublicKeyInfo.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Tweak.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/UInt256.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Utility.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Zeroization.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1_zkp.build/src/Utility.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1_zkp.build/src/precomputed_ecmult.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1_zkp.build/src/precomputed_ecmult_gen.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1_zkp.build/src/secp256k1.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/sources"
+        }
+      ],
+      "isLibrary" : true,
+      "moduleName" : "ZKP",
+      "moduleOutputPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/ZKP.swiftmodule",
+      "objects" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Placeholder.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Any.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1BitString.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Boolean.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Identifier.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Integer.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Null.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1OctetString.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Strings.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ArraySliceBigint.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Asymmetric.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Combine.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Context.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/CryptoKitErrors.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/DH.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Digest.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ECDH.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ECDSA.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ECDSASignature.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/EdDSA.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Errors.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/GeneralizedTime.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/HashDigest.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/MuSig.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Nonces.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ObjectIdentifier.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/P256K.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/PEMDocument.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/PKCS8PrivateKey.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/PrettyBytes.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/RNG_boring.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Recovery.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/SEC1PrivateKey.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/SHA256.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/SafeCompare.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Schnorr.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/SecureBytes.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Signature.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/SubjectPublicKeyInfo.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Tweak.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/UInt256.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Utility.swift.o",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Zeroization.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx10.13",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j8",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-Xcc",
+        "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1_zkp.build/module.modulemap",
+        "-Xcc",
+        "-I",
+        "-Xcc",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1_zkp/include",
+        "-module-cache-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-emit-objc-header",
+        "-emit-objc-header-path",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/include/ZKP-Swift.h",
+        "-swift-version",
+        "6",
+        "-DENABLE_MODULE_ECDH",
+        "-DENABLE_MODULE_MUSIG",
+        "-DENABLE_MODULE_RECOVERY",
+        "-DENABLE_MODULE_SCHNORRSIG",
+        "-Dmusig",
+        "-Dschnorrsig",
+        "-Decdh",
+        "-Drecovery",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-suppress-warnings",
+        "-user-module-version",
+        "0.22.0",
+        "-package-name",
+        "swift_secp256k1"
+      ],
+      "outputFileMapPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Placeholder.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Any.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1BitString.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Boolean.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Identifier.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Integer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Null.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1OctetString.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ASN1Strings.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ArraySliceBigint.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Asymmetric.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Combine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Context.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/CryptoKitErrors.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/DH.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Digest.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ECDH.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ECDSA.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ECDSASignature.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/EdDSA.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Errors.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/GeneralizedTime.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/HashDigest.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/MuSig.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Nonces.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/ObjectIdentifier.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/P256K.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/PEMDocument.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/PKCS8PrivateKey.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/PrettyBytes.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/RNG_boring.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Recovery.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/SEC1PrivateKey.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/SHA256.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/SafeCompare.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Schnorr.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/SecureBytes.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Signature.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/SubjectPublicKeyInfo.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Tweak.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/UInt256.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Utility.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/Zeroization.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules/ZKP.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/ZKP/Placeholder.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Any.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1BitString.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Boolean.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Identifier.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Integer.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Null.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1OctetString.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Strings.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ArraySliceBigint.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Asymmetric.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Combine.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Context.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/CryptoKitErrors.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/DH.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Digest.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDH.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDSA.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDSASignature.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/EdDSA.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Errors.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/GeneralizedTime.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/HashDigest.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/MuSig.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Nonces.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ObjectIdentifier.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/P256K.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PEMDocument.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PrettyBytes.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/RNG_boring.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Recovery.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SEC1PrivateKey.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SHA256.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SafeCompare.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Schnorr.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SecureBytes.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Signature.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SubjectPublicKeyInfo.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Tweak.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/UInt256.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Utility.swift",
+        "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Zeroization.swift"
+      ],
+      "tempsPath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "P256K" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "P256K",
+      "-package-name",
+      "swift_secp256k1",
+      "-c",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/P256K/Placeholder.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Any.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1BitString.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Boolean.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Identifier.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Integer.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Null.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1OctetString.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Strings.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ArraySliceBigint.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Asymmetric.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Combine.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Context.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/CryptoKitErrors.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/DH.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Digest.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDH.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDSA.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDSASignature.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/EdDSA.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Errors.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/GeneralizedTime.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/HashDigest.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/MuSig.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Nonces.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ObjectIdentifier.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/P256K.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PEMDocument.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PrettyBytes.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/RNG_boring.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Recovery.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SEC1PrivateKey.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SHA256.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SafeCompare.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Schnorr.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SecureBytes.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Signature.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SubjectPublicKeyInfo.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Tweak.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/UInt256.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Utility.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Zeroization.swift",
+      "-I",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx10.13",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/module.modulemap",
+      "-Xcc",
+      "-I",
+      "-Xcc",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1/include",
+      "-module-cache-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/include/P256K-Swift.h",
+      "-swift-version",
+      "6",
+      "-DENABLE_MODULE_ECDH",
+      "-DENABLE_MODULE_MUSIG",
+      "-DENABLE_MODULE_RECOVERY",
+      "-DENABLE_MODULE_SCHNORRSIG",
+      "-Dmusig",
+      "-Dschnorrsig",
+      "-Decdh",
+      "-Drecovery",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-suppress-warnings",
+      "-user-module-version",
+      "0.22.0",
+      "-package-name",
+      "swift_secp256k1",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "TaskifyApp" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "TaskifyApp",
+      "-package-name",
+      "taskify_ios",
+      "-c",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyApp/TaskifyApp.swift",
+      "-I",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/module.modulemap",
+      "-Xcc",
+      "-I",
+      "-Xcc",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1/include",
+      "-module-cache-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "TaskifyApp_main",
+      "-parse-as-library",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "taskify_ios",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "TaskifyCore" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "TaskifyCore",
+      "-package-name",
+      "taskify_ios",
+      "-c",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Config/KeychainStore.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/BoardCrypto.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/NIP44.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/Secp256k1Helpers.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/NostrEvent.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/TaskifyModels.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayConnection.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayPool.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Sync/SyncEngine.swift",
+      "-I",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/module.modulemap",
+      "-Xcc",
+      "-I",
+      "-Xcc",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1/include",
+      "-module-cache-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/include/TaskifyCore-Swift.h",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "taskify_ios",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "TaskifyCoreTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "TaskifyCoreTests",
+      "-package-name",
+      "taskify_ios",
+      "-c",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Tests/TaskifyCoreTests/CryptoInteropTests.swift",
+      "-I",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/module.modulemap",
+      "-Xcc",
+      "-I",
+      "-Xcc",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1/include",
+      "-module-cache-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "taskify_ios",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "TaskifyiOSPackageTests" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "TaskifyiOSPackageTests",
+      "-package-name",
+      "taskify_ios",
+      "-c",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.derived/runner.swift",
+      "-I",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-Xfrontend",
+      "-enable-cross-import-overlays",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/module.modulemap",
+      "-Xcc",
+      "-I",
+      "-Xcc",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1/include",
+      "-module-cache-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.build/include/TaskifyiOSPackageTests-Swift.h",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "taskify_ios",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ],
+    "ZKP" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "ZKP",
+      "-package-name",
+      "swift_secp256k1",
+      "-c",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/ZKP/Placeholder.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Any.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1BitString.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Boolean.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Identifier.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Integer.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Null.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1OctetString.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Strings.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ArraySliceBigint.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Asymmetric.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Combine.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Context.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/CryptoKitErrors.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/DH.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Digest.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDH.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDSA.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDSASignature.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/EdDSA.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Errors.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/GeneralizedTime.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/HashDigest.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/MuSig.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Nonces.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ObjectIdentifier.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/P256K.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PEMDocument.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PrettyBytes.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/RNG_boring.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Recovery.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SEC1PrivateKey.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SHA256.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SafeCompare.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Schnorr.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SecureBytes.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Signature.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SubjectPublicKeyInfo.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Tweak.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/UInt256.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Utility.swift",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Zeroization.swift",
+      "-I",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx10.13",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j8",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-Xcc",
+      "-fmodule-map-file=/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1_zkp.build/module.modulemap",
+      "-Xcc",
+      "-I",
+      "-Xcc",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/libsecp256k1_zkp/include",
+      "-module-cache-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-parse-as-library",
+      "-emit-objc-header",
+      "-emit-objc-header-path",
+      "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/include/ZKP-Swift.h",
+      "-swift-version",
+      "6",
+      "-DENABLE_MODULE_ECDH",
+      "-DENABLE_MODULE_MUSIG",
+      "-DENABLE_MODULE_RECOVERY",
+      "-DENABLE_MODULE_SCHNORRSIG",
+      "-Dmusig",
+      "-Dschnorrsig",
+      "-Decdh",
+      "-Drecovery",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-suppress-warnings",
+      "-user-module-version",
+      "0.22.0",
+      "-package-name",
+      "swift_secp256k1",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "P256K" : [
+      "SharedSourcesPlugin",
+      "libsecp256k1"
+    ],
+    "TaskifyApp" : [
+      "TaskifyCore",
+      "P256K",
+      "SharedSourcesPlugin",
+      "libsecp256k1"
+    ],
+    "TaskifyCore" : [
+      "P256K",
+      "SharedSourcesPlugin",
+      "libsecp256k1"
+    ],
+    "TaskifyCoreTests" : [
+      "TaskifyCore",
+      "P256K",
+      "SharedSourcesPlugin",
+      "libsecp256k1"
+    ],
+    "TaskifyiOSPackageTests" : [
+      "TaskifyCoreTests",
+      "TaskifyCore",
+      "P256K",
+      "SharedSourcesPlugin",
+      "libsecp256k1"
+    ],
+    "ZKP" : [
+      "SharedSourcesPlugin",
+      "libsecp256k1_zkp"
+    ],
+    "libsecp256k1" : [
+
+    ],
+    "libsecp256k1_zkp" : [
+
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+    "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.derived/runner.swift" : {
+      "inputs" : [
+
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.derived/runner.swift"
+        }
+      ]
+    }
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/P256K/Placeholder.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Any.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1BitString.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Boolean.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Identifier.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Integer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Null.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1OctetString.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ASN1Strings.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ArraySliceBigint.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Asymmetric.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Combine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Context.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/CryptoKitErrors.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/DH.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Digest.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDH.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDSA.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ECDSASignature.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/EdDSA.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Errors.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/GeneralizedTime.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/HashDigest.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/MuSig.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Nonces.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/ObjectIdentifier.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/P256K.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PEMDocument.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PrettyBytes.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/RNG_boring.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Recovery.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SEC1PrivateKey.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SHA256.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SafeCompare.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Schnorr.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SecureBytes.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Signature.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SubjectPublicKeyInfo.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Tweak.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/UInt256.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Utility.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/Zeroization.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/sources"
+    },
+    "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp-entitlement.plist" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<entitlement-plist>"
+        },
+        {
+          "kind" : "virtual",
+          "name" : "<com.apple.security.get-task-allow>"
+        }
+      ],
+      "outputFilePath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp-entitlement.plist"
+    },
+    "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyApp/TaskifyApp.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/sources"
+    },
+    "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Any.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1BitString.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Boolean.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Identifier.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Integer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Null.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1OctetString.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Strings.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ArraySliceBigint.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Asymmetric.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Combine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Context.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/CryptoKitErrors.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/DH.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Digest.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDH.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDSA.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDSASignature.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/EdDSA.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Errors.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/GeneralizedTime.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/HashDigest.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/MuSig.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Nonces.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ObjectIdentifier.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/P256K.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PEMDocument.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PKCS8PrivateKey.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Placeholder.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PrettyBytes.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/RNG_boring.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Recovery.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SEC1PrivateKey.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SHA256.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SafeCompare.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Schnorr.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SecureBytes.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Signature.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SubjectPublicKeyInfo.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Tweak.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/UInt256.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Utility.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Zeroization.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/TaskifyApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/BoardCrypto.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/KeychainStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NIP44.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NostrEvent.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayConnection.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayPool.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/Secp256k1Helpers.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/SyncEngine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/TaskifyModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/Utility.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/precomputed_ecmult.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/precomputed_ecmult_gen.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/secp256k1.c.o"
+        }
+      ],
+      "outputFilePath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.product/Objects.LinkFileList"
+    },
+    "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Config/KeychainStore.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/BoardCrypto.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/NIP44.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/Secp256k1Helpers.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/NostrEvent.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/TaskifyModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayConnection.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayPool.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Sync/SyncEngine.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/sources"
+    },
+    "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCoreTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Tests/TaskifyCoreTests/CryptoInteropTests.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCoreTests.build/sources"
+    },
+    "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.derived/runner.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.build/sources"
+    },
+    "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Any.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1BitString.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Boolean.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Identifier.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Integer.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Null.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1OctetString.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ASN1Strings.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ArraySliceBigint.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Asymmetric.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Combine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Context.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/CryptoKitErrors.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/DH.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Digest.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDH.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDSA.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ECDSASignature.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/EdDSA.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Errors.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/GeneralizedTime.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/HashDigest.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/MuSig.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Nonces.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/ObjectIdentifier.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/P256K.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PEMDocument.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PKCS8PrivateKey.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Placeholder.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/PrettyBytes.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/RNG_boring.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Recovery.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SEC1PrivateKey.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SHA256.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SafeCompare.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Schnorr.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SecureBytes.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Signature.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/SubjectPublicKeyInfo.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Tweak.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/UInt256.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Utility.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/P256K.build/Zeroization.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/BoardCrypto.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/KeychainStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NIP44.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NostrEvent.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayConnection.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayPool.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/Secp256k1Helpers.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/SyncEngine.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/TaskifyModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCoreTests.build/CryptoInteropTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.build/runner.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/Utility.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/precomputed_ecmult.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/precomputed_ecmult_gen.c.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/libsecp256k1.build/src/secp256k1.c.o"
+        }
+      ],
+      "outputFilePath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyiOSPackageTests.product/Objects.LinkFileList"
+    },
+    "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/checkouts/swift-secp256k1/Sources/ZKP/Placeholder.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Any.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1BitString.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Boolean.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Identifier.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Integer.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Null.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1OctetString.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ASN1Strings.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ArraySliceBigint.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Asymmetric.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Combine.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Context.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/CryptoKitErrors.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/DH.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Digest.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDH.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDSA.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ECDSASignature.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/EdDSA.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Errors.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/GeneralizedTime.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/HashDigest.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/MuSig.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Nonces.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/ObjectIdentifier.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/P256K.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PEMDocument.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PrettyBytes.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/RNG_boring.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Recovery.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SEC1PrivateKey.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SHA256.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SafeCompare.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Schnorr.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SecureBytes.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Signature.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SubjectPublicKeyInfo.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Tweak.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/UInt256.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Utility.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/Zeroization.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/sources"
+    },
+    "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

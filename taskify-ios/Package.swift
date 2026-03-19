@@ -5,6 +5,7 @@ let package = Package(
     name: "TaskifyiOS",
     platforms: [
         .iOS(.v17),
+        .macOS(.v14),
     ],
     products: [
         .library(name: "TaskifyCore", targets: ["TaskifyCore"]),
@@ -22,7 +23,7 @@ let package = Package(
         .target(
             name: "TaskifyCore",
             dependencies: [
-                .product(name: "secp256k1", package: "swift-secp256k1"),
+                .product(name: "P256K", package: "swift-secp256k1"),
             ],
             path: "Sources/TaskifyCore"
         ),

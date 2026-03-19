@@ -1,0 +1,3 @@
+module ZKP {
+    header "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/ZKP.build/include/ZKP-Swift.h"
+}

@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/master.swiftdeps"
+  },
+  "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyApp/TaskifyApp.swift": {
+    "dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/TaskifyApp.d",
+    "object": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/TaskifyApp.swift.o",
+    "swiftmodule": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/TaskifyApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/TaskifyApp.swiftdeps",
+    "diagnostics": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyApp.build/TaskifyApp.dia"
+  }
+}

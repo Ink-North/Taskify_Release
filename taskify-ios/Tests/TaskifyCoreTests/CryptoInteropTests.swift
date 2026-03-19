@@ -8,6 +8,7 @@
 ///
 /// Run: swift test --filter CryptoInteropTests
 
+import Foundation
 import Testing
 @testable import TaskifyCore
 

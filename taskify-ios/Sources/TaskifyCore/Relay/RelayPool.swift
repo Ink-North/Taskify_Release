@@ -23,8 +23,8 @@ public actor RelayPool {
 
     private var connections: [String: RelayConnection] = [:]
     private var subscriptions: [String: SubscriptionState] = [:]
-    private let cursorStore = CursorStore()
-    private let eventCache = EventCache()
+    private var cursorStore = CursorStore()
+    private var eventCache = EventCache()
 
     public init(relayURLs: [String]) {
         self.relayURLs = relayURLs
@@ -47,12 +47,20 @@ public actor RelayPool {
         subscriptions.removeAll()
     }
 
-    public func connectedCount() -> Int {
-        connections.values.filter { $0.isConnected }.count
+    public func connectedCount() async -> Int {
+        var count = 0
+        for (_, conn) in connections {
+            if await conn.connected() { count += 1 }
+        }
+        return count
     }
 
-    public func relayStatuses() -> [(url: String, connected: Bool)] {
-        connections.map { (url: $0.key, connected: $0.value.isConnected) }
+    public func relayStatuses() async -> [(url: String, connected: Bool)] {
+        var statuses: [(url: String, connected: Bool)] = []
+        for (url, conn) in connections {
+            statuses.append((url: url, connected: await conn.connected()))
+        }
+        return statuses
     }
 
     // MARK: Subscribe
@@ -65,12 +73,12 @@ public actor RelayPool {
         onEose: @escaping (String?) -> Void
     ) -> String {
         let key = subscriptionKey(filters: filters)
-        if let existing = subscriptions[key] {
+        if subscriptions[key] != nil {
             subscriptions[key]?.refCount += 1
             return key
         }
 
-        var state = SubscriptionState(
+        let state = SubscriptionState(
             key: key,
             filters: filters,
             onEvent: onEvent,
@@ -161,7 +169,7 @@ public actor RelayPool {
             }
 
             // Register as subscription for event dispatch
-            var state = SubscriptionState(
+            let state = SubscriptionState(
                 key: subId,
                 filters: filters,
                 onEvent: { event, relayUrl in
@@ -273,10 +281,10 @@ private struct SubscriptionState {
 
 /// Tracks the highest `created_at` seen per subscription key.
 /// Mirrors CursorStore.ts — used as `since` on reconnect/resubscribe.
-private actor CursorStore {
+private struct CursorStore {
     private var cursors: [String: Int] = [:]
 
-    func update(subId: String, createdAt: Int) {
+    mutating func update(subId: String, createdAt: Int) {
         let prev = cursors[subId] ?? 0
         if createdAt > prev { cursors[subId] = createdAt }
     }

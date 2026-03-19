@@ -10,7 +10,7 @@ public actor RelayConnection {
     private var webSocketTask: URLSessionWebSocketTask?
     private var reconnectDelay: TimeInterval = 1.0
     private var shouldReconnect = true
-    public private(set) var isConnected = false
+    private var isConnected = false
 
     public init(url: String, pool: RelayPool) {
         self.url = url
@@ -38,6 +38,8 @@ public actor RelayConnection {
         try? await task.send(.string(text))
     }
 
+    public func connected() -> Bool { isConnected }
+
     // MARK: Internal
 
     private func openWebSocket() async {
@@ -59,12 +61,12 @@ public actor RelayConnection {
                     switch message {
                     case .string(let text):
                         if let parsed = RelayMessage.parse(text) {
-                            pool?.receive(message: parsed, from: url)
+                            pool?.dispatch(message: parsed, from: url)
                         }
                     case .data(let data):
                         if let text = String(data: data, encoding: .utf8),
                            let parsed = RelayMessage.parse(text) {
-                            pool?.receive(message: parsed, from: url)
+                            pool?.dispatch(message: parsed, from: url)
                         }
                     @unknown default:
                         break

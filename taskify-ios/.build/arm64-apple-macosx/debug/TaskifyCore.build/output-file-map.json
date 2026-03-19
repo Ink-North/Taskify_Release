@@ -1,0 +1,68 @@
+{
+  "": {
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/master.swiftdeps"
+  },
+  "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Config/KeychainStore.swift": {
+    "dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/KeychainStore.d",
+    "object": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/KeychainStore.swift.o",
+    "swiftmodule": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/KeychainStore~partial.swiftmodule",
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/KeychainStore.swiftdeps",
+    "diagnostics": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/KeychainStore.dia"
+  },
+  "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/BoardCrypto.swift": {
+    "dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/BoardCrypto.d",
+    "object": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/BoardCrypto.swift.o",
+    "swiftmodule": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/BoardCrypto~partial.swiftmodule",
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/BoardCrypto.swiftdeps",
+    "diagnostics": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/BoardCrypto.dia"
+  },
+  "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/NIP44.swift": {
+    "dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NIP44.d",
+    "object": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NIP44.swift.o",
+    "swiftmodule": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NIP44~partial.swiftmodule",
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NIP44.swiftdeps",
+    "diagnostics": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NIP44.dia"
+  },
+  "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Crypto/Secp256k1Helpers.swift": {
+    "dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/Secp256k1Helpers.d",
+    "object": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/Secp256k1Helpers.swift.o",
+    "swiftmodule": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/Secp256k1Helpers~partial.swiftmodule",
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/Secp256k1Helpers.swiftdeps",
+    "diagnostics": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/Secp256k1Helpers.dia"
+  },
+  "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/NostrEvent.swift": {
+    "dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NostrEvent.d",
+    "object": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NostrEvent.swift.o",
+    "swiftmodule": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NostrEvent~partial.swiftmodule",
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NostrEvent.swiftdeps",
+    "diagnostics": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/NostrEvent.dia"
+  },
+  "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Models/TaskifyModels.swift": {
+    "dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/TaskifyModels.d",
+    "object": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/TaskifyModels.swift.o",
+    "swiftmodule": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/TaskifyModels~partial.swiftmodule",
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/TaskifyModels.swiftdeps",
+    "diagnostics": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/TaskifyModels.dia"
+  },
+  "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayConnection.swift": {
+    "dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayConnection.d",
+    "object": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayConnection.swift.o",
+    "swiftmodule": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayConnection~partial.swiftmodule",
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayConnection.swiftdeps",
+    "diagnostics": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayConnection.dia"
+  },
+  "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Relay/RelayPool.swift": {
+    "dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayPool.d",
+    "object": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayPool.swift.o",
+    "swiftmodule": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayPool~partial.swiftmodule",
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayPool.swiftdeps",
+    "diagnostics": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/RelayPool.dia"
+  },
+  "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/Sources/TaskifyCore/Sync/SyncEngine.swift": {
+    "dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/SyncEngine.d",
+    "object": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/SyncEngine.swift.o",
+    "swiftmodule": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/SyncEngine~partial.swiftmodule",
+    "swift-dependencies": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/SyncEngine.swiftdeps",
+    "diagnostics": "/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios/.build/arm64-apple-macosx/debug/TaskifyCore.build/SyncEngine.dia"
+  }
+}

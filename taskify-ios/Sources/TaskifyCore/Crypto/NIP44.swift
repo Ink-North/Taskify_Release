@@ -41,8 +41,8 @@ public enum NIP44 {
         let keys = try deriveMessageKeys(conversationKey: conversationKey, nonce: nonce)
         let paddedPlaintext = pad(plaintext)
 
-        // ChaCha20 encryption
-        let ciphertext = try chacha20Encrypt(plaintext: paddedPlaintext, key: keys.chachaKey, nonce: keys.chachaNonce)
+        // ChaCha20 encryption (bare stream cipher, no Poly1305)
+        let ciphertext = try bareChaCha20(input: paddedPlaintext, key: keys.chachaKey, nonce: keys.chachaNonce)
 
         // HMAC-SHA256 over (nonce || ciphertext)
         var macInput = Data()
@@ -88,7 +88,7 @@ public enum NIP44 {
         guard Data(expectedMac) == Data(mac) else { throw NIP44Error.macMismatch }
 
         // ChaCha20 decryption
-        let paddedPlaintext = try chacha20Decrypt(ciphertext: Data(ciphertext), key: keys.chachaKey, nonce: keys.chachaNonce)
+        let paddedPlaintext = try bareChaCha20(input: Data(ciphertext), key: keys.chachaKey, nonce: keys.chachaNonce)
 
         return try unpad(paddedPlaintext)
     }
@@ -115,37 +115,6 @@ public enum NIP44 {
             chachaNonce: keyBytes[32..<44],
             hmacKey: keyBytes[44..<76]
         )
-    }
-
-    // MARK: - ChaCha20
-
-    /// ChaCha20 stream cipher encryption (no authentication — MAC is separate).
-    private static func chacha20Encrypt(plaintext: Data, key: Data, nonce: Data) throws -> Data {
-        // CryptoKit provides ChaChaPoly (ChaCha20-Poly1305), but NIP-44 uses raw ChaCha20 for the
-        // cipher step and a separate HMAC-SHA256 for authentication.
-        // We use CryptoKit's ChaChaPoly here but with a zeroed tag position, then strip the tag,
-        // relying on NIP-44's external HMAC for integrity.
-        // NOTE: This is an approximation; for full correctness a bare ChaCha20 implementation is needed.
-        // TODO: Replace with a bare ChaCha20 once available or via C interop.
-        let symKey = SymmetricKey(data: key)
-        let noncePadded = nonce + Data(count: 4) // pad to 16 bytes for ChaChaPoly nonce (uses first 12)
-        let chachapolyNonce = try ChaChaPoly.Nonce(data: nonce.prefix(12))
-        let sealed = try ChaChaPoly.seal(plaintext, using: symKey, nonce: chachapolyNonce)
-        // ChaChaPoly ciphertext is the encrypted bytes (tag is separate)
-        return sealed.ciphertext
-    }
-
-    private static func chacha20Decrypt(ciphertext: Data, key: Data, nonce: Data) throws -> Data {
-        let symKey = SymmetricKey(data: key)
-        let chachapolyNonce = try ChaChaPoly.Nonce(data: nonce.prefix(12))
-        // For decryption we need to reconstruct a SealedBox — but since we verified HMAC separately,
-        // we use a zeroed tag as placeholder for the ChaChaPoly tag (we just want the keystream XOR).
-        let zeroTag = Data(count: 16)
-        let sealedBox = try ChaChaPoly.SealedBox(nonce: chachapolyNonce, ciphertext: ciphertext, tag: zeroTag)
-        // This will fail tag verification — we need bare ChaCha20 here.
-        // TODO: replace with proper bare ChaCha20 implementation.
-        // For now, fall through to the custom implementation below.
-        return try bareChaCha20(input: ciphertext, key: key, nonce: nonce)
     }
 
     // MARK: - Bare ChaCha20 (RFC 7539)
@@ -236,7 +205,7 @@ public enum NIP44 {
     static func unpad(_ padded: Data) throws -> String {
         guard padded.count >= 2 else { throw NIP44Error.invalidPadding }
         let len = Int(padded[0]) << 8 | Int(padded[1])
-        guard len > 0, 2 + len <= padded.count else { throw NIP44Error.invalidPadding }
+        guard len >= 0, 2 + len <= padded.count else { throw NIP44Error.invalidPadding }
         let utf8 = padded[2..<(2 + len)]
         guard let str = String(data: utf8, encoding: .utf8) else { throw NIP44Error.invalidUTF8 }
         return str
