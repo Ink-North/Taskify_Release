@@ -115,7 +115,7 @@ extension TaskifyWebWrapperView {
 
     #if os(iOS)
     fileprivate func updateWebView(_ webView: WKWebView, context: Context) {
-        if webView.url?.absoluteString != url.absoluteString {
+        if webView.url == nil {
             webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData))
         }
         if let pendingVoicePayload {
@@ -189,12 +189,34 @@ extension TaskifyWebWrapperView {
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == "taskifyIOS" else { return }
             guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
-            if type == "ready" {
+
+            switch type {
+            case "ready":
                 isWebBridgeReady = true
                 if let webView = message.webView {
                     dispatchVoicePayloadIfPossible(on: webView)
+                    dispatchSiriOnboardingStatusIfNeeded(on: webView)
                 }
+            case "openSiriSettings":
+                SiriOnboarding.openSiriSettings()
+                SiriOnboarding.hasPrompted = true
+            case "siriOnboardingDismissed":
+                SiriOnboarding.hasPrompted = true
+            default:
+                break
             }
+        }
+
+        private func dispatchSiriOnboardingStatusIfNeeded(on webView: WKWebView) {
+            let shouldPrompt = !SiriOnboarding.hasPrompted
+            let script = """
+            (function() {
+              window.dispatchEvent(new CustomEvent('taskify-ios-siri-status', {
+                detail: { shouldPromptSiriSetup: \(shouldPrompt ? "true" : "false") }
+              }));
+            })();
+            """
+            webView.evaluateJavaScript(script, completionHandler: nil)
         }
         #endif
 
@@ -207,7 +229,12 @@ extension TaskifyWebWrapperView {
         }
 
         private func showError(in webView: WKWebView, error: Error) {
-            let message = (error as NSError).localizedDescription
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+                return
+            }
+
+            let message = nsError.localizedDescription
             let html = """
             <html><head><meta name='viewport' content='width=device-width,initial-scale=1'/></head>
             <body style='font-family:-apple-system;padding:24px;background:#0b1424;color:#fff;'>
@@ -259,14 +286,31 @@ struct TaskifyShortcutsProvider: AppShortcutsProvider {
         AppShortcut(
             intent: AddTaskIntent(),
             phrases: [
+                "\(.applicationName)",
                 "Add task in \(.applicationName)",
                 "Add a task in \(.applicationName)",
                 "Create task in \(.applicationName)",
-                "Create a task in \(.applicationName)"
+                "Create a task in \(.applicationName)",
+                "New task in \(.applicationName)",
+                "Remind me in \(.applicationName)"
             ],
             shortTitle: "Add Task",
             systemImageName: "plus.circle"
         )
+    }
+}
+
+// MARK: - Siri onboarding helpers
+enum SiriOnboarding {
+    static var hasPrompted: Bool {
+        get { UserDefaults.standard.bool(forKey: "taskify.siri.onboarding.prompted") }
+        set { UserDefaults.standard.set(newValue, forKey: "taskify.siri.onboarding.prompted") }
+    }
+
+    static func openSiriSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
     }
 }
 #endif

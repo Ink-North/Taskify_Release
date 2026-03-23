@@ -6313,6 +6313,12 @@ export default function App() {
   const tasksRef = useRef<Task[]>(tasks);
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
   const iosIntentQuickAddHandledRef = useRef(false);
+  const pendingIOSVoicePayloadRef = useRef<{ title?: string; dueDate?: string | null } | null>(null);
+
+  // Detect whether we are running inside the native iOS WKWebView wrapper.
+  // The native app registers the `taskifyIOS` message handler, which is not present in Safari/browser.
+  const isInsideNativeIOSApp = typeof (window as any)?.webkit?.messageHandlers?.taskifyIOS !== "undefined";
+
   const handleIOSVoiceQuickAdd = useCallback((payload: { title?: string; dueDate?: string | null }) => {
     const title = (payload.title || "").trim();
     const dueRaw = (payload.dueDate || "").trim();
@@ -6320,42 +6326,46 @@ export default function App() {
 
     if (!title) {
       showToast("Siri quick add was missing a task title.", 2800);
-      return;
+      return true;
     }
 
     const candidateBoards = boards.filter((board) => !board.archived && !board.hidden && board.kind !== "bible");
     const targetBoard = candidateBoards[0] ?? null;
 
     if (!targetBoard) {
-      showToast("No board available for Siri quick add.", 2800);
-      return;
+      // boards not loaded yet — queue and retry when boards update
+      pendingIOSVoicePayloadRef.current = payload;
+      return false;
     }
 
+    // Build task directly — bypass buildImportedTaskFromPayload which requires currentBoard to be set.
     const createdBy = normalizeAgentPubkey(nostrPK) ?? undefined;
-    const createdTask = buildImportedTaskFromPayload(
-      {
-        title,
-        ...(dueISO ? { dueISO } : {}),
-      },
-      {
-        overrides: {
-          boardId: targetBoard.id,
-          ...(createdBy ? { createdBy } : {}),
-          ...(createdBy ? { lastEditedBy: createdBy } : {}),
-          updatedAt: new Date().toISOString(),
-        } as Partial<Task>,
-        taskPool: tasksRef.current.slice(),
-      },
-    );
+    const taskPool = tasksRef.current.slice();
+    const order = nextOrderForBoard(targetBoard.id, taskPool, settings.newTaskPosition);
+    const now = new Date().toISOString();
+    const newTask: Task = {
+      id: crypto.randomUUID(),
+      boardId: targetBoard.id,
+      order,
+      title,
+      dueISO: dueISO ?? new Date().toISOString(),
+      dueDateEnabled: !!dueISO,
+      completed: false,
+      createdAt: Date.now(),
+      updatedAt: now,
+      ...(createdBy ? { createdBy, lastEditedBy: createdBy } : {}),
+    };
 
-    if (!createdTask) {
-      showToast("Could not add Siri task.", 2800);
-      return;
-    }
+    pendingIOSVoicePayloadRef.current = null;
+    saveEdit(newTask);
+    showToast(`Added: ${title}`, 2200);
+    return true;
+  }, [boards, nostrPK, saveEdit, settings.newTaskPosition, showToast]);
 
-    saveEdit(createdTask);
-    showToast(`Added task: ${title}`, 2200);
-  }, [boards, buildImportedTaskFromPayload, nostrPK, saveEdit, showToast]);
+  useEffect(() => {
+    if (!pendingIOSVoicePayloadRef.current) return;
+    handleIOSVoiceQuickAdd(pendingIOSVoicePayloadRef.current);
+  }, [boards, handleIOSVoiceQuickAdd]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -6365,7 +6375,22 @@ export default function App() {
       handleIOSVoiceQuickAdd(custom.detail || {});
     };
 
+    const onIOSSiriStatus = (event: Event) => {
+      // Only show the Siri setup hint inside the native iOS app wrapper, not in browser/PWA.
+      if (!isInsideNativeIOSApp) return;
+      const custom = event as CustomEvent<{ shouldPromptSiriSetup?: boolean }>;
+      if (custom.detail?.shouldPromptSiriSetup) {
+        showToast('💡 Say "Hey Siri, Taskify" to add tasks hands-free. Enable in Settings → Siri & Search → Taskify.', 7000);
+        try {
+          (window as any)?.webkit?.messageHandlers?.taskifyIOS?.postMessage({ type: "siriOnboardingDismissed" });
+        } catch {
+          // no bridge
+        }
+      }
+    };
+
     window.addEventListener("taskify-ios-voice-add", onIOSVoiceAdd as EventListener);
+    window.addEventListener("taskify-ios-siri-status", onIOSSiriStatus as EventListener);
 
     try {
       (window as any)?.webkit?.messageHandlers?.taskifyIOS?.postMessage({ type: "ready" });
@@ -6375,8 +6400,9 @@ export default function App() {
 
     return () => {
       window.removeEventListener("taskify-ios-voice-add", onIOSVoiceAdd as EventListener);
+      window.removeEventListener("taskify-ios-siri-status", onIOSSiriStatus as EventListener);
     };
-  }, [handleIOSVoiceQuickAdd]);
+  }, [handleIOSVoiceQuickAdd, showToast]);
 
   useEffect(() => {
     if (iosIntentQuickAddHandledRef.current) return;
