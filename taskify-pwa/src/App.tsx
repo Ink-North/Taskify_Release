@@ -6312,6 +6312,94 @@ export default function App() {
   useEffect(() => { boardsRef.current = boards; }, [boards]);
   const tasksRef = useRef<Task[]>(tasks);
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
+  const iosIntentQuickAddHandledRef = useRef(false);
+  const handleIOSVoiceQuickAdd = useCallback((payload: { title?: string; dueDate?: string | null }) => {
+    const title = (payload.title || "").trim();
+    const dueRaw = (payload.dueDate || "").trim();
+    const dueISO = dueRaw && !Number.isNaN(Date.parse(dueRaw)) ? new Date(dueRaw).toISOString() : undefined;
+
+    if (!title) {
+      showToast("Siri quick add was missing a task title.", 2800);
+      return;
+    }
+
+    const candidateBoards = boards.filter((board) => !board.archived && !board.hidden && board.kind !== "bible");
+    const targetBoard = candidateBoards[0] ?? null;
+
+    if (!targetBoard) {
+      showToast("No board available for Siri quick add.", 2800);
+      return;
+    }
+
+    const createdBy = normalizeAgentPubkey(nostrPK) ?? undefined;
+    const createdTask = buildImportedTaskFromPayload(
+      {
+        title,
+        ...(dueISO ? { dueISO } : {}),
+      },
+      {
+        overrides: {
+          boardId: targetBoard.id,
+          ...(createdBy ? { createdBy } : {}),
+          ...(createdBy ? { lastEditedBy: createdBy } : {}),
+          updatedAt: new Date().toISOString(),
+        } as Partial<Task>,
+        taskPool: tasksRef.current.slice(),
+      },
+    );
+
+    if (!createdTask) {
+      showToast("Could not add Siri task.", 2800);
+      return;
+    }
+
+    saveEdit(createdTask);
+    showToast(`Added task: ${title}`, 2200);
+  }, [boards, buildImportedTaskFromPayload, nostrPK, saveEdit, showToast]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const onIOSVoiceAdd = (event: Event) => {
+      const custom = event as CustomEvent<{ title?: string; dueDate?: string | null }>;
+      handleIOSVoiceQuickAdd(custom.detail || {});
+    };
+
+    window.addEventListener("taskify-ios-voice-add", onIOSVoiceAdd as EventListener);
+
+    try {
+      (window as any)?.webkit?.messageHandlers?.taskifyIOS?.postMessage({ type: "ready" });
+    } catch {
+      // no native bridge available
+    }
+
+    return () => {
+      window.removeEventListener("taskify-ios-voice-add", onIOSVoiceAdd as EventListener);
+    };
+  }, [handleIOSVoiceQuickAdd]);
+
+  useEffect(() => {
+    if (iosIntentQuickAddHandledRef.current) return;
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    const source = (params.get("source") || "").trim().toLowerCase();
+    if (source !== "ios-intent") return;
+
+    iosIntentQuickAddHandledRef.current = true;
+    handleIOSVoiceQuickAdd({
+      title: params.get("quickAdd") || "",
+      dueDate: params.get("due"),
+    });
+
+    params.delete("source");
+    params.delete("quickAdd");
+    params.delete("due");
+    params.delete("board");
+    const nextQuery = params.toString();
+    const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`;
+    window.history.replaceState({}, "", nextUrl);
+  }, [handleIOSVoiceQuickAdd]);
   const calendarEventsRef = useRef<CalendarEvent[]>(calendarEvents);
   useEffect(() => { calendarEventsRef.current = calendarEvents; }, [calendarEvents]);
   const [inboxProcessedSeed] = useState<string[]>(() => {
