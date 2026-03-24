@@ -160,6 +160,8 @@ import {
 } from "./lib/privateCalendar";
 import { DEFAULT_NOSTR_RELAYS } from "./lib/relays";
 import { ActionSheet } from "./components/ActionSheet";
+import { VoiceDictationModal } from "./components/VoiceDictationModal";
+import type { FinalTask } from "./nostr/useVoiceSession";
 import type { Contact } from "./lib/contacts";
 import {
   contactPrimaryName,
@@ -8918,6 +8920,8 @@ export default function App() {
   const [pushWorkState, setPushWorkState] = useState<"idle" | "enabling" | "disabling">("idle");
   const [pushError, setPushError] = useState<string | null>(null);
   const [inlineTitles, setInlineTitles] = useState<Record<string, string>>({});
+  const [addMenuKey, setAddMenuKey] = useState<string | null>(null);
+  const [voiceDictationKey, setVoiceDictationKey] = useState<string | null>(null);
   const [pendingFocusColumnId, setPendingFocusColumnId] = useState<string | null>(null);
   const [renamingColumnId, setRenamingColumnId] = useState<string | null>(null);
   const [columnDrafts, setColumnDrafts] = useState<Record<string, string>>({});
@@ -14342,6 +14346,11 @@ export default function App() {
 
   function openInlineTaskEditor(key: string) {
     if (!currentBoard) return;
+    setAddMenuKey(key);
+  }
+
+  function openInlineTaskEditorDirect(key: string) {
+    if (!currentBoard) return;
 
     let targetBoardId = currentBoard.id;
     let dueISO = isoForToday();
@@ -14387,6 +14396,56 @@ export default function App() {
 
     setEditing({ type: "task", originalType: "task", originalId: draft.id, task: draft });
   }
+
+  function handleVoiceSave(key: string, finalTasks: FinalTask[]) {
+    if (!currentBoard || !finalTasks.length) return;
+
+    let targetBoardId = currentBoard.id;
+    let dueISOBase = isoForToday();
+    let column: Task["column"] | undefined;
+    let columnId: string | undefined;
+
+    if (currentBoard.kind === "week") {
+      column = "day";
+      dueISOBase = isoForWeekday(Number(key) as Weekday, { weekStart: settings.weekStart });
+    } else {
+      const placement = resolveListPlacement(key);
+      if (placement) {
+        targetBoardId = placement.boardId;
+        columnId = placement.columnId;
+      }
+    }
+
+    const newTasks: Task[] = [];
+    for (const ft of finalTasks) {
+      if (!ft.title?.trim()) continue;
+      const nextOrder = nextOrderForBoard(targetBoardId, [...tasks, ...newTasks], settings.newTaskPosition);
+      const task: Task = {
+        id: crypto.randomUUID(),
+        boardId: ft.boardId ?? targetBoardId,
+        createdBy: nostrPK || undefined,
+        lastEditedBy: nostrPK || undefined,
+        title: ft.title.trim(),
+        createdAt: Date.now(),
+        dueISO: ft.dueISO ?? dueISOBase,
+        dueDateEnabled: !!(ft.dueISO || currentBoard.kind === "week"),
+        completed: false,
+        order: nextOrder,
+      };
+      if (column) task.column = column;
+      if (columnId) task.columnId = columnId;
+      applyHiddenForFuture(task, settings.weekStart, currentBoard.kind);
+      newTasks.push(task);
+    }
+
+    if (!newTasks.length) return;
+    setTasks((prev) => [...prev, ...newTasks]);
+    newTasks.forEach((t) => maybePublishTask(t).catch(() => {}));
+    showToast(newTasks.length === 1 ? "Task added" : `${newTasks.length} tasks added`);
+    setVoiceDictationKey(null);
+    setAddMenuKey(null);
+  }
+
   function addInlineTask(key: string) {
     if (!currentBoard) return;
     const raw = (inlineTitles[key] || "").trim();
@@ -20315,6 +20374,63 @@ export default function App() {
           />
         )}
       </Suspense>
+
+      {/* ── Add task menu: New Task / Dictate ─────────────────────────────── */}
+      <ActionSheet
+        open={addMenuKey !== null && voiceDictationKey === null}
+        onClose={() => setAddMenuKey(null)}
+        title="Add Task"
+      >
+        <div className="space-y-1 pb-1">
+          <button
+            type="button"
+            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left hover:bg-[var(--color-surface-hover)] transition-colors pressable"
+            onClick={() => {
+              const key = addMenuKey!;
+              setAddMenuKey(null);
+              openInlineTaskEditorDirect(key);
+            }}
+          >
+            <span className="text-lg leading-none">＋</span>
+            <span className="text-sm font-medium">New Task</span>
+          </button>
+          <button
+            type="button"
+            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left hover:bg-[var(--color-surface-hover)] transition-colors pressable"
+            onClick={() => {
+              setVoiceDictationKey(addMenuKey);
+            }}
+          >
+            <span className="text-lg leading-none">🎙</span>
+            <span className="text-sm font-medium">Dictate</span>
+          </button>
+        </div>
+      </ActionSheet>
+
+      {/* ── Voice dictation modal ──────────────────────────────────────────── */}
+      {voiceDictationKey !== null && (
+        <VoiceDictationModal
+          isOpen={true}
+          onClose={() => {
+            setVoiceDictationKey(null);
+            setAddMenuKey(null);
+          }}
+          onSave={(tasks) => {
+            if (voiceDictationKey !== null) {
+              handleVoiceSave(voiceDictationKey, tasks);
+            }
+          }}
+          workerBaseUrl={workerBaseUrl}
+          npub={nostrPK ? ((() => {
+            try {
+              return typeof (nip19 as any).npubEncode === "function"
+                ? (nip19 as any).npubEncode(nostrPK)
+                : nostrPK;
+            } catch { return nostrPK; }
+          })()) : ""}
+          defaultBoardId={currentBoard?.id}
+        />
+      )}
 
       </div>
     </div>
