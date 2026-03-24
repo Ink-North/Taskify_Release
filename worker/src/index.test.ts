@@ -454,3 +454,584 @@ test("scheduled batches multiple devices and sends one push per device", async (
   assert.equal(pendingB.length, 1, "all dev-b due reminders should be pending");
   assert.equal(db.reminders.length, 0, "all processed due reminders should be removed");
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Voice dictation endpoint tests
+// These tests are EXPECTED TO FAIL until the implementation is added.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Extend MockD1 to support voice_quota table.
+// We patch MockD1's prepare() to handle voice_quota queries inline by
+// checking for the table name in the SQL string.
+//
+// Rather than modifying MockD1 above (shared with existing tests), we create
+// a subclass used only for voice tests.
+class MockD1WithVoice extends MockD1 {
+  // key: `${npub}:${date}`
+  quota = new Map<string, { session_count: number; total_seconds: number }>();
+
+  override prepare(query: string) {
+    const base = super.prepare(query);
+    const sql = query.replace(/\s+/g, " ").trim();
+    const db = this;
+
+    // For voice_quota queries, intercept first() and run()
+    if (!sql.toLowerCase().includes("voice_quota")) {
+      return base;
+    }
+
+    let params: unknown[] = [];
+
+    return {
+      _sql: sql,
+      bind(...values: unknown[]) {
+        params = values;
+        return this;
+      },
+      async run() {
+        // CREATE TABLE
+        if (/^CREATE TABLE/i.test(sql)) return { success: true };
+
+        // INSERT ... ON CONFLICT DO UPDATE (upsert quota)
+        if (/^INSERT INTO voice_quota/i.test(sql)) {
+          const [npub, date, , addSeconds] = params as [string, string, number, number];
+          const key = `${npub}:${date}`;
+          const existing = db.quota.get(key) ?? { session_count: 0, total_seconds: 0 };
+          db.quota.set(key, {
+            session_count: existing.session_count + 1,
+            total_seconds: existing.total_seconds + (addSeconds as number),
+          });
+          return { success: true };
+        }
+
+        return { success: true };
+      },
+      async first() {
+        // SELECT * FROM voice_quota WHERE npub=? AND date=?
+        if (/SELECT .* FROM voice_quota/i.test(sql)) {
+          const [npub, date] = params as [string, string];
+          const row = db.quota.get(`${npub}:${date}`);
+          if (!row) return null;
+          return { npub, date, ...row } as any;
+        }
+        return null;
+      },
+      async all() {
+        return { success: true, results: [] };
+      },
+    };
+  }
+}
+
+async function makeVoiceEnv(db: MockD1WithVoice, geminiApiKey = "fake-gemini-key") {
+  const base = await makeEnv(db);
+  return { ...base, GEMINI_API_KEY: geminiApiKey } as any;
+}
+
+// ── Test 1: POST /api/voice/extract — returns 501 when GEMINI_API_KEY missing ─
+test("POST /api/voice/extract returns 501 when GEMINI_API_KEY not configured", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeEnv(db); // no GEMINI_API_KEY
+
+  const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ npub: "npub1abc", transcript: "call dentist tomorrow", sessionDurationSeconds: 5 }),
+  });
+  const res = await worker.fetch(req, env);
+  assert.equal(res.status, 501, "should be 501 when GEMINI_API_KEY absent");
+  const body = await res.json() as any;
+  assert.ok(body.error, "should have error field");
+});
+
+// ── Test 2: POST /api/voice/extract — 400 on missing npub ─────────────────────
+test("POST /api/voice/extract returns 400 when npub is missing", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ transcript: "call dentist tomorrow", sessionDurationSeconds: 5 }),
+  });
+  const res = await worker.fetch(req, env);
+  assert.equal(res.status, 400);
+  const body = await res.json() as any;
+  assert.ok(body.error);
+});
+
+// ── Test 3: POST /api/voice/extract — 400 on empty transcript ─────────────────
+test("POST /api/voice/extract returns 400 when transcript is empty", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ npub: "npub1abc", transcript: "   ", sessionDurationSeconds: 0 }),
+  });
+  const res = await worker.fetch(req, env);
+  assert.equal(res.status, 400);
+  const body = await res.json() as any;
+  assert.ok(body.error);
+});
+
+// ── Test 4: POST /api/voice/extract — happy path: calls Gemini, returns operations ─
+test("POST /api/voice/extract calls Gemini and returns operations on success", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const geminiOperations = [
+    { type: "create_task", title: "Call dentist", dueText: "tomorrow" },
+  ];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    if (String(url).includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            { content: { parts: [{ text: JSON.stringify({ operations: geminiOperations }) }] } },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 200 });
+  }) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        transcript: "call dentist tomorrow",
+        candidates: [],
+        sessionDurationSeconds: 10,
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.ok(Array.isArray(body.operations), "should have operations array");
+    assert.equal(body.operations.length, 1);
+    assert.equal(body.operations[0].type, "create_task");
+    assert.equal(body.operations[0].title, "Call dentist");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ── Test 5: POST /api/voice/extract — quota is incremented after successful call ─
+test("POST /api/voice/extract increments quota after successful Gemini call", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+  const npub = "npub1quotatest";
+  const date = new Date().toISOString().slice(0, 10);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    if (String(url).includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: JSON.stringify({ operations: [] }) }] } }],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 200 });
+  }) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ npub, transcript: "hello world", candidates: [], sessionDurationSeconds: 15 }),
+    });
+    await worker.fetch(req, env);
+    const row = db.quota.get(`${npub}:${date}`);
+    assert.ok(row, "quota row should exist");
+    assert.equal(row!.session_count, 1);
+    assert.equal(row!.total_seconds, 15);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ── Test 6: POST /api/voice/extract — returns 429 when quota exceeded ─
+test("POST /api/voice/extract returns 429 when quota exceeded", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+  const npub = "npub1overquota";
+  const date = new Date().toISOString().slice(0, 10);
+
+  // Pre-seed quota at limit
+  db.quota.set(`${npub}:${date}`, { session_count: 5, total_seconds: 300 });
+
+  const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ npub, transcript: "call dentist and pick up groceries", sessionDurationSeconds: 10 }),
+  });
+  const res = await worker.fetch(req, env);
+  assert.equal(res.status, 429);
+  const body = await res.json() as any;
+  assert.equal(body.error, "quota_exceeded");
+  assert.ok(typeof body.message === "string");
+});
+
+// ── Test 7: POST /api/voice/extract — Gemini failure returns 503 ─
+test("POST /api/voice/extract returns 503 when Gemini fails", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("error", { status: 503 })) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        transcript: "call dentist, pick up groceries",
+        candidates: [],
+        sessionDurationSeconds: 8,
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 503, "should return 503 when Gemini is unavailable");
+    const body = await res.json() as any;
+    assert.equal(body.error, "gemini_unavailable");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("POST /api/voice/extract falls back to Cloudflare Workers AI when Gemini fails", async () => {
+  const db = new MockD1WithVoice();
+  const env = {
+    ...(await makeVoiceEnv(db)),
+    CLOUDFLARE_ACCOUNT_ID: "acc-123",
+    CLOUDFLARE_API_TOKEN: "cf-token",
+  } as any;
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    const u = String(url);
+    if (u.includes("generativelanguage.googleapis.com")) {
+      return new Response("gemini down", { status: 503 });
+    }
+    if (u.includes("/ai/run/@cf/zai-org/glm-4.7-flash")) {
+      return new Response(
+        JSON.stringify({
+          result: {
+            response: JSON.stringify({
+              tasks: [{ title: "Call dentist", dueText: "tomorrow", subtasks: [] }],
+            }),
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 404 });
+  }) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        transcript: "call dentist tomorrow",
+        candidates: [],
+        sessionDurationSeconds: 8,
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.ok(Array.isArray(body.operations));
+    assert.equal(body.operations[0].title, "Call dentist");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("POST /api/voice/extract applies correction phrases to prior task dueText", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    if (String(url).includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      tasks: [
+                        { title: "Play date", dueText: "tomorrow at noon", subtasks: [] },
+                        { title: "then next Sunday at 2 PM we have a dinner after church", dueText: "next Sunday at 2 PM", subtasks: [] },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 200 });
+  }) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        transcript: "I am going to the park tomorrow at noon for a play date. Actually change the noon play date to 1 PM. then next Sunday at 2 PM we have a dinner after church",
+        candidates: [],
+        sessionDurationSeconds: 20,
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.ok(Array.isArray(body.operations));
+    assert.equal(body.operations[0].title, "Play date");
+    assert.equal(body.operations[0].dueText, "tomorrow at 1 pm");
+    assert.equal(body.operations[1].title, "Dinner after church");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ── Test 8: POST /api/voice/finalize — 501 when GEMINI_API_KEY missing ──────────
+test("POST /api/voice/finalize returns 501 when GEMINI_API_KEY not configured", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeEnv(db); // no key
+
+  const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      npub: "npub1abc",
+      candidates: [{ id: "1", title: "Call dentist", dueText: "tomorrow", status: "confirmed" }],
+      referenceDate: new Date().toISOString(),
+    }),
+  });
+  const res = await worker.fetch(req, env);
+  assert.equal(res.status, 501);
+});
+
+// ── Test 9: POST /api/voice/finalize — 400 when no confirmed candidates ─────────
+test("POST /api/voice/finalize returns 400 when candidates array has no confirmed tasks", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      npub: "npub1abc",
+      candidates: [
+        { id: "1", title: "Call dentist", status: "dismissed" },
+        { id: "2", title: "Groceries", status: "draft" },
+      ],
+      referenceDate: new Date().toISOString(),
+    }),
+  });
+  const res = await worker.fetch(req, env);
+  assert.equal(res.status, 400);
+  const body = await res.json() as any;
+  assert.ok(body.error);
+});
+
+// ── Test 10: POST /api/voice/finalize — happy path: returns normalized tasks ────
+test("POST /api/voice/finalize returns normalized FinalTask array from confirmed candidates", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const referenceDate = "2026-03-24T18:00:00.000Z";
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    if (String(url).includes("generativelanguage.googleapis.com")) {
+      // Simulate Gemini normalizing the task
+      return new Response(
+        JSON.stringify({
+          candidates: [{
+            content: {
+              parts: [{
+                text: JSON.stringify({
+                  tasks: [
+                    {
+                      id: "c1",
+                      title: "Call Dentist",
+                      dueISO: "2026-03-25T14:00:00.000Z",
+                      subtasks: [],
+                      notes: null,
+                      boardId: null,
+                      priority: null,
+                    },
+                  ],
+                }),
+              }],
+            },
+          }],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 200 });
+  }) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        candidates: [
+          { id: "c1", title: "call dentist", dueText: "tomorrow 2pm", status: "confirmed" },
+          { id: "c2", title: "pick up groceries", status: "dismissed" }, // should be excluded
+        ],
+        boardId: "board-xyz",
+        referenceDate,
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.ok(Array.isArray(body.tasks), "should have tasks array");
+    assert.equal(body.tasks.length, 1, "only confirmed candidates returned");
+    assert.equal(body.tasks[0].title, "Call Dentist");
+    assert.equal(body.tasks[0].dueISO, "2026-03-25T14:00:00.000Z");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ── Test 11: POST /api/voice/finalize — Gemini failure returns 503 ─
+test("POST /api/voice/finalize falls back to Cloudflare Workers AI when Gemini fails", async () => {
+  const db = new MockD1WithVoice();
+  const env = {
+    ...(await makeVoiceEnv(db)),
+    CLOUDFLARE_ACCOUNT_ID: "acc-123",
+    CLOUDFLARE_API_TOKEN: "cf-token",
+  } as any;
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    const u = String(url);
+    if (u.includes("generativelanguage.googleapis.com")) {
+      return new Response("error", { status: 503 });
+    }
+    if (u.includes("/ai/run/@cf/zai-org/glm-4.7-flash")) {
+      return new Response(
+        JSON.stringify({
+          result: {
+            response: JSON.stringify({
+              tasks: [
+                {
+                  id: "c1",
+                  title: "Call Dentist",
+                  dueISO: "2026-03-25T14:00:00.000Z",
+                  subtasks: [],
+                  notes: null,
+                  boardId: null,
+                  priority: null,
+                },
+              ],
+            }),
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 404 });
+  }) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        candidates: [{ id: "c1", title: "call dentist", dueText: "tomorrow", status: "confirmed" }],
+        referenceDate: new Date().toISOString(),
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.ok(Array.isArray(body.tasks));
+    assert.equal(body.tasks[0].title, "Call Dentist");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("POST /api/voice/finalize returns 503 when Gemini fails", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("error", { status: 503 })) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        candidates: [
+          { id: "c1", title: "call dentist", dueText: "tomorrow", status: "confirmed" },
+        ],
+        referenceDate: new Date().toISOString(),
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 503, "must return 503 when Gemini is unavailable");
+    const body = await res.json() as any;
+    assert.equal(body.error, "gemini_unavailable");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("POST /api/voice/finalize returns 503 (no local due parsing fallback) when Gemini fails", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("error", { status: 503 })) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        candidates: [
+          { id: "c1", title: "Ashley's birthday party", dueText: "tomorrow at 2 PM", status: "confirmed" },
+          { id: "c2", title: "Go for a walk", dueText: "Friday at noon", status: "confirmed" },
+        ],
+        referenceDate: "2026-03-24T18:00:00.000Z",
+        referenceOffsetMinutes: 300,
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 503);
+    const body = await res.json() as any;
+    assert.equal(body.error, "gemini_unavailable");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

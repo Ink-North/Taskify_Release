@@ -40,7 +40,13 @@ import { SessionPool } from "../../nostr/SessionPool";
 import { useCashu } from "../../context/CashuContext";
 import { useP2PK, type P2PKKey } from "../../context/P2PKContext";
 import { useToast } from "../../context/ToastContext";
-import { pillButtonClass, hexToBytes, DEBUG_CONSOLE_STORAGE_KEY, HISTORY_MARK_SPENT_CUTOFF_MS } from "./settingsConstants";
+import {
+  pillButtonClass,
+  hexToBytes,
+  DEBUG_CONSOLE_STORAGE_KEY,
+  VOICE_TEST_INPUT_STORAGE_KEY,
+  HISTORY_MARK_SPENT_CUTOFF_MS,
+} from "./settingsConstants";
 
 export function WalletSection({
   settings,
@@ -82,6 +88,9 @@ export function WalletSection({
   const [removeSpentStatus, setRemoveSpentStatus] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [debugConsoleState, setDebugConsoleState] = useState<"inactive" | "loading" | "active">("inactive");
   const [debugConsoleMessage, setDebugConsoleMessage] = useState<string | null>(null);
+  const [voiceTestInputEnabled, setVoiceTestInputEnabled] = useState<boolean>(
+    () => kvStorage.getItem(VOICE_TEST_INPUT_STORAGE_KEY) === "true",
+  );
   const debugConsoleScriptRef = useRef<HTMLScriptElement | null>(null);
   const mintBackupPoolRef = useRef<SessionPool | null>(null);
   const [keysetCounterBusy, setKeysetCounterBusy] = useState<string | null>(null);
@@ -396,6 +405,20 @@ export function WalletSection({
       enableDebugConsole();
     }
   }, [debugConsoleState, disableDebugConsole, enableDebugConsole]);
+
+  const handleToggleVoiceTestInput = useCallback(() => {
+    setVoiceTestInputEnabled((prev) => {
+      const next = !prev;
+      if (next) {
+        kvStorage.setItem(VOICE_TEST_INPUT_STORAGE_KEY, "true");
+        showToast("Voice testing text input enabled.", 2000);
+      } else {
+        kvStorage.removeItem(VOICE_TEST_INPUT_STORAGE_KEY);
+        showToast("Voice testing text input disabled.", 2000);
+      }
+      return next;
+    });
+  }, [showToast]);
 
   useEffect(() => {
     if (typeof document !== "undefined" && document.querySelector("#eruda")) {
@@ -1100,6 +1123,22 @@ export function WalletSection({
                       {debugConsoleMessage && (
                         <div className="text-xs text-rose-400 mt-2">{debugConsoleMessage}</div>
                       )}
+                    </div>
+                    <div>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <div className="flex-1">
+                          <div className="text-sm font-medium">Voice testing text input</div>
+                          <div className="text-xs text-secondary mt-1">
+                            Show a paste/type transcript input in voice dictation for extraction testing only.
+                          </div>
+                        </div>
+                        <button
+                          className="ghost-button button-sm pressable shrink-0"
+                          onClick={handleToggleVoiceTestInput}
+                        >
+                          {voiceTestInputEnabled ? "On" : "Off"}
+                        </button>
+                      </div>
                     </div>
                     <div>
                       <div className="text-sm font-medium mb-1">Increment keyset counters</div>

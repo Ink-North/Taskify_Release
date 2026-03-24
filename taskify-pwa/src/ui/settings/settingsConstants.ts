@@ -2,6 +2,7 @@
 
 export const BIBLE_BOARD_ID = "bible-reading";
 export const DEBUG_CONSOLE_STORAGE_KEY = "taskify.debugConsole.enabled";
+export const VOICE_TEST_INPUT_STORAGE_KEY = "taskify.voice.testInput.enabled";
 export const BOARD_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const HISTORY_MARK_SPENT_CUTOFF_MS = 5 * 24 * 60 * 60 * 1000;
 
