@@ -69,69 +69,53 @@ function CandidateCard({
   const isDismissed = candidate.status === "dismissed";
 
   return (
-    <div
-      className={[
-        "flex items-start gap-3 px-3 py-2.5 rounded-xl border transition-all duration-200",
-        "animate-slide-up",
-        isDismissed
-          ? "opacity-40 line-through border-gray-200 dark:border-gray-700 bg-transparent"
-          : isConfirmed
-            ? "border-violet-400 dark:border-violet-500 bg-violet-50 dark:bg-violet-900/20"
-            : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800",
-      ].join(" ")}
+    <li
+      className={`task-card animate-slide-up space-y-1.5 ${isDismissed ? "opacity-45" : ""}`}
+      data-form={candidate.subtasks?.length ? "stacked" : "pill"}
+      data-state={isDismissed ? "completed" : undefined}
     >
-      {/* Checkbox */}
-      <button
-        type="button"
-        onClick={() => isDismissed ? onConfirm(candidate.id) : isConfirmed ? onDismiss(candidate.id) : onConfirm(candidate.id)}
-        aria-label={isConfirmed ? "Deselect task" : "Select task"}
-        className={[
-          "mt-0.5 flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors",
-          isConfirmed
-            ? "bg-violet-600 border-violet-600 text-white"
-            : "border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800",
-        ].join(" ")}
-      >
-        {isConfirmed && (
-          <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none">
-            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        )}
-      </button>
-
-      {/* Content */}
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-          {candidate.title}
-        </p>
-        {candidate.dueText && !isDismissed && (
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-            📅 {candidate.dueText}
-          </p>
-        )}
-        {!!candidate.subtasks?.length && !isDismissed && (
-          <ul className="mt-1 space-y-0.5">
-            {candidate.subtasks.map((s, i) => (
-              <li key={`${candidate.id}-sub-${i}`} className="text-xs text-gray-500 dark:text-gray-400">• {s}</li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      {/* Dismiss X */}
-      {!isDismissed && (
+      <div className="flex items-start gap-2">
         <button
           type="button"
-          onClick={() => onDismiss(candidate.id)}
-          aria-label="Remove task"
-          className="flex-shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+          onClick={() => (isDismissed ? onConfirm(candidate.id) : isConfirmed ? onDismiss(candidate.id) : onConfirm(candidate.id))}
+          aria-label={isConfirmed ? "Deselect task" : "Select task"}
+          className={`icon-button mt-0.5 ${isConfirmed ? "icon-button--accent" : ""}`}
+          data-active={isConfirmed ? "true" : "false"}
         >
-          <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none">
-            <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
+          {isConfirmed ? "✓" : "○"}
         </button>
-      )}
-    </div>
+
+        <div className="flex-1 min-w-0">
+          <div className={`task-card__title ${isDismissed ? "task-card__title--done" : ""}`}>
+            {candidate.title}
+          </div>
+          {candidate.dueText && !isDismissed && (
+            <div className="task-card__meta mt-0.5">📅 {candidate.dueText}</div>
+          )}
+          {!!candidate.subtasks?.length && !isDismissed && (
+            <ul className="mt-1 space-y-1 text-xs">
+              {candidate.subtasks.map((s, i) => (
+                <li key={`${candidate.id}-sub-${i}`} className="subtask-row">
+                  <input type="checkbox" checked={false} readOnly className="subtask-row__checkbox" />
+                  <span className="subtask-row__text">{s}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {!isDismissed && (
+          <button
+            type="button"
+            onClick={() => onDismiss(candidate.id)}
+            aria-label="Remove task"
+            className="icon-button icon-button--danger"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+    </li>
   );
 }
 
@@ -213,17 +197,17 @@ export function VoiceDictationModal({
   return (
     // Backdrop
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/45 backdrop-blur-md"
       onClick={(e) => {
         if (e.target === e.currentTarget && !session.isListening) onClose();
       }}
     >
       {/* Sheet */}
-      <div className="relative w-full sm:max-w-md bg-white dark:bg-gray-900 rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90dvh]">
+      <div className="relative w-full sm:max-w-md surface-panel glass-panel rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90dvh] border border-white/20">
 
         {/* Header */}
         <div className="flex items-center justify-between px-4 pt-4 pb-2 flex-shrink-0">
-          <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+          <h2 className="text-base font-semibold text-primary flex items-center gap-2">
             🎙 Voice Add Tasks
           </h2>
           <button
@@ -253,7 +237,7 @@ export function VoiceDictationModal({
         )}
 
         {/* Transcript area */}
-        <div className="mx-4 mb-3 min-h-[60px] max-h-[100px] overflow-y-auto rounded-xl bg-gray-50 dark:bg-gray-800 px-3 py-2.5 text-sm flex-shrink-0">
+        <div className="mx-4 mb-3 min-h-[60px] max-h-[100px] overflow-y-auto rounded-xl border border-white/20 bg-white/10 px-3 py-2.5 text-sm flex-shrink-0">
           {session.transcript || session.interimTranscript ? (
             <>
               <span className="text-gray-900 dark:text-gray-100">{session.transcript}</span>
@@ -304,7 +288,7 @@ export function VoiceDictationModal({
 
         {/* Candidate cards */}
         {visibleCandidates.length > 0 && (
-          <div className="mx-4 flex flex-col gap-2 overflow-y-auto flex-1 pb-1">
+          <div className="mx-4 overflow-y-auto flex-1 pb-1">
             {/* "Select all" shortcut when any drafts exist */}
             {hasDraftCandidates && (
               <button
@@ -314,24 +298,26 @@ export function VoiceDictationModal({
                     .filter((c) => c.status === "draft")
                     .forEach((c) => confirmCandidate(c.id));
                 }}
-                className="text-xs text-violet-600 dark:text-violet-400 self-end hover:underline"
+                className="text-xs text-secondary self-end hover:underline mb-1"
               >
                 Select all
               </button>
             )}
-            {visibleCandidates.map((candidate) => (
-              <CandidateCard
-                key={candidate.id}
-                candidate={candidate}
-                onDismiss={dismissCandidate}
-                onConfirm={confirmCandidate}
-              />
-            ))}
+            <ul className="space-y-1.5">
+              {visibleCandidates.map((candidate) => (
+                <CandidateCard
+                  key={candidate.id}
+                  candidate={candidate}
+                  onDismiss={dismissCandidate}
+                  onConfirm={confirmCandidate}
+                />
+              ))}
+            </ul>
           </div>
         )}
 
         {/* Footer */}
-        <div className="flex items-center gap-3 px-4 py-4 flex-shrink-0 border-t border-gray-100 dark:border-gray-800 mt-2">
+        <div className="flex items-center gap-3 px-4 py-4 flex-shrink-0 border-t border-white/20 mt-2">
           {/* Mic button */}
           <MicButton
             isListening={session.isListening}
