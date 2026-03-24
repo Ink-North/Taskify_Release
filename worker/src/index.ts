@@ -195,6 +195,7 @@ type FinalTask = {
   boardId?: string;
   notes?: string;
   subtasks?: string[];
+  priority?: 1 | 2 | 3;
 };
 
 type VoiceQuotaRow = {
@@ -3088,6 +3089,70 @@ function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
   return operations;
 }
 
+function parseTaskPriority(value: unknown): 1 | 2 | 3 | undefined {
+  const n = typeof value === "number" ? Math.round(value) : Number(value);
+  if (n === 1 || n === 2 || n === 3) return n;
+  return undefined;
+}
+
+function parseDueTextFallback(dueText: string, referenceDate: string): string | undefined {
+  const text = dueText.trim().toLowerCase();
+  if (!text) return undefined;
+
+  const base = new Date(referenceDate);
+  const now = Number.isNaN(base.getTime()) ? new Date() : base;
+
+  const dayMap: Record<string, number> = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6,
+  };
+
+  const dayMatch = text.match(/\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/);
+  if (!dayMatch) return undefined;
+
+  const target = new Date(now.getTime());
+  const dayWord = dayMatch[1];
+
+  if (dayWord === "tomorrow") {
+    target.setDate(target.getDate() + 1);
+  } else if (dayWord !== "today" && dayWord !== "tonight") {
+    const targetDow = dayMap[dayWord];
+    const currentDow = target.getDay();
+    let delta = (targetDow - currentDow + 7) % 7;
+    if (delta === 0) delta = 7;
+    target.setDate(target.getDate() + delta);
+  }
+
+  let hours: number | undefined;
+  let minutes = 0;
+
+  if (/\bnoon\b/.test(text)) {
+    hours = 12;
+  } else if (/\bmidnight\b/.test(text)) {
+    hours = 0;
+  } else {
+    const tm = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
+    if (tm) {
+      const h = Number(tm[1]);
+      const m = tm[2] ? Number(tm[2]) : 0;
+      if (h >= 1 && h <= 12 && m >= 0 && m <= 59) {
+        hours = h % 12;
+        if (tm[3] === "pm") hours += 12;
+        minutes = m;
+      }
+    }
+  }
+
+  if (hours === undefined) return undefined;
+  target.setHours(hours, minutes, 0, 0);
+  return target.toISOString();
+}
+
 async function getVoiceQuota(db: D1Database, npub: string, date: string): Promise<VoiceQuotaRow | null> {
   return db
     .prepare<VoiceQuotaRow>("SELECT npub, date, session_count, total_seconds FROM voice_quota WHERE npub = ? AND date = ?")
@@ -3280,40 +3345,95 @@ async function handleVoiceFinalize(request: Request, env: Env): Promise<Response
 
   const tasks: FinalTask[] = [];
 
-  for (const candidate of confirmed) {
-    const prompt = `You are a task normalization assistant. Given a task candidate, return a normalized task.
+  const batchPrompt = `You are a Taskify task/event finalization assistant.
 
-Reference date (user's now): ${referenceDate}
+Reference date (user local now): ${referenceDate}
 
-Task: { "title": "${candidate.title}", "dueText": "${candidate.dueText ?? ""}", "subtasks": ${JSON.stringify(candidate.subtasks ?? [])} }
+Candidates:
+${JSON.stringify(
+    confirmed.map((c) => ({
+      id: c.id,
+      title: c.title,
+      dueText: c.dueText ?? null,
+      subtasks: c.subtasks ?? [],
+      boardId: c.boardId ?? boardId ?? null,
+    })),
+  )}
 
-Return JSON with shape: { "title": string, "dueISO": string | null, "subtasks": string[] }
+Return ONLY JSON with exact shape:
+{
+  "tasks": [
+    {
+      "id": string,
+      "title": string,
+      "dueISO": string | null,
+      "subtasks": string[],
+      "notes": string | null,
+      "boardId": string | null,
+      "priority": 1 | 2 | 3 | null
+    }
+  ]
+}
 
 Rules:
-- Normalize title (capitalize properly, remove filler words like "um", "uh")
-- Resolve dueText to ISO 8601 UTC datetime relative to the reference date
-- If dueText is absent, blank, or unparseable, return dueISO: null
-- Preserve useful subtasks as short checklist items
-Return ONLY valid JSON. No markdown.`;
+- Return one finalized output item for every input candidate id.
+- Fill all fields for each item.
+- If dueText contains a date/time intent (e.g. "tomorrow 2 PM", "Friday at noon"), dueISO MUST be a valid ISO-8601 UTC datetime.
+- Use dueISO null only when there is truly no parseable date/time intent.
+- Priority defaults to null.
+- Only set priority to 1/2/3 when the user language clearly implies urgency/importance.
+- Do NOT infer priority from normal planning language.
+- Keep title clean and action-oriented.
+- Preserve checklist-like nouns as subtasks.
+- No markdown, no prose.`;
 
-    const result = await callGemini(env.GEMINI_API_KEY, prompt);
+  const batchResult = await callGemini(env.GEMINI_API_KEY, batchPrompt);
+  const batchTasks = Array.isArray((batchResult as any)?.tasks) ? (batchResult as any).tasks as any[] : [];
+  const batchById = new Map<string, any>();
+  for (const t of batchTasks) {
+    const id = typeof t?.id === "string" ? t.id : "";
+    if (id) batchById.set(id, t);
+  }
 
+  for (const candidate of confirmed) {
+    const fromBatch = batchById.get(candidate.id);
     let normalizedTitle = candidate.title;
     let dueISO: string | undefined;
+    let subtasks = candidate.subtasks;
+    let notes: string | undefined;
+    let normalizedBoardId = candidate.boardId ?? boardId;
+    let priority: 1 | 2 | 3 | undefined;
 
-    if (result && typeof (result as any).title === "string") {
-      normalizedTitle = (result as any).title;
+    if (fromBatch && typeof fromBatch.title === "string" && fromBatch.title.trim()) {
+      normalizedTitle = fromBatch.title.trim();
     }
-    if (result && typeof (result as any).dueISO === "string") {
-      dueISO = (result as any).dueISO;
+    if (fromBatch && typeof fromBatch.dueISO === "string") {
+      const candidateDue = fromBatch.dueISO.trim();
+      if (candidateDue && !Number.isNaN(Date.parse(candidateDue))) {
+        dueISO = candidateDue;
+      }
     }
-    const subtasks = normalizeSubtasks((result as any)?.subtasks) ?? candidate.subtasks;
+    if (fromBatch && typeof fromBatch.notes === "string" && fromBatch.notes.trim()) {
+      notes = fromBatch.notes.trim();
+    }
+    if (fromBatch && typeof fromBatch.boardId === "string" && fromBatch.boardId.trim()) {
+      normalizedBoardId = fromBatch.boardId.trim();
+    }
+    priority = parseTaskPriority(fromBatch?.priority);
+    subtasks = normalizeSubtasks(fromBatch?.subtasks) ?? subtasks;
+
+    // Fallback safety: parse dueText locally if model omitted/failed date conversion
+    if (!dueISO && candidate.dueText) {
+      dueISO = parseDueTextFallback(candidate.dueText, referenceDate);
+    }
 
     tasks.push({
       title: normalizedTitle,
       dueISO,
-      boardId: candidate.boardId ?? boardId,
+      boardId: normalizedBoardId,
+      notes,
       subtasks,
+      priority,
     });
   }
 
