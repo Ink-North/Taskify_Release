@@ -47,7 +47,10 @@ export class RuntimeNostrSession {
     async connect() {
         if (this.initialized)
             return;
-        await Promise.race([this.ndk.connect(), new Promise((resolve) => setTimeout(resolve, 10_000))]);
+        // 3s: if a relay hasn't connected by then it's unreachable.
+        // Subscriptions start against connected relays immediately; dead relays
+        // are skipped and retried in the background via scheduleRelayConnect.
+        await Promise.race([this.ndk.connect(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
         this.logDebugSummary();
         this.initialized = true;
     }
@@ -131,25 +134,38 @@ export class RuntimeNostrSession {
     async publishRaw(event, options) {
         return this.publisher.publishRaw(event, options);
     }
-    async fetchEvents(filters, relayUrls, timeoutMs = 15_000, eoseGraceMs = 200) {
+    async fetchEvents(filters, relayUrls, timeoutMs = 8_000, eoseGraceMs = 200, inactivityMs = 1_500) {
         const relaySet = await this.buildRelaySet(relayUrls);
         return new Promise((resolve) => {
             const collected = [];
             const seenIds = new Set();
             let graceTimer = null;
+            let inactivityTimer = null;
             let settled = false;
+            let firstEventReceived = false;
             const settle = () => {
                 if (settled)
                     return;
                 settled = true;
                 if (graceTimer)
                     clearTimeout(graceTimer);
+                if (inactivityTimer)
+                    clearTimeout(inactivityTimer);
                 clearTimeout(hardTimer);
                 try {
                     sub.stop();
                 }
                 catch { }
                 resolve(collected);
+            };
+            const startGrace = () => {
+                if (!graceTimer && !settled) {
+                    if (inactivityTimer) {
+                        clearTimeout(inactivityTimer);
+                        inactivityTimer = null;
+                    }
+                    graceTimer = setTimeout(settle, eoseGraceMs);
+                }
             };
             const hardTimer = setTimeout(settle, timeoutMs);
             const sub = this.ndk.subscribe(filters, { closeOnEose: false, relaySet });
@@ -161,10 +177,17 @@ export class RuntimeNostrSession {
                     return;
                 seenIds.add(raw.id);
                 collected.push(raw);
+                // Reset inactivity timer — settle shortly after events stop arriving
+                firstEventReceived = true;
+                if (!graceTimer) {
+                    if (inactivityTimer)
+                        clearTimeout(inactivityTimer);
+                    inactivityTimer = setTimeout(startGrace, inactivityMs);
+                }
             });
             sub.on("eose", () => {
-                if (!graceTimer && !settled)
-                    graceTimer = setTimeout(settle, eoseGraceMs);
+                // NDK subscription-level EOSE: definitive "done" signal
+                startGrace();
             });
         });
     }
