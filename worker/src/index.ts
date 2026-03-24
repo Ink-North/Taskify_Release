@@ -3117,6 +3117,9 @@ async function handleVoiceExtract(request: Request, env: Env): Promise<Response>
   if (!npub) {
     return jsonResponse({ error: "npub is required" }, 400);
   }
+  if (!/^npub1[0-9a-z]+$/i.test(npub)) {
+    return jsonResponse({ error: "npub must be a valid bech32 npub" }, 400);
+  }
   if (!transcript) {
     return jsonResponse({ error: "transcript must be a non-empty string" }, 400);
   }
@@ -3128,9 +3131,14 @@ async function handleVoiceExtract(request: Request, env: Env): Promise<Response>
   const today = utcDateString();
   const quota = await getVoiceQuota(db, npub, today);
 
+  const currentSessions = quota?.session_count ?? 0;
+  const currentSeconds = quota?.total_seconds ?? 0;
+  const projectedSessions = currentSessions + 1;
+  const projectedSeconds = currentSeconds + sessionDurationSeconds;
+
   const overQuota = !bypassQuota && (
-    (quota?.session_count ?? 0) >= VOICE_MAX_SESSIONS_PER_DAY ||
-    (quota?.total_seconds ?? 0) >= VOICE_MAX_SECONDS_PER_DAY
+    projectedSessions > VOICE_MAX_SESSIONS_PER_DAY ||
+    projectedSeconds > VOICE_MAX_SECONDS_PER_DAY
   );
 
   if (overQuota) {
@@ -3196,6 +3204,9 @@ async function handleVoiceFinalize(request: Request, env: Env): Promise<Response
 
   if (!npub) {
     return jsonResponse({ error: "npub is required" }, 400);
+  }
+  if (!/^npub1[0-9a-z]+$/i.test(npub)) {
+    return jsonResponse({ error: "npub must be a valid bech32 npub" }, 400);
   }
   if (!Array.isArray(rawCandidates) || rawCandidates.length === 0) {
     return jsonResponse({ error: "candidates must be a non-empty array" }, 400);
