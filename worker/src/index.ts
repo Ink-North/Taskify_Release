@@ -42,6 +42,7 @@ export interface Env {
   VAPID_PRIVATE_KEY: string | KVNamespace;
   VAPID_SUBJECT: string;
   TASKIFY_BACKUPS?: R2Bucket;
+  GEMINI_API_KEY?: string;
 }
 
 type PushPlatform = "ios" | "android";
@@ -160,6 +161,41 @@ const THREE_MONTHS_MS = 90 * 24 * 60 * MINUTE_MS;
 const ONE_WEEK_MS = 7 * 24 * 60 * MINUTE_MS;
 const BACKUP_CLEANUP_STATE_KEY = "backups-cleanup-state.json";
 
+const VOICE_MAX_SESSIONS_PER_DAY = 5;
+const VOICE_MAX_SECONDS_PER_DAY = 300;
+const GEMINI_EXTRACT_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+
+type TaskCandidate = {
+  id: string;
+  title: string;
+  dueText?: string;
+  boardId?: string;
+  status: "draft" | "confirmed" | "dismissed";
+};
+
+type TaskOperation = {
+  type: "create_task" | "update_task" | "delete_task" | "mark_uncertain";
+  title?: string;
+  dueText?: string;
+  targetRef?: string;
+  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "boardId">>;
+};
+
+type FinalTask = {
+  title: string;
+  dueISO?: string;
+  boardId?: string;
+  notes?: string;
+};
+
+type VoiceQuotaRow = {
+  npub: string;
+  date: string;
+  session_count: number;
+  total_seconds: number;
+};
+
 let cachedPrivateKey: CryptoKey | null = null;
 const PRIVATE_KEY_KV_KEYS = ["VAPID_PRIVATE_KEY", "private-key", "key"] as const;
 let schemaReadyPromise: Promise<void> | null = null;
@@ -226,6 +262,16 @@ async function ensureSchema(env: Env): Promise<void> {
 
     await db.prepare(`CREATE INDEX IF NOT EXISTS idx_reminders_send_at ON reminders(send_at)`).run();
     await db.prepare(`CREATE INDEX IF NOT EXISTS idx_pending_device ON pending_notifications(device_id)`).run();
+
+    await db.prepare(
+      `CREATE TABLE IF NOT EXISTS voice_quota (
+         npub          TEXT    NOT NULL,
+         date          TEXT    NOT NULL,
+         session_count INTEGER NOT NULL DEFAULT 0,
+         total_seconds INTEGER NOT NULL DEFAULT 0,
+         PRIMARY KEY (npub, date)
+       )`,
+    ).run();
   })()
     .catch((err) => {
       schemaReadyPromise = null;
@@ -305,6 +351,12 @@ export default {
       }
       if (url.pathname === "/api/backups" && request.method === "GET") {
         return await handleLoadBackup(url, env);
+      }
+      if (url.pathname === "/api/voice/extract" && request.method === "POST") {
+        return await handleVoiceExtract(request, env);
+      }
+      if (url.pathname === "/api/voice/finalize" && request.method === "POST") {
+        return await handleVoiceFinalize(request, env);
       }
     } catch (err) {
       console.error("Worker error", err);
@@ -2917,6 +2969,221 @@ async function importRawVapidPrivateKey(env: Env, scalar: Uint8Array): Promise<C
     false,
     ["sign"],
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Voice dictation helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function utcDateString(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/**
+ * Rule-based fallback: split transcript on commas / "and" / "also" to produce
+ * create_task operations without any AI. Used when Gemini is unavailable or
+ * quota is exhausted.
+ */
+function ruleBasedOperations(transcript: string): TaskOperation[] {
+  const segments = transcript
+    .split(/,|\band\b|\balso\b/i)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return segments.map((title) => ({ type: "create_task" as const, title }));
+}
+
+async function getVoiceQuota(db: D1Database, npub: string, date: string): Promise<VoiceQuotaRow | null> {
+  return db
+    .prepare<VoiceQuotaRow>("SELECT npub, date, session_count, total_seconds FROM voice_quota WHERE npub = ? AND date = ?")
+    .bind(npub, date)
+    .first<VoiceQuotaRow>();
+}
+
+async function incrementVoiceQuota(db: D1Database, npub: string, date: string, addSeconds: number): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO voice_quota (npub, date, session_count, total_seconds)
+       VALUES (?, ?, 1, ?)
+       ON CONFLICT(npub, date) DO UPDATE SET
+         session_count = session_count + 1,
+         total_seconds = total_seconds + ?`,
+    )
+    .bind(npub, date, addSeconds, addSeconds)
+    .run();
+}
+
+/**
+ * Call Gemini 2.0 Flash and parse the JSON embedded in the first candidate's
+ * text part. Returns null on any error (network, parse, unexpected shape).
+ */
+async function callGemini(apiKey: string, prompt: string): Promise<unknown | null> {
+  let response: Response;
+  try {
+    response = await fetch(`${GEMINI_EXTRACT_URL}?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 1024 },
+      }),
+    });
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch {
+    return null;
+  }
+  const text = (json as any)?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (typeof text !== "string") return null;
+  // Strip markdown code fences if Gemini wraps output
+  const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+  try {
+    return JSON.parse(stripped);
+  } catch {
+    return null;
+  }
+}
+
+async function handleVoiceExtract(request: Request, env: Env): Promise<Response> {
+  if (!env.GEMINI_API_KEY) {
+    return jsonResponse({ error: "Voice extraction is not configured" }, 501);
+  }
+
+  const body = await parseJson(request);
+  const npub = typeof body?.npub === "string" ? body.npub.trim() : "";
+  const transcript = typeof body?.transcript === "string" ? body.transcript.trim() : "";
+  const candidates: TaskCandidate[] = Array.isArray(body?.candidates) ? body.candidates : [];
+  const sessionDurationSeconds: number =
+    typeof body?.sessionDurationSeconds === "number" && Number.isFinite(body.sessionDurationSeconds)
+      ? Math.max(0, body.sessionDurationSeconds)
+      : 0;
+
+  if (!npub) {
+    return jsonResponse({ error: "npub is required" }, 400);
+  }
+  if (!transcript) {
+    return jsonResponse({ error: "transcript must be a non-empty string" }, 400);
+  }
+
+  const db = requireDb(env);
+  const today = utcDateString();
+  const quota = await getVoiceQuota(db, npub, today);
+
+  const overQuota =
+    (quota?.session_count ?? 0) >= VOICE_MAX_SESSIONS_PER_DAY ||
+    (quota?.total_seconds ?? 0) >= VOICE_MAX_SECONDS_PER_DAY;
+
+  if (overQuota) {
+    return jsonResponse(
+      { error: "quota_exceeded", operations: ruleBasedOperations(transcript) },
+      429,
+    );
+  }
+
+  const prompt = `You are a voice task extraction assistant. Given a voice transcript, extract task operations.
+
+Current candidates: ${JSON.stringify(candidates)}
+
+Transcript: "${transcript}"
+
+Return a JSON object with shape: { "operations": Array<TaskOperation> }
+
+Where TaskOperation has type: "create_task" | "update_task" | "delete_task" | "mark_uncertain"
+Fields: type (required), title (string), dueText (string, verbatim from transcript), targetRef (string, e.g. "last_task"), changes (object with title/dueText/boardId)
+
+Rules:
+- create_task: new task mentioned
+- update_task: correction of existing task, use targetRef "last_task" to reference most recent
+- delete_task: user says "never mind", "remove", "cancel that", "scratch that"
+- mark_uncertain: unclear/ambiguous intent
+Keep titles concise. Return ONLY valid JSON. No markdown.`;
+
+  const result = await callGemini(env.GEMINI_API_KEY, prompt);
+  let operations: TaskOperation[];
+
+  if (result && Array.isArray((result as any).operations)) {
+    operations = (result as any).operations as TaskOperation[];
+  } else {
+    // Gemini returned something unparseable — use rule-based fallback but still 200
+    operations = ruleBasedOperations(transcript);
+  }
+
+  // Increment quota on successful (non-quota-exceeded) path
+  await incrementVoiceQuota(db, npub, today, sessionDurationSeconds);
+
+  return jsonResponse({ operations });
+}
+
+async function handleVoiceFinalize(request: Request, env: Env): Promise<Response> {
+  if (!env.GEMINI_API_KEY) {
+    return jsonResponse({ error: "Voice finalization is not configured" }, 501);
+  }
+
+  const body = await parseJson(request);
+  const npub = typeof body?.npub === "string" ? body.npub.trim() : "";
+  const rawCandidates: unknown = body?.candidates;
+  const boardId = typeof body?.boardId === "string" ? body.boardId : undefined;
+  const referenceDate =
+    typeof body?.referenceDate === "string" && body.referenceDate
+      ? body.referenceDate
+      : new Date().toISOString();
+
+  if (!npub) {
+    return jsonResponse({ error: "npub is required" }, 400);
+  }
+  if (!Array.isArray(rawCandidates) || rawCandidates.length === 0) {
+    return jsonResponse({ error: "candidates must be a non-empty array" }, 400);
+  }
+
+  const confirmed = (rawCandidates as TaskCandidate[]).filter(
+    (c) => c && typeof c === "object" && c.status === "confirmed",
+  );
+
+  if (confirmed.length === 0) {
+    return jsonResponse({ error: "No confirmed candidates to finalize" }, 400);
+  }
+
+  const tasks: FinalTask[] = [];
+
+  for (const candidate of confirmed) {
+    const prompt = `You are a task normalization assistant. Given a task candidate, return a normalized task.
+
+Reference date (user's now): ${referenceDate}
+
+Task: { "title": "${candidate.title}", "dueText": "${candidate.dueText ?? ""}" }
+
+Return JSON with shape: { "title": string, "dueISO": string | null }
+
+Rules:
+- Normalize title (capitalize properly, remove filler words like "um", "uh")
+- Resolve dueText to ISO 8601 UTC datetime relative to the reference date
+- If dueText is absent, blank, or unparseable, return dueISO: null
+Return ONLY valid JSON. No markdown.`;
+
+    const result = await callGemini(env.GEMINI_API_KEY, prompt);
+
+    let normalizedTitle = candidate.title;
+    let dueISO: string | undefined;
+
+    if (result && typeof (result as any).title === "string") {
+      normalizedTitle = (result as any).title;
+    }
+    if (result && typeof (result as any).dueISO === "string") {
+      dueISO = (result as any).dueISO;
+    }
+
+    tasks.push({
+      title: normalizedTitle,
+      dueISO,
+      boardId: candidate.boardId ?? boardId,
+    });
+  }
+
+  return jsonResponse({ tasks });
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
