@@ -3012,7 +3012,8 @@ function isGarbageTaskTitle(title: string): boolean {
 function cleanupTaskTitle(raw: string): string {
   let title = raw.trim();
   title = title.replace(/^(?:and\s+then|and|then|also)\s+/i, "");
-  title = title.replace(/^(?:i\s+need\s+to|i\s+have\s+to|i(?:'| a)?m\s+going\s+to|i\s+can(?:not|'?t)\s+forget\s+to)\s+/i, "");
+  title = title.replace(/^(?:i\s+need\s+to|i\s+have\s+to|i(?:'| a)?m\s+going\s+to|i\s+can(?:not|'?t)\s+forget\s+to|there(?:'s|\s+is)\s+|we\s+have\s+(?:a\s+)?)\s*/i, "");
+  title = title.replace(/^to\s+/i, "");
   title = title.replace(/\s+/g, " ").trim();
   return title;
 }
@@ -3046,6 +3047,33 @@ function dedupe(values: string[] | undefined): string[] | undefined {
     out.push(v);
   }
   return out.length ? out : undefined;
+}
+
+function applyTranscriptCorrections(operations: TaskOperation[], transcript: string): TaskOperation[] {
+  if (!operations.length) return operations;
+  const out = [...operations];
+  const lower = transcript.toLowerCase();
+
+  const correction = lower.match(/actually\s+change\s+the\s+([^.,;]+?)\s+to\s+([^.,;]+)/i);
+  if (correction) {
+    const targetPhrase = correction[1].trim();
+    const newTime = correction[2].trim();
+    const targetIdx = out.findIndex((op) =>
+      op.type === "create_task" &&
+      typeof op.title === "string" &&
+      op.title.toLowerCase().includes(targetPhrase.replace(/\b(noon|midnight|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i, "").trim()),
+    );
+    if (targetIdx >= 0) {
+      const priorDue = out[targetIdx].dueText ?? "";
+      const day = priorDue.match(/\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+sunday|next\s+monday|next\s+tuesday|next\s+wednesday|next\s+thursday|next\s+friday|next\s+saturday)\b/i)?.[0];
+      out[targetIdx] = {
+        ...out[targetIdx],
+        dueText: day ? `${day} at ${newTime}` : newTime,
+      };
+    }
+  }
+
+  return out;
 }
 
 function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
@@ -3088,6 +3116,16 @@ function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
     if (birthday) {
       const who = birthday[1].trim().replace(/\s+/g, " ");
       title = `${who}'s birthday party`;
+    }
+    const birthdayFor = title.match(/^birthday\s+party(?:\s+for)?\s+([A-Za-z][A-Za-z' -]{1,40})/i);
+    if (birthdayFor) {
+      const who = birthdayFor[1].trim().replace(/\s+/g, " ");
+      title = `Birthday party for ${who}`;
+    }
+
+    const dinnerAfterChurch = title.match(/dinner\s+after\s+church/i);
+    if (dinnerAfterChurch) {
+      title = "Dinner after church";
     }
 
     if (isGarbageTaskTitle(title)) continue;
@@ -3302,11 +3340,13 @@ Return ONLY JSON in this exact shape:
 
 Rules:
 - Prefer fewer, high-quality tasks. Do not split one task into fragments.
-- Never keep leading fragments in titles (drop/clean: "I need to", "then", "and then", "then tomorrow", "then Friday").
+- Never keep leading fragments in titles (drop/clean: "I need to", "then", "and then", "then tomorrow", "then Friday", "we have", "there's").
 - If user says grocery/shopping item lists, keep ONE parent task and put items in subtasks.
 - Keep relative date/time phrases in dueText (e.g. "tomorrow 2:00 PM", "Friday at noon", "today at 5 PM").
-- Good title examples: "Go to the grocery store", "Ashley's birthday party", "Go for a walk".
-- Bad titles: "then I", "also", "and".
+- Apply in-sentence corrections: if user says "actually change X to Y", update the earlier task for X.
+- Keep title nouns concise and board-ready.
+- Good title examples: "Go to the grocery store", "Birthday party for Ashley", "Play date", "Dinner after church", "Get dogs from Gran Gran's".
+- Bad titles: "then I", "also", "and", "next Sunday at 2 PM we have...".
 - If no valid tasks exist, return {"tasks":[]}.
 
 Output JSON only.`;
@@ -3322,6 +3362,8 @@ Output JSON only.`;
     // Gemini returned something unparseable — use rule-based fallback but still 200
     operations = ruleBasedOperations(transcript);
   }
+
+  operations = applyTranscriptCorrections(operations, transcript);
 
   // Increment quota on successful (non-quota-exceeded) path
   await incrementVoiceQuota(db, npub, today, sessionDurationSeconds);

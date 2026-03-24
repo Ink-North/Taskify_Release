@@ -712,6 +712,61 @@ test("POST /api/voice/extract returns rule-based fallback operations when Gemini
   }
 });
 
+test("POST /api/voice/extract applies correction phrases to prior task dueText", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    if (String(url).includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      tasks: [
+                        { title: "Play date", dueText: "tomorrow at noon", subtasks: [] },
+                        { title: "then next Sunday at 2 PM we have a dinner after church", dueText: "next Sunday at 2 PM", subtasks: [] },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 200 });
+  }) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        transcript: "I am going to the park tomorrow at noon for a play date. Actually change the noon play date to 1 PM. then next Sunday at 2 PM we have a dinner after church",
+        candidates: [],
+        sessionDurationSeconds: 20,
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.ok(Array.isArray(body.operations));
+    assert.equal(body.operations[0].title, "Play date");
+    assert.equal(body.operations[0].dueText, "tomorrow at 1 pm");
+    assert.equal(body.operations[1].title, "Dinner after church");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 // ── Test 8: POST /api/voice/finalize — 501 when GEMINI_API_KEY missing ──────────
 test("POST /api/voice/finalize returns 501 when GEMINI_API_KEY not configured", async () => {
   const db = new MockD1WithVoice();
