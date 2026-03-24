@@ -43,6 +43,8 @@ export interface Env {
   VAPID_SUBJECT: string;
   TASKIFY_BACKUPS?: R2Bucket;
   GEMINI_API_KEY?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_API_TOKEN?: string;
 }
 
 type PushPlatform = "ios" | "android";
@@ -168,8 +170,7 @@ const VOICE_TEST_BYPASS_NPUBS = new Set([
   "npub13p5mg2wszus5nt7seldn8d6dnppvf3xqe5q2vsq076r2ysvh93eqwhgqdm",
   "npub1f4t6089m5zhljvrurfuc8ceymlr6yzrdljxz9yaskyj8r8s536ns6rv35g",
 ]);
-const GEMINI_MODEL_PRIMARY = "gemini-3-flash-preview";
-const GEMINI_MODEL_FALLBACK = "gemini-2.0-flash";
+const GEMINI_MODEL_PRIMARY = "gemini-3.1-flash-lite-preview";
 
 type TaskCandidate = {
   id: string;
@@ -3233,54 +3234,103 @@ async function incrementVoiceQuota(db: D1Database, npub: string, date: string, a
  * Call Gemini 2.0 Flash and parse the JSON embedded in the first candidate's
  * text part. Returns null on any error (network, parse, unexpected shape).
  */
+function parseJsonStringSafely(text: unknown): unknown | null {
+  if (typeof text !== "string") return null;
+  const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+  try {
+    return JSON.parse(stripped);
+  } catch {
+    return null;
+  }
+}
+
 async function callGemini(apiKey: string, prompt: string): Promise<unknown | null> {
-  const models = [GEMINI_MODEL_PRIMARY, GEMINI_MODEL_FALLBACK];
-
-  for (const model of models) {
-    let response: Response;
-    try {
-      response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: 1024,
-              responseMimeType: "application/json",
-            },
-          }),
-        },
-      );
-    } catch {
-      continue;
-    }
-
-    if (!response.ok) continue;
-
-    let json: unknown;
-    try {
-      json = await response.json();
-    } catch {
-      continue;
-    }
-    const text = (json as any)?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (typeof text !== "string") continue;
-    const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
-    try {
-      return JSON.parse(stripped);
-    } catch {
-      continue;
-    }
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL_PRIMARY}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 1024,
+            responseMimeType: "application/json",
+          },
+        }),
+      },
+    );
+  } catch {
+    return null;
   }
 
-  return null;
+  if (!response.ok) return null;
+
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch {
+    return null;
+  }
+  const text = (json as any)?.candidates?.[0]?.content?.parts?.[0]?.text;
+  return parseJsonStringSafely(text);
+}
+
+async function callCloudflareGlmFallback(env: Env, prompt: string): Promise<unknown | null> {
+  const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const apiToken = env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!accountId || !apiToken) return null;
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/zai-org/glm-4.7-flash`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiToken}`,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 1024,
+          temperature: 0.1,
+        }),
+      },
+    );
+  } catch {
+    return null;
+  }
+
+  if (!response.ok) return null;
+
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch {
+    return null;
+  }
+
+  // Workers AI chat responses may place text in result.response or result.output_text
+  const text = (json as any)?.result?.response
+    ?? (json as any)?.result?.output_text
+    ?? (json as any)?.response;
+
+  return parseJsonStringSafely(text);
+}
+
+async function callVoiceModelWithFallback(env: Env, prompt: string): Promise<unknown | null> {
+  if (env.GEMINI_API_KEY) {
+    const gemini = await callGemini(env.GEMINI_API_KEY, prompt);
+    if (gemini) return gemini;
+  }
+  return callCloudflareGlmFallback(env, prompt);
 }
 
 async function handleVoiceExtract(request: Request, env: Env): Promise<Response> {
-  if (!env.GEMINI_API_KEY) {
+  if (!env.GEMINI_API_KEY && !(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN)) {
     return jsonResponse({ error: "Voice extraction is not configured" }, 501);
   }
 
@@ -3322,7 +3372,7 @@ async function handleVoiceExtract(request: Request, env: Env): Promise<Response>
 
   if (overQuota) {
     return jsonResponse(
-      { error: "quota_exceeded", operations: ruleBasedOperations(transcript) },
+      { error: "quota_exceeded", message: "Voice extraction unavailable right now. Please try again later." },
       429,
     );
   }
@@ -3351,16 +3401,15 @@ Rules:
 
 Output JSON only.`;
 
-  const result = await callGemini(env.GEMINI_API_KEY, prompt);
-  let operations = toOperationsFromStructuredTasks(result);
-
-  if (!operations.length && result && Array.isArray((result as any).operations)) {
-    operations = (result as any).operations as TaskOperation[];
+  const result = await callVoiceModelWithFallback(env, prompt);
+  if (!result) {
+    return jsonResponse({ error: "gemini_unavailable", message: "Voice extraction unavailable right now. Please try again later." }, 503);
   }
 
-  if (!operations.length) {
-    // Gemini returned something unparseable — use rule-based fallback but still 200
-    operations = ruleBasedOperations(transcript);
+  let operations = toOperationsFromStructuredTasks(result);
+
+  if (!operations.length && Array.isArray((result as any).operations)) {
+    operations = (result as any).operations as TaskOperation[];
   }
 
   operations = applyTranscriptCorrections(operations, transcript);
@@ -3372,7 +3421,7 @@ Output JSON only.`;
 }
 
 async function handleVoiceFinalize(request: Request, env: Env): Promise<Response> {
-  if (!env.GEMINI_API_KEY) {
+  if (!env.GEMINI_API_KEY && !(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN)) {
     return jsonResponse({ error: "Voice finalization is not configured" }, 501);
   }
 
@@ -3457,7 +3506,10 @@ Rules:
 - Preserve checklist-like nouns as subtasks.
 - No markdown, no prose.`;
 
-  const batchResult = await callGemini(env.GEMINI_API_KEY, batchPrompt);
+  const batchResult = await callVoiceModelWithFallback(env, batchPrompt);
+  if (!batchResult) {
+    return jsonResponse({ error: "gemini_unavailable", message: "Voice finalization unavailable right now. Please try again later." }, 503);
+  }
   const batchTasks = Array.isArray((batchResult as any)?.tasks) ? (batchResult as any).tasks as any[] : [];
   const batchById = new Map<string, any>();
   for (const t of batchTasks) {
@@ -3491,11 +3543,6 @@ Rules:
     }
     priority = parseTaskPriority(fromBatch?.priority);
     subtasks = normalizeSubtasks(fromBatch?.subtasks) ?? subtasks;
-
-    // Fallback safety: parse dueText locally if model omitted/failed date conversion
-    if (!dueISO && candidate.dueText) {
-      dueISO = parseDueTextFallback(candidate.dueText, referenceDate, referenceOffsetMinutes);
-    }
 
     tasks.push({
       title: normalizedTitle,
