@@ -171,6 +171,7 @@ type TaskCandidate = {
   title: string;
   dueText?: string;
   boardId?: string;
+  subtasks?: string[];
   status: "draft" | "confirmed" | "dismissed";
 };
 
@@ -178,8 +179,9 @@ type TaskOperation = {
   type: "create_task" | "update_task" | "delete_task" | "mark_uncertain";
   title?: string;
   dueText?: string;
+  subtasks?: string[];
   targetRef?: string;
-  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "boardId">>;
+  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "boardId" | "subtasks">>;
 };
 
 type FinalTask = {
@@ -187,6 +189,7 @@ type FinalTask = {
   dueISO?: string;
   boardId?: string;
   notes?: string;
+  subtasks?: string[];
 };
 
 type VoiceQuotaRow = {
@@ -2992,6 +2995,36 @@ function ruleBasedOperations(transcript: string): TaskOperation[] {
   return segments.map((title) => ({ type: "create_task" as const, title }));
 }
 
+function isGarbageTaskTitle(title: string): boolean {
+  const t = title.trim().toLowerCase();
+  if (!t) return true;
+  if (t.length < 4) return true;
+  if (/^(and|also|then|so|i|i\s+need|i\s+have|uh|um|like)$/.test(t)) return true;
+  return false;
+}
+
+function normalizeSubtasks(input: unknown): string[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const out = input
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .filter((v) => v.length > 0);
+  return out.length ? out : undefined;
+}
+
+function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
+  const tasks = Array.isArray((result as any)?.tasks) ? ((result as any).tasks as any[]) : [];
+  if (!tasks.length) return [];
+  const operations: TaskOperation[] = [];
+  for (const t of tasks) {
+    const title = typeof t?.title === "string" ? t.title.trim() : "";
+    if (isGarbageTaskTitle(title)) continue;
+    const dueText = typeof t?.dueText === "string" && t.dueText.trim() ? t.dueText.trim() : undefined;
+    const subtasks = normalizeSubtasks(t?.subtasks);
+    operations.push({ type: "create_task", title, dueText, subtasks });
+  }
+  return operations;
+}
+
 async function getVoiceQuota(db: D1Database, npub: string, date: string): Promise<VoiceQuotaRow | null> {
   return db
     .prepare<VoiceQuotaRow>("SELECT npub, date, session_count, total_seconds FROM voice_quota WHERE npub = ? AND date = ?")
@@ -3098,34 +3131,36 @@ async function handleVoiceExtract(request: Request, env: Env): Promise<Response>
     );
   }
 
-  const prompt = `You are a voice task extraction assistant. Given one full voice transcript, extract clean task operations.
-
-Current candidates: ${JSON.stringify(candidates)}
+  const prompt = `Extract actionable tasks from this full voice transcript.
 
 Transcript: "${transcript}"
 
-Return ONLY JSON with shape: { "operations": Array<TaskOperation> }
+Return ONLY JSON in this exact shape:
+{
+  "tasks": [
+    { "title": string, "dueText": string|null, "subtasks": string[] }
+  ]
+}
 
-TaskOperation type is one of: "create_task" | "update_task" | "delete_task" | "mark_uncertain".
-Fields allowed: type, title, dueText, targetRef, changes.
+Rules:
+- Prefer fewer, high-quality tasks. Do not split one task into fragments.
+- Ignore filler words and discourse markers.
+- If user says grocery/shopping item lists, keep ONE parent task and put items in subtasks.
+- Keep relative date/time phrases in dueText (e.g. "tomorrow 2:00 PM", "today at 5 PM").
+- Good title examples: "Go to the grocery store", "Ashley's birthday party".
+- Bad titles: "then I", "also", "and".
+- If no valid tasks exist, return {"tasks":[]}.
 
-Critical rules:
-- Prefer fewer, higher-quality tasks over fragmented clauses.
-- Do NOT emit filler fragments like "I", "also", "then" as tasks.
-- Merge related clauses into one task when they refer to the same action.
-- Preserve useful time/date phrases in dueText (e.g. "5 PM", "tomorrow").
-- Use concise imperative titles (e.g. "Go to the store", "Categorize church transactions").
-- If a phrase is not a task, ignore it.
-- If intent is unclear, use mark_uncertain.
-
-Output JSON only. No markdown, no prose.`;
+Output JSON only.`;
 
   const result = await callGemini(env.GEMINI_API_KEY, prompt);
-  let operations: TaskOperation[];
+  let operations = toOperationsFromStructuredTasks(result);
 
-  if (result && Array.isArray((result as any).operations)) {
+  if (!operations.length && result && Array.isArray((result as any).operations)) {
     operations = (result as any).operations as TaskOperation[];
-  } else {
+  }
+
+  if (!operations.length) {
     // Gemini returned something unparseable — use rule-based fallback but still 200
     operations = ruleBasedOperations(transcript);
   }
@@ -3172,14 +3207,15 @@ async function handleVoiceFinalize(request: Request, env: Env): Promise<Response
 
 Reference date (user's now): ${referenceDate}
 
-Task: { "title": "${candidate.title}", "dueText": "${candidate.dueText ?? ""}" }
+Task: { "title": "${candidate.title}", "dueText": "${candidate.dueText ?? ""}", "subtasks": ${JSON.stringify(candidate.subtasks ?? [])} }
 
-Return JSON with shape: { "title": string, "dueISO": string | null }
+Return JSON with shape: { "title": string, "dueISO": string | null, "subtasks": string[] }
 
 Rules:
 - Normalize title (capitalize properly, remove filler words like "um", "uh")
 - Resolve dueText to ISO 8601 UTC datetime relative to the reference date
 - If dueText is absent, blank, or unparseable, return dueISO: null
+- Preserve useful subtasks as short checklist items
 Return ONLY valid JSON. No markdown.`;
 
     const result = await callGemini(env.GEMINI_API_KEY, prompt);
@@ -3193,11 +3229,13 @@ Return ONLY valid JSON. No markdown.`;
     if (result && typeof (result as any).dueISO === "string") {
       dueISO = (result as any).dueISO;
     }
+    const subtasks = normalizeSubtasks((result as any)?.subtasks) ?? candidate.subtasks;
 
     tasks.push({
       title: normalizedTitle,
       dueISO,
       boardId: candidate.boardId ?? boardId,
+      subtasks,
     });
   }
 
