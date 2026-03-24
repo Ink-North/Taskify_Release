@@ -1,79 +1,106 @@
 import SwiftUI
-import SwiftData
-import TaskifyCore
+import WebKit
+
+// MARK: - App
 
 @main
 struct TaskifyApp: App {
-    @StateObject private var vm = AppViewModel()
-
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environmentObject(vm)
+            TaskifyWebWrapperView(url: URL(string: "https://taskify.solife.me")!)
+                .ignoresSafeArea()
         }
-        .modelContainer(for: [
-            TaskifyTask.self,
-            TaskifyCalendarEvent.self,
-            TaskifyBoard.self,
-        ])
     }
 }
 
-struct RootView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query(sort: \TaskifyBoard.name) private var boards: [TaskifyBoard]
-    @EnvironmentObject private var vm: AppViewModel
+// MARK: - WebView (iOS)
 
-    var body: some View {
-        NavigationSplitView {
-            BoardListView(selectedBoardId: $vm.selectedBoardId) {
-                vm.showingAddBoard = true
-            }
-            .navigationTitle("Taskify")
-        } detail: {
-            if let selected = selectedBoard {
-                BoardDetailView(board: selected)
-            } else {
-                ContentUnavailableView("Select a board", systemImage: "sidebar.left")
-            }
-        }
-        .task {
-            try? vm.bootstrapIfNeeded(context: modelContext)
-            if vm.selectedBoardId == nil {
-                vm.selectedBoardId = boards.first?.id
-            }
-        }
-        .sheet(isPresented: $vm.showingAddBoard) {
-            NavigationStack {
-                Form {
-                    Section("Board") {
-                        TextField("Board name", text: $vm.newBoardName)
-                        Picker("Type", selection: $vm.newBoardKind) {
-                            Text("Week").tag("week")
-                            Text("Lists").tag("lists")
-                            Text("Compound").tag("compound")
-                        }
-                        .pickerStyle(.segmented)
-                    }
-                }
-                .navigationTitle("Add Board")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { vm.showingAddBoard = false }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Create") { try? vm.createBoard(context: modelContext) }
-                    }
-                }
-            }
-            .presentationDetents([.medium])
-        }
+#if os(iOS)
+struct TaskifyWebWrapperView: UIViewRepresentable {
+    let url: URL
+
+    func makeUIView(context: Context) -> WKWebView {
+        makeWebView(context: context)
     }
 
-    private var selectedBoard: TaskifyBoard? {
-        if let id = vm.selectedBoardId {
-            return boards.first(where: { $0.id == id })
+    func updateUIView(_ webView: WKWebView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+}
+
+// MARK: - WebView (macOS)
+
+#elseif os(macOS)
+import AppKit
+
+struct TaskifyWebWrapperView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> WKWebView {
+        makeWebView(context: context)
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        guard webView.url?.absoluteString != url.absoluteString else { return }
+        webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData))
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+}
+#endif
+
+// MARK: - Shared setup
+
+extension TaskifyWebWrapperView {
+    fileprivate func makeWebView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
+        #if os(iOS)
+        config.allowsInlineMediaPlayback = true
+        #endif
+
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        webView.allowsBackForwardNavigationGestures = true
+
+        #if os(iOS)
+        webView.isOpaque = false
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        #endif
+
+        webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData))
+        return webView
+    }
+
+    // MARK: - Coordinator
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            decisionHandler(.allow)
         }
-        return boards.first
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            showError(in: webView, error: error)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            showError(in: webView, error: error)
+        }
+
+        private func showError(in webView: WKWebView, error: Error) {
+            let e = error as NSError
+            guard !(e.domain == NSURLErrorDomain && e.code == NSURLErrorCancelled) else { return }
+            webView.loadHTMLString("""
+            <html><head><meta name='viewport' content='width=device-width,initial-scale=1'/></head>
+            <body style='font-family:-apple-system;padding:24px;background:#0b1424;color:#fff;'>
+              <h2 style='margin:0 0 12px 0;'>Unable to load Taskify</h2>
+              <p style='opacity:.85;line-height:1.4;'>The configured web URL could not be reached.</p>
+              <p style='opacity:.7;line-height:1.4;word-break:break-word;'><strong>Error:</strong> \(e.localizedDescription)</p>
+            </body></html>
+            """, baseURL: nil)
+        }
     }
 }
