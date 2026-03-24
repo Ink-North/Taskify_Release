@@ -74,7 +74,7 @@ function CandidateCard({
           aria-hidden="true"
           className="icon-button mt-0.5"
         >
-          ○
+          <span className="inline-block h-4 w-4 rounded-full border border-white/45" />
         </span>
 
         <div className="flex-1 min-w-0">
