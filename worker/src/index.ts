@@ -3012,7 +3012,7 @@ function isGarbageTaskTitle(title: string): boolean {
 function cleanupTaskTitle(raw: string): string {
   let title = raw.trim();
   title = title.replace(/^(?:and\s+then|and|then|also)\s+/i, "");
-  title = title.replace(/^(?:i\s+need\s+to|i\s+have\s+to|i(?:'| a)?m\s+going\s+to)\s+/i, "");
+  title = title.replace(/^(?:i\s+need\s+to|i\s+have\s+to|i(?:'| a)?m\s+going\s+to|i\s+can(?:not|'?t)\s+forget\s+to)\s+/i, "");
   title = title.replace(/\s+/g, " ").trim();
   return title;
 }
@@ -3024,7 +3024,7 @@ function extractPickupItems(title: string): string[] {
   if (!raw) return [];
   const splitByDelims = raw.split(/,|\band\b/i).map((v) => v.trim()).filter(Boolean);
   if (splitByDelims.length > 1) return splitByDelims;
-  return raw.split(/\s+/).map((v) => v.trim()).filter((v) => v.length > 2);
+  return [];
 }
 
 function normalizeSubtasks(input: unknown): string[] | undefined {
@@ -3060,8 +3060,9 @@ function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
     let dueText = typeof t?.dueText === "string" && t.dueText.trim() ? t.dueText.trim() : undefined;
     let subtasks = normalizeSubtasks(t?.subtasks);
 
+    const groceryContext = /grocery|groceries|store|shopping|supermarket/i.test(`${title} ${dueText ?? ""}`);
     const pickupItems = extractPickupItems(title);
-    if (pickupItems.length) {
+    if (groceryContext && pickupItems.length) {
       const prev = operations[operations.length - 1];
       if (prev?.type === "create_task" && /grocery|store|shopping/i.test(prev.title || "")) {
         prev.subtasks = dedupe([...(prev.subtasks || []), ...pickupItems]);
@@ -3069,6 +3070,12 @@ function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
       }
       title = "Go to the grocery store";
       subtasks = dedupe([...(subtasks || []), ...pickupItems]);
+    }
+
+    const inlineDue = title.match(/\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+    if (inlineDue && !dueText) {
+      dueText = inlineDue[1];
+      title = title.replace(new RegExp(`\\b${inlineDue[1]}\\b`, "i"), "").replace(/\s+/g, " ").trim();
     }
 
     const dayPrefix = title.match(/^(tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b\s*(.*)$/i);
@@ -3083,6 +3090,7 @@ function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
       title = `${who}'s birthday party`;
     }
 
+    if (isGarbageTaskTitle(title)) continue;
     operations.push({ type: "create_task", title, dueText, subtasks });
   }
 

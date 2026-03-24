@@ -96,7 +96,7 @@ function applyOperation(candidates: TaskCandidate[], op: TaskOperation): TaskCan
         dueText: op.dueText,
         subtasks: op.subtasks,
         boardId: op.changes?.boardId,
-        status: "draft",
+        status: "confirmed",
       };
       return [...candidates, newCandidate];
     }
