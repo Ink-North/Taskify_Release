@@ -168,7 +168,7 @@ const VOICE_TEST_BYPASS_NPUBS = new Set([
   "npub13p5mg2wszus5nt7seldn8d6dnppvf3xqe5q2vsq076r2ysvh93eqwhgqdm",
   "npub1f4t6089m5zhljvrurfuc8ceymlr6yzrdljxz9yaskyj8r8s536ns6rv35g",
 ]);
-const GEMINI_MODEL_PRIMARY = "gemini-3.1-flash";
+const GEMINI_MODEL_PRIMARY = "gemini-3-flash-preview";
 const GEMINI_MODEL_FALLBACK = "gemini-2.0-flash";
 
 type TaskCandidate = {
@@ -3008,6 +3008,24 @@ function isGarbageTaskTitle(title: string): boolean {
   return false;
 }
 
+function cleanupTaskTitle(raw: string): string {
+  let title = raw.trim();
+  title = title.replace(/^(?:and\s+then|and|then|also)\s+/i, "");
+  title = title.replace(/^(?:i\s+need\s+to|i\s+have\s+to|i(?:'| a)?m\s+going\s+to)\s+/i, "");
+  title = title.replace(/\s+/g, " ").trim();
+  return title;
+}
+
+function extractPickupItems(title: string): string[] {
+  const m = title.match(/^(?:pick\s+up|get|buy)\s+(?:some\s+)?(.+)$/i);
+  if (!m) return [];
+  const raw = m[1].trim();
+  if (!raw) return [];
+  const splitByDelims = raw.split(/,|\band\b/i).map((v) => v.trim()).filter(Boolean);
+  if (splitByDelims.length > 1) return splitByDelims;
+  return raw.split(/\s+/).map((v) => v.trim()).filter((v) => v.length > 2);
+}
+
 function normalizeSubtasks(input: unknown): string[] | undefined {
   if (!Array.isArray(input)) return undefined;
   const out = input
@@ -3016,17 +3034,57 @@ function normalizeSubtasks(input: unknown): string[] | undefined {
   return out.length ? out : undefined;
 }
 
+function dedupe(values: string[] | undefined): string[] | undefined {
+  if (!values?.length) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of values) {
+    const key = v.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out.length ? out : undefined;
+}
+
 function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
   const tasks = Array.isArray((result as any)?.tasks) ? ((result as any).tasks as any[]) : [];
   if (!tasks.length) return [];
   const operations: TaskOperation[] = [];
+
   for (const t of tasks) {
-    const title = typeof t?.title === "string" ? t.title.trim() : "";
+    let title = typeof t?.title === "string" ? cleanupTaskTitle(t.title) : "";
     if (isGarbageTaskTitle(title)) continue;
-    const dueText = typeof t?.dueText === "string" && t.dueText.trim() ? t.dueText.trim() : undefined;
-    const subtasks = normalizeSubtasks(t?.subtasks);
+
+    let dueText = typeof t?.dueText === "string" && t.dueText.trim() ? t.dueText.trim() : undefined;
+    let subtasks = normalizeSubtasks(t?.subtasks);
+
+    const pickupItems = extractPickupItems(title);
+    if (pickupItems.length) {
+      const prev = operations[operations.length - 1];
+      if (prev?.type === "create_task" && /grocery|store|shopping/i.test(prev.title || "")) {
+        prev.subtasks = dedupe([...(prev.subtasks || []), ...pickupItems]);
+        continue;
+      }
+      title = "Go to the grocery store";
+      subtasks = dedupe([...(subtasks || []), ...pickupItems]);
+    }
+
+    const dayPrefix = title.match(/^(tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b\s*(.*)$/i);
+    if (dayPrefix) {
+      if (!dueText) dueText = dayPrefix[1];
+      if (dayPrefix[2]) title = dayPrefix[2].trim();
+    }
+
+    const birthday = title.match(/^([A-Za-z][A-Za-z' -]{1,40})\s+has\s+a\s+birthday\s+party/i);
+    if (birthday) {
+      const who = birthday[1].trim().replace(/\s+/g, " ");
+      title = `${who}'s birthday party`;
+    }
+
     operations.push({ type: "create_task", title, dueText, subtasks });
   }
+
   return operations;
 }
 
@@ -3161,10 +3219,10 @@ Return ONLY JSON in this exact shape:
 
 Rules:
 - Prefer fewer, high-quality tasks. Do not split one task into fragments.
-- Ignore filler words and discourse markers.
+- Never keep leading fragments in titles (drop/clean: "I need to", "then", "and then", "then tomorrow", "then Friday").
 - If user says grocery/shopping item lists, keep ONE parent task and put items in subtasks.
-- Keep relative date/time phrases in dueText (e.g. "tomorrow 2:00 PM", "today at 5 PM").
-- Good title examples: "Go to the grocery store", "Ashley's birthday party".
+- Keep relative date/time phrases in dueText (e.g. "tomorrow 2:00 PM", "Friday at noon", "today at 5 PM").
+- Good title examples: "Go to the grocery store", "Ashley's birthday party", "Go for a walk".
 - Bad titles: "then I", "also", "and".
 - If no valid tasks exist, return {"tasks":[]}.
 
