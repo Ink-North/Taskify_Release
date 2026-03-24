@@ -163,8 +163,8 @@ const BACKUP_CLEANUP_STATE_KEY = "backups-cleanup-state.json";
 
 const VOICE_MAX_SESSIONS_PER_DAY = 5;
 const VOICE_MAX_SECONDS_PER_DAY = 300;
-const GEMINI_EXTRACT_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+const GEMINI_MODEL_PRIMARY = "gemini-3.1-flash";
+const GEMINI_MODEL_FALLBACK = "gemini-2.0-flash";
 
 type TaskCandidate = {
   id: string;
@@ -3017,35 +3017,49 @@ async function incrementVoiceQuota(db: D1Database, npub: string, date: string, a
  * text part. Returns null on any error (network, parse, unexpected shape).
  */
 async function callGemini(apiKey: string, prompt: string): Promise<unknown | null> {
-  let response: Response;
-  try {
-    response = await fetch(`${GEMINI_EXTRACT_URL}?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 1024 },
-      }),
-    });
-  } catch {
-    return null;
+  const models = [GEMINI_MODEL_PRIMARY, GEMINI_MODEL_FALLBACK];
+
+  for (const model of models) {
+    let response: Response;
+    try {
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.1,
+              maxOutputTokens: 1024,
+              responseMimeType: "application/json",
+            },
+          }),
+        },
+      );
+    } catch {
+      continue;
+    }
+
+    if (!response.ok) continue;
+
+    let json: unknown;
+    try {
+      json = await response.json();
+    } catch {
+      continue;
+    }
+    const text = (json as any)?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (typeof text !== "string") continue;
+    const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+    try {
+      return JSON.parse(stripped);
+    } catch {
+      continue;
+    }
   }
-  if (!response.ok) return null;
-  let json: unknown;
-  try {
-    json = await response.json();
-  } catch {
-    return null;
-  }
-  const text = (json as any)?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (typeof text !== "string") return null;
-  // Strip markdown code fences if Gemini wraps output
-  const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
-  try {
-    return JSON.parse(stripped);
-  } catch {
-    return null;
-  }
+
+  return null;
 }
 
 async function handleVoiceExtract(request: Request, env: Env): Promise<Response> {
@@ -3084,23 +3098,27 @@ async function handleVoiceExtract(request: Request, env: Env): Promise<Response>
     );
   }
 
-  const prompt = `You are a voice task extraction assistant. Given a voice transcript, extract task operations.
+  const prompt = `You are a voice task extraction assistant. Given one full voice transcript, extract clean task operations.
 
 Current candidates: ${JSON.stringify(candidates)}
 
 Transcript: "${transcript}"
 
-Return a JSON object with shape: { "operations": Array<TaskOperation> }
+Return ONLY JSON with shape: { "operations": Array<TaskOperation> }
 
-Where TaskOperation has type: "create_task" | "update_task" | "delete_task" | "mark_uncertain"
-Fields: type (required), title (string), dueText (string, verbatim from transcript), targetRef (string, e.g. "last_task"), changes (object with title/dueText/boardId)
+TaskOperation type is one of: "create_task" | "update_task" | "delete_task" | "mark_uncertain".
+Fields allowed: type, title, dueText, targetRef, changes.
 
-Rules:
-- create_task: new task mentioned
-- update_task: correction of existing task, use targetRef "last_task" to reference most recent
-- delete_task: user says "never mind", "remove", "cancel that", "scratch that"
-- mark_uncertain: unclear/ambiguous intent
-Keep titles concise. Return ONLY valid JSON. No markdown.`;
+Critical rules:
+- Prefer fewer, higher-quality tasks over fragmented clauses.
+- Do NOT emit filler fragments like "I", "also", "then" as tasks.
+- Merge related clauses into one task when they refer to the same action.
+- Preserve useful time/date phrases in dueText (e.g. "5 PM", "tomorrow").
+- Use concise imperative titles (e.g. "Go to the store", "Categorize church transactions").
+- If a phrase is not a task, ignore it.
+- If intent is unclear, use mark_uncertain.
+
+Output JSON only. No markdown, no prose.`;
 
   const result = await callGemini(env.GEMINI_API_KEY, prompt);
   let operations: TaskOperation[];
