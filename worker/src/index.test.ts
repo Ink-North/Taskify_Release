@@ -836,3 +836,35 @@ test("POST /api/voice/finalize returns tasks with title-only when Gemini fails (
     globalThis.fetch = originalFetch;
   }
 });
+
+test("POST /api/voice/finalize falls back to parse dueText time phrases when Gemini fails", async () => {
+  const db = new MockD1WithVoice();
+  const env = await makeVoiceEnv(db);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("error", { status: 503 })) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        candidates: [
+          { id: "c1", title: "Ashley's birthday party", dueText: "tomorrow at 2 PM", status: "confirmed" },
+          { id: "c2", title: "Go for a walk", dueText: "Friday at noon", status: "confirmed" },
+        ],
+        referenceDate: "2026-03-24T18:00:00.000Z",
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.ok(Array.isArray(body.tasks));
+    assert.equal(body.tasks.length, 2);
+    assert.equal(body.tasks[0].dueISO, "2026-03-25T19:00:00.000Z");
+    assert.equal(body.tasks[1].dueISO, "2026-03-27T17:00:00.000Z");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

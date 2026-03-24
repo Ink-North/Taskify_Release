@@ -3088,6 +3088,64 @@ function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
   return operations;
 }
 
+function parseDueTextFallback(dueText: string, referenceDate: string): string | undefined {
+  const text = dueText.trim().toLowerCase();
+  if (!text) return undefined;
+
+  const base = new Date(referenceDate);
+  const now = Number.isNaN(base.getTime()) ? new Date() : base;
+
+  const dayMap: Record<string, number> = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6,
+  };
+
+  const dayMatch = text.match(/\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/);
+  if (!dayMatch) return undefined;
+
+  const target = new Date(now.getTime());
+  const dayWord = dayMatch[1];
+
+  if (dayWord === "tomorrow") {
+    target.setDate(target.getDate() + 1);
+  } else if (dayWord !== "today" && dayWord !== "tonight") {
+    const targetDow = dayMap[dayWord];
+    const currentDow = target.getDay();
+    let delta = (targetDow - currentDow + 7) % 7;
+    if (delta === 0) delta = 7;
+    target.setDate(target.getDate() + delta);
+  }
+
+  let hours: number | undefined;
+  let minutes = 0;
+
+  if (/\bnoon\b/.test(text)) {
+    hours = 12;
+  } else if (/\bmidnight\b/.test(text)) {
+    hours = 0;
+  } else {
+    const tm = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
+    if (tm) {
+      const h = Number(tm[1]);
+      const m = tm[2] ? Number(tm[2]) : 0;
+      if (h >= 1 && h <= 12 && m >= 0 && m <= 59) {
+        hours = h % 12;
+        if (tm[3] === "pm") hours += 12;
+        minutes = m;
+      }
+    }
+  }
+
+  if (hours === undefined) return undefined;
+  target.setHours(hours, minutes, 0, 0);
+  return target.toISOString();
+}
+
 async function getVoiceQuota(db: D1Database, npub: string, date: string): Promise<VoiceQuotaRow | null> {
   return db
     .prepare<VoiceQuotaRow>("SELECT npub, date, session_count, total_seconds FROM voice_quota WHERE npub = ? AND date = ?")
@@ -3305,7 +3363,13 @@ Return ONLY valid JSON. No markdown.`;
       normalizedTitle = (result as any).title;
     }
     if (result && typeof (result as any).dueISO === "string") {
-      dueISO = (result as any).dueISO;
+      const candidateDue = (result as any).dueISO.trim();
+      if (candidateDue && !Number.isNaN(Date.parse(candidateDue))) {
+        dueISO = candidateDue;
+      }
+    }
+    if (!dueISO && candidate.dueText) {
+      dueISO = parseDueTextFallback(candidate.dueText, referenceDate);
     }
     const subtasks = normalizeSubtasks((result as any)?.subtasks) ?? candidate.subtasks;
 
