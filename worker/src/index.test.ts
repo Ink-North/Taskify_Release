@@ -658,8 +658,8 @@ test("POST /api/voice/extract increments quota after successful Gemini call", as
   }
 });
 
-// ── Test 6: POST /api/voice/extract — returns 429 + fallback when quota exceeded ─
-test("POST /api/voice/extract returns 429 with fallback operations when quota exceeded", async () => {
+// ── Test 6: POST /api/voice/extract — returns 429 when quota exceeded ─
+test("POST /api/voice/extract returns 429 when quota exceeded", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
   const npub = "npub1overquota";
@@ -677,14 +677,11 @@ test("POST /api/voice/extract returns 429 with fallback operations when quota ex
   assert.equal(res.status, 429);
   const body = await res.json() as any;
   assert.equal(body.error, "quota_exceeded");
-  assert.ok(Array.isArray(body.operations), "should include fallback operations");
-  // Rule-based fallback: "call dentist" and "pick up groceries"
-  assert.ok(body.operations.length >= 1, "at least one fallback operation");
-  assert.ok(body.operations.every((op: any) => op.type === "create_task"));
+  assert.ok(typeof body.message === "string");
 });
 
-// ── Test 7: POST /api/voice/extract — Gemini failure → rule-based fallback (200) ─
-test("POST /api/voice/extract returns rule-based fallback operations when Gemini fails", async () => {
+// ── Test 7: POST /api/voice/extract — Gemini failure returns 503 ─
+test("POST /api/voice/extract returns 503 when Gemini fails", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
@@ -703,10 +700,9 @@ test("POST /api/voice/extract returns rule-based fallback operations when Gemini
       }),
     });
     const res = await worker.fetch(req, env);
-    assert.equal(res.status, 200, "should return 200 with fallback even on Gemini failure");
+    assert.equal(res.status, 503, "should return 503 when Gemini is unavailable");
     const body = await res.json() as any;
-    assert.ok(Array.isArray(body.operations));
-    assert.ok(body.operations.length >= 1);
+    assert.equal(body.error, "gemini_unavailable");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -872,8 +868,8 @@ test("POST /api/voice/finalize returns normalized FinalTask array from confirmed
   }
 });
 
-// ── Test 11: POST /api/voice/finalize — Gemini failure returns title-only tasks ─
-test("POST /api/voice/finalize returns tasks with title-only when Gemini fails (no 500)", async () => {
+// ── Test 11: POST /api/voice/finalize — Gemini failure returns 503 ─
+test("POST /api/voice/finalize returns 503 when Gemini fails", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
@@ -893,18 +889,15 @@ test("POST /api/voice/finalize returns tasks with title-only when Gemini fails (
       }),
     });
     const res = await worker.fetch(req, env);
-    assert.equal(res.status, 200, "must not 500 on Gemini failure");
+    assert.equal(res.status, 503, "must return 503 when Gemini is unavailable");
     const body = await res.json() as any;
-    assert.ok(Array.isArray(body.tasks));
-    assert.equal(body.tasks.length, 1);
-    assert.ok(body.tasks[0].title, "should still have title");
-    assert.equal(body.tasks[0].dueISO, undefined, "no dueISO when Gemini fails");
+    assert.equal(body.error, "gemini_unavailable");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("POST /api/voice/finalize falls back to parse dueText time phrases when Gemini fails", async () => {
+test("POST /api/voice/finalize returns 503 (no local due parsing fallback) when Gemini fails", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
@@ -926,12 +919,9 @@ test("POST /api/voice/finalize falls back to parse dueText time phrases when Gem
       }),
     });
     const res = await worker.fetch(req, env);
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 503);
     const body = await res.json() as any;
-    assert.ok(Array.isArray(body.tasks));
-    assert.equal(body.tasks.length, 2);
-    assert.equal(body.tasks[0].dueISO, "2026-03-25T19:00:00.000Z");
-    assert.equal(body.tasks[1].dueISO, "2026-03-27T17:00:00.000Z");
+    assert.equal(body.error, "gemini_unavailable");
   } finally {
     globalThis.fetch = originalFetch;
   }
