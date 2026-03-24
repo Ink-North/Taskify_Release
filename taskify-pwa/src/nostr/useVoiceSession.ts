@@ -309,26 +309,26 @@ export type UseVoiceSessionResult = {
 // Main hook
 // ─────────────────────────────────────────────────────────────────────────────
 
-const EXTRACT_DEBOUNCE_MS = 1500;
-
 export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessionResult {
   const { workerBaseUrl, npub, defaultBoardId, onSave } = options;
   const [session, dispatch] = useReducer(voiceSessionReducer, INITIAL_VOICE_SESSION);
 
   const recRef = useRef<SpeechRecognition | null>(null);
-  const extractDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionStartRef = useRef<number>(0);
   const inFlightRef = useRef<boolean>(false);
   const transcriptRef = useRef<string>("");
+  const interimRef = useRef<string>("");
   const candidatesRef = useRef<TaskCandidate[]>([]);
   const quotaExhaustedRef = useRef<boolean>(false);
+  const extractedOnceRef = useRef<boolean>(false);
 
   // Keep refs in sync with state for use in callbacks
   useEffect(() => {
     transcriptRef.current = session.transcript;
+    interimRef.current = session.interimTranscript;
     candidatesRef.current = session.candidates;
     quotaExhaustedRef.current = session.quotaExhausted;
-  }, [session.transcript, session.candidates, session.quotaExhausted]);
+  }, [session.transcript, session.interimTranscript, session.candidates, session.quotaExhausted]);
 
   const callExtract = useCallback(
     async (transcript: string) => {
@@ -375,15 +375,13 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
     [workerBaseUrl, npub],
   );
 
-  const scheduleExtract = useCallback(
-    (transcript: string) => {
-      if (extractDebounceRef.current) clearTimeout(extractDebounceRef.current);
-      extractDebounceRef.current = setTimeout(() => {
-        callExtract(transcript);
-      }, EXTRACT_DEBOUNCE_MS);
-    },
-    [callExtract],
-  );
+  const runFinalExtractPass = useCallback(async () => {
+    if (extractedOnceRef.current) return;
+    const finalTranscript = [transcriptRef.current, interimRef.current].filter(Boolean).join(" ").trim();
+    if (!finalTranscript) return;
+    extractedOnceRef.current = true;
+    await callExtract(finalTranscript);
+  }, [callExtract]);
 
   const startListening = useCallback(() => {
     if (recRef.current) return; // already running
@@ -391,6 +389,9 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
     if (!rec) return;
 
     sessionStartRef.current = Date.now();
+    extractedOnceRef.current = false;
+    transcriptRef.current = "";
+    interimRef.current = "";
     recRef.current = rec;
 
     rec.onresult = (event: SpeechRecognitionEvent) => {
@@ -400,13 +401,12 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
         const text = result[0]?.transcript ?? "";
         if (result.isFinal) {
           dispatch({ type: "COMMIT_TRANSCRIPT", text });
-          // Use the accumulated transcript for extraction
-          const full = (transcriptRef.current ? transcriptRef.current + " " : "") + text;
-          scheduleExtract(full);
+          transcriptRef.current = [transcriptRef.current, text].filter(Boolean).join(" ").trim();
         } else {
           interim += text;
         }
       }
+      interimRef.current = interim;
       dispatch({ type: "SET_INTERIM", text: interim });
     };
 
@@ -418,26 +418,26 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
     rec.onend = () => {
       dispatch({ type: "SET_LISTENING", value: false });
       recRef.current = null;
+      void runFinalExtractPass();
     };
 
     rec.start();
     dispatch({ type: "SET_LISTENING", value: true });
-  }, [scheduleExtract]);
+  }, [runFinalExtractPass]);
 
   const stopListening = useCallback(() => {
-    if (extractDebounceRef.current) clearTimeout(extractDebounceRef.current);
     recRef.current?.stop();
     recRef.current = null;
     dispatch({ type: "SET_LISTENING", value: false });
     dispatch({ type: "SET_INTERIM", text: "" });
-  }, []);
+    void runFinalExtractPass();
+  }, [runFinalExtractPass]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       recRef.current?.abort();
       recRef.current = null;
-      if (extractDebounceRef.current) clearTimeout(extractDebounceRef.current);
     };
   }, []);
 
