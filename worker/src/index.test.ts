@@ -867,6 +867,7 @@ test("POST /api/voice/finalize falls back to parse dueText time phrases when Gem
           { id: "c2", title: "Go for a walk", dueText: "Friday at noon", status: "confirmed" },
         ],
         referenceDate: "2026-03-24T18:00:00.000Z",
+        referenceOffsetMinutes: 300,
       }),
     });
     const res = await worker.fetch(req, env);
