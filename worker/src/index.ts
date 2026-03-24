@@ -3338,45 +3338,87 @@ async function handleVoiceFinalize(request: Request, env: Env): Promise<Response
 
   const tasks: FinalTask[] = [];
 
-  for (const candidate of confirmed) {
-    const prompt = `You are a task normalization assistant. Given a task candidate, return a normalized task.
+  const batchPrompt = `You are a Taskify task/event finalization assistant.
 
-Reference date (user's now): ${referenceDate}
+Reference date (user local now): ${referenceDate}
 
-Task: { "title": "${candidate.title}", "dueText": "${candidate.dueText ?? ""}", "subtasks": ${JSON.stringify(candidate.subtasks ?? [])} }
+Candidates:
+${JSON.stringify(
+    confirmed.map((c) => ({
+      id: c.id,
+      title: c.title,
+      dueText: c.dueText ?? null,
+      subtasks: c.subtasks ?? [],
+      boardId: c.boardId ?? boardId ?? null,
+    })),
+  )}
 
-Return JSON with shape: { "title": string, "dueISO": string | null, "subtasks": string[] }
+Return ONLY JSON with exact shape:
+{
+  "tasks": [
+    {
+      "id": string,
+      "title": string,
+      "dueISO": string | null,
+      "subtasks": string[],
+      "notes": string | null,
+      "boardId": string | null
+    }
+  ]
+}
 
 Rules:
-- Normalize title (capitalize properly, remove filler words like "um", "uh")
-- Resolve dueText to ISO 8601 UTC datetime relative to the reference date
-- If dueText is absent, blank, or unparseable, return dueISO: null
-- Preserve useful subtasks as short checklist items
-Return ONLY valid JSON. No markdown.`;
+- Return one finalized output item for every input candidate id.
+- Fill all fields for each item.
+- If dueText contains a date/time intent (e.g. "tomorrow 2 PM", "Friday at noon"), dueISO MUST be a valid ISO-8601 UTC datetime.
+- Use dueISO null only when there is truly no parseable date/time intent.
+- Keep title clean and action-oriented.
+- Preserve checklist-like nouns as subtasks.
+- No markdown, no prose.`;
 
-    const result = await callGemini(env.GEMINI_API_KEY, prompt);
+  const batchResult = await callGemini(env.GEMINI_API_KEY, batchPrompt);
+  const batchTasks = Array.isArray((batchResult as any)?.tasks) ? (batchResult as any).tasks as any[] : [];
+  const batchById = new Map<string, any>();
+  for (const t of batchTasks) {
+    const id = typeof t?.id === "string" ? t.id : "";
+    if (id) batchById.set(id, t);
+  }
 
+  for (const candidate of confirmed) {
+    const fromBatch = batchById.get(candidate.id);
     let normalizedTitle = candidate.title;
     let dueISO: string | undefined;
+    let subtasks = candidate.subtasks;
+    let notes: string | undefined;
+    let normalizedBoardId = candidate.boardId ?? boardId;
 
-    if (result && typeof (result as any).title === "string") {
-      normalizedTitle = (result as any).title;
+    if (fromBatch && typeof fromBatch.title === "string" && fromBatch.title.trim()) {
+      normalizedTitle = fromBatch.title.trim();
     }
-    if (result && typeof (result as any).dueISO === "string") {
-      const candidateDue = (result as any).dueISO.trim();
+    if (fromBatch && typeof fromBatch.dueISO === "string") {
+      const candidateDue = fromBatch.dueISO.trim();
       if (candidateDue && !Number.isNaN(Date.parse(candidateDue))) {
         dueISO = candidateDue;
       }
     }
+    if (fromBatch && typeof fromBatch.notes === "string" && fromBatch.notes.trim()) {
+      notes = fromBatch.notes.trim();
+    }
+    if (fromBatch && typeof fromBatch.boardId === "string" && fromBatch.boardId.trim()) {
+      normalizedBoardId = fromBatch.boardId.trim();
+    }
+    subtasks = normalizeSubtasks(fromBatch?.subtasks) ?? subtasks;
+
+    // Fallback safety: parse dueText locally if model omitted/failed date conversion
     if (!dueISO && candidate.dueText) {
       dueISO = parseDueTextFallback(candidate.dueText, referenceDate);
     }
-    const subtasks = normalizeSubtasks((result as any)?.subtasks) ?? candidate.subtasks;
 
     tasks.push({
       title: normalizedTitle,
       dueISO,
-      boardId: candidate.boardId ?? boardId,
+      boardId: normalizedBoardId,
+      notes,
       subtasks,
     });
   }

@@ -768,7 +768,18 @@ test("POST /api/voice/finalize returns normalized FinalTask array from confirmed
           candidates: [{
             content: {
               parts: [{
-                text: JSON.stringify({ title: "Call Dentist", dueISO: "2026-03-25T14:00:00.000Z" }),
+                text: JSON.stringify({
+                  tasks: [
+                    {
+                      id: "c1",
+                      title: "Call Dentist",
+                      dueISO: "2026-03-25T14:00:00.000Z",
+                      subtasks: [],
+                      notes: null,
+                      boardId: null,
+                    },
+                  ],
+                }),
               }],
             },
           }],
