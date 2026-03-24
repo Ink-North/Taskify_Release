@@ -179,6 +179,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Taskify needs camera access for capture features.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Taskify needs microphone access for voice dictation.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Taskify uses speech recognition to turn dictation into tasks.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -211,6 +212,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
 				INFOPLIST_KEY_CFBundleIconName = AppIcon;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Taskify needs camera access for capture features.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Taskify needs microphone access for voice dictation.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Taskify uses speech recognition to turn dictation into tasks.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
