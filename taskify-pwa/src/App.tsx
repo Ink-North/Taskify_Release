@@ -14438,6 +14438,8 @@ export default function App() {
           .filter(Boolean)
           .map((title) => ({ id: crypto.randomUUID(), title, completed: false }));
       }
+      const parsedPriority = normalizeTaskPriority((ft as any).priority);
+      if (parsedPriority) task.priority = parsedPriority;
       if (column) task.column = column;
       if (columnId) task.columnId = columnId;
       applyHiddenForFuture(task, settings.weekStart, currentBoard.kind);

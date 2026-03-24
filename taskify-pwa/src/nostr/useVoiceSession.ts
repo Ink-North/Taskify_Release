@@ -36,6 +36,7 @@ export type FinalTask = {
   boardId?: string;
   notes?: string;
   subtasks?: string[];
+  priority?: 1 | 2 | 3;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

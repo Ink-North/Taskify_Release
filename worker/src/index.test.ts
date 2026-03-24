@@ -777,6 +777,7 @@ test("POST /api/voice/finalize returns normalized FinalTask array from confirmed
                       subtasks: [],
                       notes: null,
                       boardId: null,
+                      priority: null,
                     },
                   ],
                 }),

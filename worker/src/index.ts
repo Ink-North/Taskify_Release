@@ -195,6 +195,7 @@ type FinalTask = {
   boardId?: string;
   notes?: string;
   subtasks?: string[];
+  priority?: 1 | 2 | 3;
 };
 
 type VoiceQuotaRow = {
@@ -3088,6 +3089,12 @@ function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
   return operations;
 }
 
+function parseTaskPriority(value: unknown): 1 | 2 | 3 | undefined {
+  const n = typeof value === "number" ? Math.round(value) : Number(value);
+  if (n === 1 || n === 2 || n === 3) return n;
+  return undefined;
+}
+
 function parseDueTextFallback(dueText: string, referenceDate: string): string | undefined {
   const text = dueText.trim().toLowerCase();
   if (!text) return undefined;
@@ -3362,7 +3369,8 @@ Return ONLY JSON with exact shape:
       "dueISO": string | null,
       "subtasks": string[],
       "notes": string | null,
-      "boardId": string | null
+      "boardId": string | null,
+      "priority": 1 | 2 | 3 | null
     }
   ]
 }
@@ -3372,6 +3380,9 @@ Rules:
 - Fill all fields for each item.
 - If dueText contains a date/time intent (e.g. "tomorrow 2 PM", "Friday at noon"), dueISO MUST be a valid ISO-8601 UTC datetime.
 - Use dueISO null only when there is truly no parseable date/time intent.
+- Priority defaults to null.
+- Only set priority to 1/2/3 when the user language clearly implies urgency/importance.
+- Do NOT infer priority from normal planning language.
 - Keep title clean and action-oriented.
 - Preserve checklist-like nouns as subtasks.
 - No markdown, no prose.`;
@@ -3391,6 +3402,7 @@ Rules:
     let subtasks = candidate.subtasks;
     let notes: string | undefined;
     let normalizedBoardId = candidate.boardId ?? boardId;
+    let priority: 1 | 2 | 3 | undefined;
 
     if (fromBatch && typeof fromBatch.title === "string" && fromBatch.title.trim()) {
       normalizedTitle = fromBatch.title.trim();
@@ -3407,6 +3419,7 @@ Rules:
     if (fromBatch && typeof fromBatch.boardId === "string" && fromBatch.boardId.trim()) {
       normalizedBoardId = fromBatch.boardId.trim();
     }
+    priority = parseTaskPriority(fromBatch?.priority);
     subtasks = normalizeSubtasks(fromBatch?.subtasks) ?? subtasks;
 
     // Fallback safety: parse dueText locally if model omitted/failed date conversion
@@ -3420,6 +3433,7 @@ Rules:
       boardId: normalizedBoardId,
       notes,
       subtasks,
+      priority,
     });
   }
 
