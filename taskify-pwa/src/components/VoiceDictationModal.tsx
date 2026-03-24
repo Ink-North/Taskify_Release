@@ -88,7 +88,7 @@ function CandidateCard({
             {candidate.title}
           </div>
           {candidate.dueText && !isDismissed && (
-            <div className="task-card__meta mt-0.5">📅 {candidate.dueText}</div>
+            <div className="task-card__meta mt-0.5">Scheduled {candidate.dueText}</div>
           )}
           {!!candidate.subtasks?.length && !isDismissed && (
             <ul className="mt-1 space-y-0.5 text-xs text-secondary">
