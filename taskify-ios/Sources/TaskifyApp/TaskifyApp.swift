@@ -4,9 +4,12 @@ import TaskifyCore
 
 @main
 struct TaskifyApp: App {
+    @StateObject private var vm = AppViewModel()
+
     var body: some Scene {
         WindowGroup {
             RootView()
+                .environmentObject(vm)
         }
         .modelContainer(for: [
             TaskifyTask.self,
@@ -19,7 +22,7 @@ struct TaskifyApp: App {
 struct RootView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \TaskifyBoard.name) private var boards: [TaskifyBoard]
-    @StateObject private var vm = AppViewModel()
+    @EnvironmentObject private var vm: AppViewModel
 
     var body: some View {
         NavigationSplitView {

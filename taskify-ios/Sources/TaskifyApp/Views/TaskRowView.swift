@@ -43,32 +43,4 @@ struct TaskRowView: View {
     }
 }
 
-private struct PriorityBadge: View {
-    let priority: Int
 
-    var body: some View {
-        Text(label)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(color.opacity(0.18))
-            .foregroundStyle(color)
-            .clipShape(Capsule())
-    }
-
-    private var label: String {
-        switch priority {
-        case 1: return "High"
-        case 2: return "Med"
-        default: return "Low"
-        }
-    }
-
-    private var color: Color {
-        switch priority {
-        case 1: return TaskifyTheme.priorityHigh
-        case 2: return TaskifyTheme.priorityMedium
-        default: return TaskifyTheme.priorityLow
-        }
-    }
-}

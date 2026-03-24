@@ -14,12 +14,7 @@
 		A00000000000000000000105 /* Sources/TaskifyApp/Views/BoardListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000205 /* Sources/TaskifyApp/Views/BoardListView.swift */; };
 		A00000000000000000000106 /* Sources/TaskifyApp/Views/GlassSectionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000206 /* Sources/TaskifyApp/Views/GlassSectionCard.swift */; };
 		A00000000000000000000107 /* Sources/TaskifyApp/Views/ListsBoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000207 /* Sources/TaskifyApp/Views/ListsBoardView.swift */; };
-		A00000000000000000000108 /* Sources/TaskifyApp/Views/PillButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000208 /* Sources/TaskifyApp/Views/PillButton.swift */; };
-		A00000000000000000000109 /* Sources/TaskifyApp/Views/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000209 /* Sources/TaskifyApp/Views/SettingsView.swift */; };
-		A0000000000000000000010A /* Sources/TaskifyApp/Views/TabShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020A /* Sources/TaskifyApp/Views/TabShellView.swift */; };
-		A0000000000000000000010B /* Sources/TaskifyApp/Views/TaskComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020B /* Sources/TaskifyApp/Views/TaskComposerView.swift */; };
 		A0000000000000000000010C /* Sources/TaskifyApp/Views/TaskRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020C /* Sources/TaskifyApp/Views/TaskRowView.swift */; };
-		A0000000000000000000010D /* Sources/TaskifyApp/Views/UpcomingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020D /* Sources/TaskifyApp/Views/UpcomingView.swift */; };
 		A0000000000000000000010E /* Sources/TaskifyApp/Views/WeekBoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020E /* Sources/TaskifyApp/Views/WeekBoardView.swift */; };
 		A00000000000000000000120 /* TaskifyCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000601 /* TaskifyCore */; };
 		A00000000000000000000130 /* Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000230 /* Resources/Assets.xcassets */; };
@@ -33,12 +28,7 @@
 		A00000000000000000000205 /* Sources/TaskifyApp/Views/BoardListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Views/BoardListView.swift; sourceTree = SOURCE_ROOT; };
 		A00000000000000000000206 /* Sources/TaskifyApp/Views/GlassSectionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Views/GlassSectionCard.swift; sourceTree = SOURCE_ROOT; };
 		A00000000000000000000207 /* Sources/TaskifyApp/Views/ListsBoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Views/ListsBoardView.swift; sourceTree = SOURCE_ROOT; };
-		A00000000000000000000208 /* Sources/TaskifyApp/Views/PillButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Views/PillButton.swift; sourceTree = SOURCE_ROOT; };
-		A00000000000000000000209 /* Sources/TaskifyApp/Views/SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Views/SettingsView.swift; sourceTree = SOURCE_ROOT; };
-		A0000000000000000000020A /* Sources/TaskifyApp/Views/TabShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Views/TabShellView.swift; sourceTree = SOURCE_ROOT; };
-		A0000000000000000000020B /* Sources/TaskifyApp/Views/TaskComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Views/TaskComposerView.swift; sourceTree = SOURCE_ROOT; };
 		A0000000000000000000020C /* Sources/TaskifyApp/Views/TaskRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Views/TaskRowView.swift; sourceTree = SOURCE_ROOT; };
-		A0000000000000000000020D /* Sources/TaskifyApp/Views/UpcomingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Views/UpcomingView.swift; sourceTree = SOURCE_ROOT; };
 		A0000000000000000000020E /* Sources/TaskifyApp/Views/WeekBoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Views/WeekBoardView.swift; sourceTree = SOURCE_ROOT; };
 		A00000000000000000000220 /* Taskify.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Taskify.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000230 /* Resources/Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Resources/Assets.xcassets; sourceTree = SOURCE_ROOT; };
@@ -107,12 +97,7 @@
 				A00000000000000000000205 /* Sources/TaskifyApp/Views/BoardListView.swift */,
 				A00000000000000000000206 /* Sources/TaskifyApp/Views/GlassSectionCard.swift */,
 				A00000000000000000000207 /* Sources/TaskifyApp/Views/ListsBoardView.swift */,
-				A00000000000000000000208 /* Sources/TaskifyApp/Views/PillButton.swift */,
-				A00000000000000000000209 /* Sources/TaskifyApp/Views/SettingsView.swift */,
-				A0000000000000000000020A /* Sources/TaskifyApp/Views/TabShellView.swift */,
-				A0000000000000000000020B /* Sources/TaskifyApp/Views/TaskComposerView.swift */,
 				A0000000000000000000020C /* Sources/TaskifyApp/Views/TaskRowView.swift */,
-				A0000000000000000000020D /* Sources/TaskifyApp/Views/UpcomingView.swift */,
 				A0000000000000000000020E /* Sources/TaskifyApp/Views/WeekBoardView.swift */,
 			);
 			path = TaskifyApp/Views;
@@ -209,12 +194,7 @@
 				A00000000000000000000105 /* Sources/TaskifyApp/Views/BoardListView.swift in Sources */,
 				A00000000000000000000106 /* Sources/TaskifyApp/Views/GlassSectionCard.swift in Sources */,
 				A00000000000000000000107 /* Sources/TaskifyApp/Views/ListsBoardView.swift in Sources */,
-				A00000000000000000000108 /* Sources/TaskifyApp/Views/PillButton.swift in Sources */,
-				A00000000000000000000109 /* Sources/TaskifyApp/Views/SettingsView.swift in Sources */,
-				A0000000000000000000010A /* Sources/TaskifyApp/Views/TabShellView.swift in Sources */,
-				A0000000000000000000010B /* Sources/TaskifyApp/Views/TaskComposerView.swift in Sources */,
 				A0000000000000000000010C /* Sources/TaskifyApp/Views/TaskRowView.swift in Sources */,
-				A0000000000000000000010D /* Sources/TaskifyApp/Views/UpcomingView.swift in Sources */,
 				A0000000000000000000010E /* Sources/TaskifyApp/Views/WeekBoardView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -227,7 +207,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -256,7 +236,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
