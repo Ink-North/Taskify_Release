@@ -3103,12 +3103,16 @@ function parseTaskPriority(value: unknown): 1 | 2 | 3 | undefined {
   return undefined;
 }
 
-function parseDueTextFallback(dueText: string, referenceDate: string): string | undefined {
+function parseDueTextFallback(dueText: string, referenceDate: string, referenceOffsetMinutes = 0): string | undefined {
   const text = dueText.trim().toLowerCase();
   if (!text) return undefined;
 
-  const base = new Date(referenceDate);
-  const now = Number.isNaN(base.getTime()) ? new Date() : base;
+  const refUtcMs = Date.parse(referenceDate);
+  const safeRefUtcMs = Number.isNaN(refUtcMs) ? Date.now() : refUtcMs;
+  const safeOffsetMinutes = Number.isFinite(referenceOffsetMinutes) ? referenceOffsetMinutes : 0;
+
+  // Represent user's local wall-clock time on a UTC-based Date object.
+  const localNow = new Date(safeRefUtcMs - safeOffsetMinutes * 60_000);
 
   const dayMap: Record<string, number> = {
     sunday: 0,
@@ -3123,17 +3127,17 @@ function parseDueTextFallback(dueText: string, referenceDate: string): string | 
   const dayMatch = text.match(/\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/);
   if (!dayMatch) return undefined;
 
-  const target = new Date(now.getTime());
+  const targetLocal = new Date(localNow.getTime());
   const dayWord = dayMatch[1];
 
   if (dayWord === "tomorrow") {
-    target.setDate(target.getDate() + 1);
+    targetLocal.setUTCDate(targetLocal.getUTCDate() + 1);
   } else if (dayWord !== "today" && dayWord !== "tonight") {
     const targetDow = dayMap[dayWord];
-    const currentDow = target.getDay();
+    const currentDow = targetLocal.getUTCDay();
     let delta = (targetDow - currentDow + 7) % 7;
     if (delta === 0) delta = 7;
-    target.setDate(target.getDate() + delta);
+    targetLocal.setUTCDate(targetLocal.getUTCDate() + delta);
   }
 
   let hours: number | undefined;
@@ -3157,8 +3161,14 @@ function parseDueTextFallback(dueText: string, referenceDate: string): string | 
   }
 
   if (hours === undefined) return undefined;
-  target.setHours(hours, minutes, 0, 0);
-  return target.toISOString();
+
+  const y = targetLocal.getUTCFullYear();
+  const m = targetLocal.getUTCMonth();
+  const d = targetLocal.getUTCDate();
+
+  // local wall-clock -> UTC
+  const utcMs = Date.UTC(y, m, d, hours, minutes, 0, 0) + safeOffsetMinutes * 60_000;
+  return new Date(utcMs).toISOString();
 }
 
 async function getVoiceQuota(db: D1Database, npub: string, date: string): Promise<VoiceQuotaRow | null> {
@@ -3332,6 +3342,14 @@ async function handleVoiceFinalize(request: Request, env: Env): Promise<Response
     typeof body?.referenceDate === "string" && body.referenceDate
       ? body.referenceDate
       : new Date().toISOString();
+  const referenceTimeZone =
+    typeof body?.referenceTimeZone === "string" && body.referenceTimeZone.trim()
+      ? body.referenceTimeZone.trim()
+      : "UTC";
+  const referenceOffsetMinutes =
+    typeof body?.referenceOffsetMinutes === "number" && Number.isFinite(body.referenceOffsetMinutes)
+      ? body.referenceOffsetMinutes
+      : 0;
 
   if (!npub) {
     return jsonResponse({ error: "npub is required" }, 400);
@@ -3356,6 +3374,8 @@ async function handleVoiceFinalize(request: Request, env: Env): Promise<Response
   const batchPrompt = `You are a Taskify task/event finalization assistant.
 
 Reference date (user local now): ${referenceDate}
+User time zone: ${referenceTimeZone}
+User UTC offset minutes (Date.getTimezoneOffset): ${referenceOffsetMinutes}
 
 Candidates:
 ${JSON.stringify(
@@ -3432,7 +3452,7 @@ Rules:
 
     // Fallback safety: parse dueText locally if model omitted/failed date conversion
     if (!dueISO && candidate.dueText) {
-      dueISO = parseDueTextFallback(candidate.dueText, referenceDate);
+      dueISO = parseDueTextFallback(candidate.dueText, referenceDate, referenceOffsetMinutes);
     }
 
     tasks.push({

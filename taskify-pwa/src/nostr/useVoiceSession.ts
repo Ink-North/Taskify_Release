@@ -483,6 +483,8 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
           candidates: confirmed,
           boardId: defaultBoardId,
           referenceDate: new Date().toISOString(),
+          referenceTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          referenceOffsetMinutes: new Date().getTimezoneOffset(),
         }),
       });
       if (!res.ok) {
