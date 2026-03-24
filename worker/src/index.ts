@@ -171,6 +171,8 @@ const VOICE_TEST_BYPASS_NPUBS = new Set([
   "npub1f4t6089m5zhljvrurfuc8ceymlr6yzrdljxz9yaskyj8r8s536ns6rv35g",
 ]);
 const GEMINI_MODEL_PRIMARY = "gemini-3.1-flash-lite-preview";
+const GEMINI_MODEL_FALLBACK_1 = "gemini-3-flash-preview";
+const GEMINI_MODEL_FALLBACK_2 = "gemini-2.5-flash";
 
 type TaskCandidate = {
   id: string;
@@ -3245,37 +3247,44 @@ function parseJsonStringSafely(text: unknown): unknown | null {
 }
 
 async function callGemini(apiKey: string, prompt: string): Promise<unknown | null> {
-  let response: Response;
-  try {
-    response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL_PRIMARY}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 1024,
-            responseMimeType: "application/json",
-          },
-        }),
-      },
-    );
-  } catch {
-    return null;
+  const models = [GEMINI_MODEL_PRIMARY, GEMINI_MODEL_FALLBACK_1, GEMINI_MODEL_FALLBACK_2];
+
+  for (const model of models) {
+    let response: Response;
+    try {
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.1,
+              maxOutputTokens: 1024,
+              responseMimeType: "application/json",
+            },
+          }),
+        },
+      );
+    } catch {
+      continue;
+    }
+
+    if (!response.ok) continue;
+
+    let json: unknown;
+    try {
+      json = await response.json();
+    } catch {
+      continue;
+    }
+    const text = (json as any)?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const parsed = parseJsonStringSafely(text);
+    if (parsed) return parsed;
   }
 
-  if (!response.ok) return null;
-
-  let json: unknown;
-  try {
-    json = await response.json();
-  } catch {
-    return null;
-  }
-  const text = (json as any)?.candidates?.[0]?.content?.parts?.[0]?.text;
-  return parseJsonStringSafely(text);
+  return null;
 }
 
 async function callCloudflareGlmFallback(env: Env, prompt: string): Promise<unknown | null> {
