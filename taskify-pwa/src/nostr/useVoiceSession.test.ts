@@ -63,8 +63,8 @@ test("COMMIT_TRANSCRIPT accumulates multiple final transcripts with a space sepa
   assert.equal(s.transcript, "call dentist friday also pick up groceries");
 });
 
-// Test 5: APPLY_OPERATIONS create_task appends a draft candidate
-test("APPLY_OPERATIONS create_task appends new draft candidate", () => {
+// Test 5: APPLY_OPERATIONS create_task appends a pre-selected candidate
+test("APPLY_OPERATIONS create_task appends new confirmed candidate", () => {
   const state = dispatch(INITIAL_VOICE_SESSION, {
     type: "APPLY_OPERATIONS",
     operations: [{ type: "create_task", title: "Call dentist", dueText: "friday 2pm" }],
@@ -72,7 +72,7 @@ test("APPLY_OPERATIONS create_task appends new draft candidate", () => {
   assert.equal(state.candidates.length, 1);
   assert.equal(state.candidates[0].title, "Call dentist");
   assert.equal(state.candidates[0].dueText, "friday 2pm");
-  assert.equal(state.candidates[0].status, "draft");
+  assert.equal(state.candidates[0].status, "confirmed");
   assert.ok(typeof state.candidates[0].id === "string", "id should be assigned");
   assert.ok(state.candidates[0].id.length > 0);
 });
@@ -151,7 +151,7 @@ test("DISMISS_CANDIDATE sets the target candidate status to dismissed", () => {
   const idB = s.candidates[1].id;
   s = dispatch(s, { type: "DISMISS_CANDIDATE", id: idA });
   assert.equal(s.candidates[0].status, "dismissed");
-  assert.equal(s.candidates[1].status, "draft", "other candidates unaffected");
+  assert.equal(s.candidates[1].status, "confirmed", "other candidates unaffected");
   assert.equal(s.candidates[1].id, idB);
 });
 
@@ -214,9 +214,9 @@ test("APPLY_OPERATIONS applies multiple operations in sequence within one action
   });
   assert.equal(state.candidates.length, 3);
   assert.equal(state.candidates[0].title, "Task A");
-  assert.equal(state.candidates[0].status, "draft");
+  assert.equal(state.candidates[0].status, "confirmed");
   assert.equal(state.candidates[1].title, "Task B");
-  assert.equal(state.candidates[1].status, "draft");
+  assert.equal(state.candidates[1].status, "confirmed");
   assert.equal(state.candidates[2].title, "Task C");
   assert.equal(state.candidates[2].status, "dismissed");
 });

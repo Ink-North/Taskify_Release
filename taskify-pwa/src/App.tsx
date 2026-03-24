@@ -14420,6 +14420,7 @@ export default function App() {
     for (const ft of finalTasks) {
       if (!ft.title?.trim()) continue;
       const nextOrder = nextOrderForBoard(targetBoardId, [...tasks, ...newTasks], settings.newTaskPosition);
+      const hasExplicitVoiceDue = typeof ft.dueISO === "string" && !!ft.dueISO.trim();
       const task: Task = {
         id: crypto.randomUUID(),
         boardId: ft.boardId ?? targetBoardId,
@@ -14429,6 +14430,7 @@ export default function App() {
         createdAt: Date.now(),
         dueISO: ft.dueISO ?? dueISOBase,
         dueDateEnabled: !!(ft.dueISO || currentBoard.kind === "week"),
+        dueTimeEnabled: hasExplicitVoiceDue,
         completed: false,
         order: nextOrder,
       };
