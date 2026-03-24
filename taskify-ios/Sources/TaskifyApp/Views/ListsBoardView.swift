@@ -2,13 +2,10 @@ import SwiftUI
 import SwiftData
 import TaskifyCore
 
-private struct ColumnItem: Identifiable {
-    let id: String
-    let name: String
-}
-
 struct ListsBoardView: View {
     let board: TaskifyBoard
+    @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var viewModel: AppViewModel
     @Query private var tasks: [TaskifyTask]
 
     init(board: TaskifyBoard) {
@@ -21,46 +18,58 @@ struct ListsBoardView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 18) {
+                header
                 ForEach(columns, id: \.id) { column in
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(column.name)
-                            .font(.headline)
-                            .padding(.horizontal, 4)
+                    GlassSectionCard(title: column.name, subtitle: "List") {
                         let columnTasks = tasksForColumn(column.id)
-                        if columnTasks.isEmpty {
-                            Text("No tasks")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 4)
-                        } else {
-                            ForEach(columnTasks, id: \.id) { task in
-                                TaskRowView(task: task)
+                        VStack(spacing: 10) {
+                            if columnTasks.isEmpty {
+                                Text("No tasks")
+                                    .font(.subheadline)
+                                    .foregroundStyle(TaskifyTheme.textSecondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                ForEach(columnTasks, id: \.id) { task in
+                                    TaskRowView(
+                                        task: task,
+                                        toggle: { try? viewModel.toggleTask(task, context: modelContext) },
+                                        open: { viewModel.openEditor(for: task) },
+                                        delete: { try? viewModel.deleteTask(task, context: modelContext) }
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
-            .padding()
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 140)
         }
-        .background(TaskifyTheme.boardBackground)
-        .navigationTitle(board.name)
+        .taskifyScreen()
     }
 
-    private var columns: [ColumnItem] {
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(board.name)
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+            Text("Lists")
+                .font(.subheadline)
+                .foregroundStyle(TaskifyTheme.textSecondary)
+        }
+    }
+
+    private var columns: [BoardColumn] {
         guard let json = board.columnsJSON?.data(using: .utf8),
-              let raw = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]]
-        else {
-            return [ColumnItem(id: "items", name: "Items")]
+              let cols = try? JSONDecoder().decode([BoardColumn].self, from: json),
+              !cols.isEmpty else {
+            return [BoardColumn(id: "items", name: "Items")]
         }
-        let cols = raw.compactMap { item -> ColumnItem? in
-            guard let id = item["id"] as? String, let name = item["name"] as? String else { return nil }
-            return ColumnItem(id: id, name: name)
-        }
-        return cols.isEmpty ? [ColumnItem(id: "items", name: "Items")] : cols
+        return cols
     }
 
-    private func tasksForColumn(_ id: String) -> [TaskifyTask] {
-        tasks.filter { ($0.column?.isEmpty == false ? $0.column : "items") == id }
+    private func tasksForColumn(_ columnId: String) -> [TaskifyTask] {
+        tasks.filter { ($0.column ?? "items") == columnId && !$0.completed }
     }
 }

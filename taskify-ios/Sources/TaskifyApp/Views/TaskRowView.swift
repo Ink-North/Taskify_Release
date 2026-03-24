@@ -4,59 +4,42 @@ import TaskifyCore
 struct TaskRowView: View {
     let task: TaskifyTask
     var toggle: (() -> Void)? = nil
+    var open: (() -> Void)? = nil
+    var delete: (() -> Void)? = nil
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Button(action: { toggle?() }) {
-                Image(systemName: task.completed ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(task.completed ? TaskifyTheme.done : .secondary)
+        Button(action: { open?() }) {
+            HStack(alignment: .center, spacing: 12) {
+                Button(action: { toggle?() }) {
+                    Circle()
+                        .fill(Color.white.opacity(0.14))
+                        .overlay(Circle().stroke(Color.white.opacity(0.20), lineWidth: 1))
+                        .frame(width: 33, height: 33)
+                }
+                .buttonStyle(.plain)
+
+                Text(task.title)
+                    .font(.title3.weight(.medium))
+                    .strikethrough(task.completed, color: TaskifyTheme.textSecondary)
+                    .foregroundStyle(task.completed ? TaskifyTheme.textSecondary : TaskifyTheme.textPrimary)
+                    .multilineTextAlignment(.leading)
+
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .center, spacing: 8) {
-                    Text(task.title)
-                        .font(.body.weight(.medium))
-                        .strikethrough(task.completed, color: .secondary)
-                        .foregroundStyle(task.completed ? .secondary : .primary)
-                    if let priority = task.priority {
-                        PriorityBadge(priority: priority)
-                    }
-                }
-
-                if let note = task.note, !note.isEmpty {
-                    Text(note)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-
-                HStack(spacing: 8) {
-                    if let due = task.dueISO, !due.isEmpty {
-                        Label(formattedDue(due), systemImage: "calendar")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let column = task.column, !column.isEmpty {
-                        Text(column)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.primary.opacity(0.06))
-                            .clipShape(Capsule())
-                    }
-                }
-            }
-            Spacer(minLength: 0)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+                LinearGradient(colors: [Color.white.opacity(0.17), Color.white.opacity(0.05)], startPoint: .top, endPoint: .bottom)
+            )
+            .pwaSurface(cornerRadius: 23, fill: TaskifyTheme.pwaTask, stroke: TaskifyTheme.pwaTaskStroke)
         }
-        .taskifyCardStyle()
-    }
-
-    private func formattedDue(_ iso: String) -> String {
-        guard let date = ISO8601DateFormatter().date(from: iso) else { return iso }
-        return date.formatted(date: .abbreviated, time: .omitted)
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(task.completed ? "Mark Incomplete" : "Mark Complete") { toggle?() }
+            Button("Edit") { open?() }
+            Divider()
+            Button("Delete", role: .destructive) { delete?() }
+        }
     }
 }
 
@@ -65,10 +48,10 @@ private struct PriorityBadge: View {
 
     var body: some View {
         Text(label)
-            .font(.caption.weight(.semibold))
+            .font(.caption2.weight(.semibold))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(color.opacity(0.15))
+            .background(color.opacity(0.18))
             .foregroundStyle(color)
             .clipShape(Capsule())
     }

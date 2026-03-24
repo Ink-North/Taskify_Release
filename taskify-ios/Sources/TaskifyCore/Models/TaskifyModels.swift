@@ -184,6 +184,11 @@ public struct TaskAssignee: Codable {
 public struct BoardColumn: Codable, Identifiable {
     public var id: String
     public var name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
 }
 
 // MARK: - Filter / sort helpers

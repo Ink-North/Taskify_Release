@@ -5,15 +5,17 @@ struct BoardDetailView: View {
     let board: TaskifyBoard
 
     var body: some View {
-        switch board.kind {
-        case "week":
-            WeekBoardView(board: board)
-        case "lists":
-            ListsBoardView(board: board)
-        case "compound":
-            CompoundBoardPlaceholderView(board: board)
-        default:
-            ListsBoardView(board: board)
+        Group {
+            switch board.kind {
+            case "week":
+                WeekBoardView(board: board)
+            case "lists":
+                ListsBoardView(board: board)
+            case "compound":
+                CompoundBoardPlaceholderView(board: board)
+            default:
+                ListsBoardView(board: board)
+            }
         }
     }
 }
@@ -22,19 +24,28 @@ private struct CompoundBoardPlaceholderView: View {
     let board: TaskifyBoard
 
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "square.stack.3d.up")
-                .font(.system(size: 44))
-                .foregroundStyle(.secondary)
-            Text(board.name)
-                .font(.title2.weight(.semibold))
-            Text("Compound boards are next in Phase 2/3. The shell is ready for PWA-parity expansion.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal)
+        VStack(spacing: 18) {
+            Spacer(minLength: 0)
+            VStack(spacing: 16) {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.system(size: 42, weight: .medium))
+                    .foregroundStyle(TaskifyTheme.textSecondary)
+                Text(board.name)
+                    .font(.title2.bold())
+                Text("Compound board support is next. I’m aligning the week and list board experience to the PWA first, then folding compound boards into the same structure.")
+                    .font(.body)
+                    .foregroundStyle(TaskifyTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity)
+            .frostedGlass(cornerRadius: 30)
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(TaskifyTheme.boardBackground)
-        .navigationTitle(board.name)
+        .padding(.horizontal, 16)
+        .padding(.top, 18)
+        .padding(.bottom, 140)
+        .taskifyScreen()
     }
 }

@@ -154,10 +154,31 @@ export class SubscriptionManager {
             state.pendingEvents.push({ raw, relayUrl: evt.relay?.url });
             this.scheduleFlush(state);
         });
-        sub.on("eose", () => {
+        sub.on("eose", (relay) => {
+            const relayUrl = relay && typeof relay === "object" && "url" in relay ? relay.url : undefined;
+            // Drain all buffered events synchronously before notifying EOSE handlers.
+            // Events are queued in pendingEvents and delivered via requestAnimationFrame
+            // (FLUSH_BATCH_SIZE at a time). Without this drain, EOSE fires while
+            // hundreds of events are still pending — the batch flush happens on partial
+            // data, and the remaining events arrive post-flush as "live" individual
+            // updates. This causes old tasks to temporarily appear (out-of-order CREATE
+            // events without their DELETE counterparts) before being corrected, producing
+            // the ~15-30 second flicker of stale state.
+            if (state.pendingEvents.length > 0) {
+                state.flushScheduled = false;
+                const remaining = state.pendingEvents.splice(0);
+                for (const { raw, relayUrl: evRelayUrl } of remaining) {
+                    state.handlers.forEach((h) => {
+                        try {
+                            h.onEvent?.(raw, evRelayUrl);
+                        }
+                        catch { }
+                    });
+                }
+            }
             state.handlers.forEach((h) => {
                 try {
-                    h.onEose?.();
+                    h.onEose?.(relayUrl);
                 }
                 catch { }
             });
