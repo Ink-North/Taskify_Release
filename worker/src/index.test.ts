@@ -708,6 +708,56 @@ test("POST /api/voice/extract returns 503 when Gemini fails", async () => {
   }
 });
 
+test("POST /api/voice/extract falls back to Cloudflare Workers AI when Gemini fails", async () => {
+  const db = new MockD1WithVoice();
+  const env = {
+    ...(await makeVoiceEnv(db)),
+    CLOUDFLARE_ACCOUNT_ID: "acc-123",
+    CLOUDFLARE_API_TOKEN: "cf-token",
+  } as any;
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    const u = String(url);
+    if (u.includes("generativelanguage.googleapis.com")) {
+      return new Response("gemini down", { status: 503 });
+    }
+    if (u.includes("/ai/run/@cf/zai-org/glm-4.7-flash")) {
+      return new Response(
+        JSON.stringify({
+          result: {
+            response: JSON.stringify({
+              tasks: [{ title: "Call dentist", dueText: "tomorrow", subtasks: [] }],
+            }),
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 404 });
+  }) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        transcript: "call dentist tomorrow",
+        candidates: [],
+        sessionDurationSeconds: 8,
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.ok(Array.isArray(body.operations));
+    assert.equal(body.operations[0].title, "Call dentist");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("POST /api/voice/extract applies correction phrases to prior task dueText", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
@@ -869,6 +919,65 @@ test("POST /api/voice/finalize returns normalized FinalTask array from confirmed
 });
 
 // ── Test 11: POST /api/voice/finalize — Gemini failure returns 503 ─
+test("POST /api/voice/finalize falls back to Cloudflare Workers AI when Gemini fails", async () => {
+  const db = new MockD1WithVoice();
+  const env = {
+    ...(await makeVoiceEnv(db)),
+    CLOUDFLARE_ACCOUNT_ID: "acc-123",
+    CLOUDFLARE_API_TOKEN: "cf-token",
+  } as any;
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    const u = String(url);
+    if (u.includes("generativelanguage.googleapis.com")) {
+      return new Response("error", { status: 503 });
+    }
+    if (u.includes("/ai/run/@cf/zai-org/glm-4.7-flash")) {
+      return new Response(
+        JSON.stringify({
+          result: {
+            response: JSON.stringify({
+              tasks: [
+                {
+                  id: "c1",
+                  title: "Call Dentist",
+                  dueISO: "2026-03-25T14:00:00.000Z",
+                  subtasks: [],
+                  notes: null,
+                  boardId: null,
+                  priority: null,
+                },
+              ],
+            }),
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("", { status: 404 });
+  }) as any;
+
+  try {
+    const req = new Request("https://taskify-v2.solife.me/api/voice/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        npub: "npub1abc",
+        candidates: [{ id: "c1", title: "call dentist", dueText: "tomorrow", status: "confirmed" }],
+        referenceDate: new Date().toISOString(),
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    const body = await res.json() as any;
+    assert.ok(Array.isArray(body.tasks));
+    assert.equal(body.tasks[0].title, "Call Dentist");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("POST /api/voice/finalize returns 503 when Gemini fails", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);

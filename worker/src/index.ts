@@ -43,6 +43,8 @@ export interface Env {
   VAPID_SUBJECT: string;
   TASKIFY_BACKUPS?: R2Bucket;
   GEMINI_API_KEY?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_API_TOKEN?: string;
 }
 
 type PushPlatform = "ios" | "android";
@@ -3232,6 +3234,16 @@ async function incrementVoiceQuota(db: D1Database, npub: string, date: string, a
  * Call Gemini 2.0 Flash and parse the JSON embedded in the first candidate's
  * text part. Returns null on any error (network, parse, unexpected shape).
  */
+function parseJsonStringSafely(text: unknown): unknown | null {
+  if (typeof text !== "string") return null;
+  const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+  try {
+    return JSON.parse(stripped);
+  } catch {
+    return null;
+  }
+}
+
 async function callGemini(apiKey: string, prompt: string): Promise<unknown | null> {
   let response: Response;
   try {
@@ -3263,17 +3275,62 @@ async function callGemini(apiKey: string, prompt: string): Promise<unknown | nul
     return null;
   }
   const text = (json as any)?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (typeof text !== "string") return null;
-  const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+  return parseJsonStringSafely(text);
+}
+
+async function callCloudflareGlmFallback(env: Env, prompt: string): Promise<unknown | null> {
+  const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const apiToken = env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!accountId || !apiToken) return null;
+
+  let response: Response;
   try {
-    return JSON.parse(stripped);
+    response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/zai-org/glm-4.7-flash`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiToken}`,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 1024,
+          temperature: 0.1,
+        }),
+      },
+    );
   } catch {
     return null;
   }
+
+  if (!response.ok) return null;
+
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch {
+    return null;
+  }
+
+  // Workers AI chat responses may place text in result.response or result.output_text
+  const text = (json as any)?.result?.response
+    ?? (json as any)?.result?.output_text
+    ?? (json as any)?.response;
+
+  return parseJsonStringSafely(text);
+}
+
+async function callVoiceModelWithFallback(env: Env, prompt: string): Promise<unknown | null> {
+  if (env.GEMINI_API_KEY) {
+    const gemini = await callGemini(env.GEMINI_API_KEY, prompt);
+    if (gemini) return gemini;
+  }
+  return callCloudflareGlmFallback(env, prompt);
 }
 
 async function handleVoiceExtract(request: Request, env: Env): Promise<Response> {
-  if (!env.GEMINI_API_KEY) {
+  if (!env.GEMINI_API_KEY && !(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN)) {
     return jsonResponse({ error: "Voice extraction is not configured" }, 501);
   }
 
@@ -3344,7 +3401,7 @@ Rules:
 
 Output JSON only.`;
 
-  const result = await callGemini(env.GEMINI_API_KEY, prompt);
+  const result = await callVoiceModelWithFallback(env, prompt);
   if (!result) {
     return jsonResponse({ error: "gemini_unavailable", message: "Voice extraction unavailable right now. Please try again later." }, 503);
   }
@@ -3364,7 +3421,7 @@ Output JSON only.`;
 }
 
 async function handleVoiceFinalize(request: Request, env: Env): Promise<Response> {
-  if (!env.GEMINI_API_KEY) {
+  if (!env.GEMINI_API_KEY && !(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN)) {
     return jsonResponse({ error: "Voice finalization is not configured" }, 501);
   }
 
@@ -3449,7 +3506,7 @@ Rules:
 - Preserve checklist-like nouns as subtasks.
 - No markdown, no prose.`;
 
-  const batchResult = await callGemini(env.GEMINI_API_KEY, batchPrompt);
+  const batchResult = await callVoiceModelWithFallback(env, batchPrompt);
   if (!batchResult) {
     return jsonResponse({ error: "gemini_unavailable", message: "Voice finalization unavailable right now. Please try again later." }, 503);
   }
