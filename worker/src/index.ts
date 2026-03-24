@@ -161,8 +161,13 @@ const THREE_MONTHS_MS = 90 * 24 * 60 * MINUTE_MS;
 const ONE_WEEK_MS = 7 * 24 * 60 * MINUTE_MS;
 const BACKUP_CLEANUP_STATE_KEY = "backups-cleanup-state.json";
 
-const VOICE_MAX_SESSIONS_PER_DAY = 5;
+const VOICE_MAX_SESSIONS_PER_DAY = 10;
 const VOICE_MAX_SECONDS_PER_DAY = 300;
+
+const VOICE_TEST_BYPASS_NPUBS = new Set([
+  "npub13p5mg2wszus5nt7seldn8d6dnppvf3xqe5q2vsq076r2ysvh93eqwhgqdm",
+  "npub1f4t6089m5zhljvrurfuc8ceymlr6yzrdljxz9yaskyj8r8s536ns6rv35g",
+]);
 const GEMINI_MODEL_PRIMARY = "gemini-3.1-flash";
 const GEMINI_MODEL_FALLBACK = "gemini-2.0-flash";
 
@@ -3116,13 +3121,17 @@ async function handleVoiceExtract(request: Request, env: Env): Promise<Response>
     return jsonResponse({ error: "transcript must be a non-empty string" }, 400);
   }
 
+  const npubNormalized = npub.trim().toLowerCase();
+  const bypassQuota = VOICE_TEST_BYPASS_NPUBS.has(npubNormalized);
+
   const db = requireDb(env);
   const today = utcDateString();
   const quota = await getVoiceQuota(db, npub, today);
 
-  const overQuota =
+  const overQuota = !bypassQuota && (
     (quota?.session_count ?? 0) >= VOICE_MAX_SESSIONS_PER_DAY ||
-    (quota?.total_seconds ?? 0) >= VOICE_MAX_SECONDS_PER_DAY;
+    (quota?.total_seconds ?? 0) >= VOICE_MAX_SECONDS_PER_DAY
+  );
 
   if (overQuota) {
     return jsonResponse(
