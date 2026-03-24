@@ -108,6 +108,13 @@ function CandidateCard({
             📅 {candidate.dueText}
           </p>
         )}
+        {!!candidate.subtasks?.length && !isDismissed && (
+          <ul className="mt-1 space-y-0.5">
+            {candidate.subtasks.map((s, i) => (
+              <li key={`${candidate.id}-sub-${i}`} className="text-xs text-gray-500 dark:text-gray-400">• {s}</li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* Dismiss X */}

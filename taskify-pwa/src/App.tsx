@@ -14432,6 +14432,12 @@ export default function App() {
         completed: false,
         order: nextOrder,
       };
+      if (Array.isArray(ft.subtasks) && ft.subtasks.length) {
+        task.subtasks = ft.subtasks
+          .map((title) => (typeof title === "string" ? title.trim() : ""))
+          .filter(Boolean)
+          .map((title) => ({ id: crypto.randomUUID(), title, completed: false }));
+      }
       if (column) task.column = column;
       if (columnId) task.columnId = columnId;
       applyHiddenForFuture(task, settings.weekStart, currentBoard.kind);

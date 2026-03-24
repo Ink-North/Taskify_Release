@@ -17,6 +17,7 @@ export type TaskCandidate = {
   title: string;
   dueText?: string;
   boardId?: string;
+  subtasks?: string[];
   status: "draft" | "confirmed" | "dismissed";
 };
 
@@ -24,8 +25,9 @@ export type TaskOperation = {
   type: "create_task" | "update_task" | "delete_task" | "mark_uncertain";
   title?: string;
   dueText?: string;
+  subtasks?: string[];
   targetRef?: string;
-  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "boardId">>;
+  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "boardId" | "subtasks">>;
 };
 
 export type FinalTask = {
@@ -33,6 +35,7 @@ export type FinalTask = {
   dueISO?: string;
   boardId?: string;
   notes?: string;
+  subtasks?: string[];
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,6 +93,7 @@ function applyOperation(candidates: TaskCandidate[], op: TaskOperation): TaskCan
         id: generateId(),
         title: op.title ?? "",
         dueText: op.dueText,
+        subtasks: op.subtasks,
         boardId: op.changes?.boardId,
         status: "draft",
       };
@@ -107,9 +111,11 @@ function applyOperation(candidates: TaskCandidate[], op: TaskOperation): TaskCan
           ...(op.changes?.title !== undefined ? { title: op.changes.title } : {}),
           ...(op.changes?.dueText !== undefined ? { dueText: op.changes.dueText } : {}),
           ...(op.changes?.boardId !== undefined ? { boardId: op.changes.boardId } : {}),
-          // top-level title/dueText fields on the op also apply
+          ...(op.changes?.subtasks !== undefined ? { subtasks: op.changes.subtasks } : {}),
+          // top-level title/dueText/subtasks fields on the op also apply
           ...(op.title !== undefined ? { title: op.title } : {}),
           ...(op.dueText !== undefined ? { dueText: op.dueText } : {}),
+          ...(op.subtasks !== undefined ? { subtasks: op.subtasks } : {}),
         };
       });
     }
@@ -470,6 +476,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
         const fallback: FinalTask[] = confirmed.map((c) => ({
           title: c.title,
           boardId: c.boardId ?? defaultBoardId,
+          subtasks: c.subtasks,
         }));
         onSave(fallback);
         return;
@@ -481,6 +488,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
       const fallback: FinalTask[] = confirmed.map((c) => ({
         title: c.title,
         boardId: c.boardId ?? defaultBoardId,
+        subtasks: c.subtasks,
       }));
       onSave(fallback);
     } finally {
