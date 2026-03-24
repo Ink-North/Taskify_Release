@@ -57,13 +57,10 @@ function MicButton({
 function CandidateCard({
   candidate,
   onDismiss,
-  onConfirm,
 }: {
   candidate: TaskCandidate;
   onDismiss: (id: string) => void;
-  onConfirm: (id: string) => void;
 }) {
-  const isConfirmed = candidate.status === "confirmed";
   const isDismissed = candidate.status === "dismissed";
 
   return (
@@ -73,15 +70,12 @@ function CandidateCard({
       data-state={isDismissed ? "completed" : undefined}
     >
       <div className="flex items-start gap-2">
-        <button
-          type="button"
-          onClick={() => (isDismissed ? onConfirm(candidate.id) : isConfirmed ? onDismiss(candidate.id) : onConfirm(candidate.id))}
-          aria-label={isConfirmed ? "Deselect task" : "Select task"}
-          className={`icon-button mt-0.5 ${isConfirmed ? "icon-button--accent" : ""}`}
-          data-active={isConfirmed ? "true" : "false"}
+        <span
+          aria-hidden="true"
+          className="icon-button mt-0.5"
         >
-          {isConfirmed ? "✓" : "○"}
-        </button>
+          ○
+        </span>
 
         <div className="flex-1 min-w-0">
           <div className={`task-card__title ${isDismissed ? "task-card__title--done" : ""}`}>
@@ -308,7 +302,6 @@ export function VoiceDictationModal({
                   key={candidate.id}
                   candidate={candidate}
                   onDismiss={dismissCandidate}
-                  onConfirm={confirmCandidate}
                 />
               ))}
             </ul>
