@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useVoiceSession, isSpeechRecognitionSupported } from "../nostr/useVoiceSession";
 import type { FinalTask, TaskCandidate } from "../nostr/useVoiceSession";
 
@@ -13,6 +13,7 @@ export type VoiceDictationModalProps = {
   workerBaseUrl: string;
   npub: string;
   defaultBoardId?: string;
+  testingMode?: boolean;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,6 +161,7 @@ export function VoiceDictationModal({
   workerBaseUrl,
   npub,
   defaultBoardId,
+  testingMode = false,
 }: VoiceDictationModalProps) {
   const supported = isSpeechRecognitionSupported();
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -169,7 +171,9 @@ export function VoiceDictationModal({
     onClose();
   };
 
-  const { session, startListening, stopListening, dismissCandidate, confirmCandidate, save, reset } =
+  const [testingText, setTestingText] = useState("");
+
+  const { session, startListening, stopListening, dismissCandidate, confirmCandidate, extractFromText, save, reset } =
     useVoiceSession({ workerBaseUrl, npub, defaultBoardId, onSave: handleSave });
 
   // Auto-scroll transcript area when text grows
@@ -267,6 +271,36 @@ export function VoiceDictationModal({
           )}
           <div ref={transcriptEndRef} />
         </div>
+
+        {/* Testing-only text input (bypass speech capture) */}
+        {testingMode && (
+          <div className="mx-4 mb-3 rounded-xl border border-dashed border-violet-300 dark:border-violet-700 bg-violet-50/50 dark:bg-violet-900/10 p-3">
+            <div className="text-xs font-semibold text-violet-700 dark:text-violet-300 mb-2">Testing input</div>
+            <textarea
+              value={testingText}
+              onChange={(e) => setTestingText(e.target.value)}
+              placeholder="Paste dictated transcript here for testing..."
+              className="w-full min-h-[84px] rounded-lg px-2.5 py-2 text-sm bg-white dark:bg-gray-800 border border-violet-200 dark:border-violet-700"
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-50"
+                disabled={!testingText.trim() || session.isProcessing}
+                onClick={() => { void extractFromText(testingText); }}
+              >
+                Extract from text
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
+                onClick={() => setTestingText("")}
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Candidate cards */}
         {visibleCandidates.length > 0 && (

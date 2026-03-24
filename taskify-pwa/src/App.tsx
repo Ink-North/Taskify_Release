@@ -20434,6 +20434,7 @@ export default function App() {
                 : nostrPK;
             } catch { return nostrPK; }
           })()) : ""}
+          testingMode={kvStorage.getItem("taskify.voice.testInput.enabled") === "true"}
           defaultBoardId={currentBoard?.id}
         />
       )}

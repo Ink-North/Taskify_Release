@@ -307,6 +307,7 @@ export type UseVoiceSessionResult = {
   stopListening: () => void;
   dismissCandidate: (id: string) => void;
   confirmCandidate: (id: string) => void;
+  extractFromText: (text: string) => Promise<void>;
   save: () => Promise<void>;
   reset: () => void;
 };
@@ -455,6 +456,18 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
     dispatch({ type: "CONFIRM_CANDIDATE", id });
   }, []);
 
+  const extractFromText = useCallback(async (text: string) => {
+    const transcript = (text || "").trim();
+    if (!transcript) return;
+    stopListening();
+    dispatch({ type: "RESET" });
+    dispatch({ type: "COMMIT_TRANSCRIPT", text: transcript });
+    transcriptRef.current = transcript;
+    interimRef.current = "";
+    extractedOnceRef.current = true;
+    await callExtract(transcript);
+  }, [callExtract, stopListening]);
+
   const save = useCallback(async () => {
     const confirmed = candidatesRef.current.filter((c) => c.status === "confirmed");
     if (!confirmed.length) return;
@@ -508,6 +521,7 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
     stopListening,
     dismissCandidate,
     confirmCandidate,
+    extractFromText,
     save,
     reset,
   };
