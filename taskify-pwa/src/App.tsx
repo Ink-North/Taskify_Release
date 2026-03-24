@@ -20434,18 +20434,7 @@ export default function App() {
                 : nostrPK;
             } catch { return nostrPK; }
           })()) : ""}
-          testingMode={nostrPK ? ((() => {
-            try {
-              const npub = typeof (nip19 as any).npubEncode === "function"
-                ? (nip19 as any).npubEncode(nostrPK)
-                : nostrPK;
-              const norm = String(npub || "").toLowerCase();
-              return norm === "npub13p5mg2wszus5nt7seldn8d6dnppvf3xqe5q2vsq076r2ysvh93eqwhgqdm"
-                || norm === "npub1f4t6089m5zhljvrurfuc8ceymlr6yzrdljxz9yaskyj8r8s536ns6rv35g";
-            } catch {
-              return false;
-            }
-          })()) : false}
+          testingMode={kvStorage.getItem("taskify.voice.testInput.enabled") === "true"}
           defaultBoardId={currentBoard?.id}
         />
       )}
