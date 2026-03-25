@@ -4366,7 +4366,7 @@ async function handleGcalAuthUrl(request: Request, env: Env): Promise<Response> 
     client_id: env.GCAL_CLIENT_ID,
     redirect_uri: "https://taskify.solife.me/api/gcal/auth/callback",
     response_type: "code",
-    scope: "https://www.googleapis.com/auth/calendar.readonly",
+    scope: "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email",
     access_type: "offline",
     prompt: "consent",
     state,
