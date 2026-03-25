@@ -4,7 +4,8 @@ import Foundation
 public final class AppShellViewModel: ObservableObject {
     public enum Tab: String {
         case boards
-        case home
+        case upcoming
+        case settings
     }
 
     @Published public private(set) var selectedTab: Tab = .boards

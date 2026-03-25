@@ -52,9 +52,13 @@ private struct NativeAppShellView: View {
                 .tabItem { Label("Boards", systemImage: "square.grid.2x2") }
                 .tag(AppShellViewModel.Tab.boards)
 
-            HomeShellScreen(profileName: shellVM.profile.name)
-                .tabItem { Label("Home", systemImage: "house") }
-                .tag(AppShellViewModel.Tab.home)
+            UpcomingShellScreen()
+                .tabItem { Label("Upcoming", systemImage: "calendar") }
+                .tag(AppShellViewModel.Tab.upcoming)
+
+            SettingsShellScreen(profileName: shellVM.profile.name)
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(AppShellViewModel.Tab.settings)
         }
     }
 }
@@ -66,7 +70,7 @@ private struct BoardsShellScreen: View {
 
     var body: some View {
         NavigationStack {
-            Group {
+            VStack(spacing: 12) {
                 switch boardListVM.state {
                 case .loading:
                     ProgressView("Loading boards…")
@@ -95,30 +99,22 @@ private struct BoardsShellScreen: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(24)
                 case .ready:
-                    NavigationSplitView {
-                        List(boardListVM.visibleBoards, id: \.id) { board in
-                            Button {
-                                boardListVM.selectBoard(id: board.id)
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(board.name).font(.headline)
-                                        Text(board.id).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if boardListVM.selectedBoardId == board.id {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(.blue)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
+                    Picker("Boards", selection: Binding(
+                        get: { boardListVM.selectedBoardId ?? "" },
+                        set: { boardListVM.selectBoard(id: $0) }
+                    )) {
+                        ForEach(boardListVM.visibleBoards, id: \.id) { board in
+                            Text(board.name).tag(board.id)
                         }
-                    } detail: {
-                        BoardDetailPane(viewModel: boardDetailVM)
                     }
+                    .pickerStyle(.menu)
+
+                    BoardDetailPane(viewModel: boardDetailVM)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
             .navigationTitle("Boards")
             .onAppear {
                 boardListVM.setBoards(shellVM.profile.boards)
@@ -172,21 +168,44 @@ private struct BoardDetailPane: View {
     }
 }
 
-private struct HomeShellScreen: View {
-    let profileName: String
-
+private struct UpcomingShellScreen: View {
     var body: some View {
         NavigationStack {
-            VStack(spacing: 8) {
-                Text("Welcome, \(profileName)")
+            VStack(spacing: 10) {
+                Image(systemName: "calendar")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                Text("Upcoming")
                     .font(.title3.bold())
-                Text("Native home scaffold — parity slices in progress.")
+                Text("Native upcoming scaffold — parity slices in progress.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(24)
-            .navigationTitle("Home")
+            .navigationTitle("Upcoming")
+        }
+    }
+}
+
+private struct SettingsShellScreen: View {
+    let profileName: String
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 10) {
+                Image(systemName: "gearshape")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                Text("Signed in as \(profileName)")
+                    .font(.title3.bold())
+                Text("Native settings scaffold — parity slices in progress.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(24)
+            .navigationTitle("Settings")
         }
     }
 }
