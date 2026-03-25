@@ -32,6 +32,8 @@ import { BibleSection } from "./BibleSection";
 import { PushSection } from "./PushSection";
 import { NostrSection } from "./NostrSection";
 import { BackupSection } from "./BackupSection";
+import { GoogleCalendarSection } from "./GoogleCalendarSection";
+import type { GcalCalendar, GcalConnectionStatus } from "../../hooks/useGoogleCalendar";
 import { ManageBoardModal } from "./ManageBoardModal";
 import { TASKIFY_AGENT_CONTRACT_BLOCK } from "../agent/agentPromptContract";
 
@@ -62,6 +64,13 @@ export function SettingsModal({
   workerBaseUrl,
   vapidPublicKey,
   onResetWalletTokenTracking,
+  gcalStatus,
+  gcalCalendars,
+  gcalLoading,
+  onGcalConnect,
+  onGcalDisconnect,
+  onGcalToggleCalendar,
+  onGcalSync,
 }: {
   embedded?: boolean;
   settings: Settings;
@@ -92,6 +101,13 @@ export function SettingsModal({
   workerBaseUrl: string;
   vapidPublicKey: string;
   onResetWalletTokenTracking: () => void;
+  gcalStatus: GcalConnectionStatus;
+  gcalCalendars: GcalCalendar[];
+  gcalLoading: boolean;
+  onGcalConnect: () => void;
+  onGcalDisconnect: () => void;
+  onGcalToggleCalendar: (id: string, selected: boolean) => void;
+  onGcalSync: () => void;
 }) {
   const { show: showToast } = useToast();
   const { mintUrl, payInvoice } = useCashu();
@@ -386,6 +402,17 @@ export function SettingsModal({
           onDisablePush={onDisablePush}
           workerBaseUrl={workerBaseUrl}
           vapidPublicKey={vapidPublicKey}
+        />
+
+        {/* Connected Calendars */}
+        <GoogleCalendarSection
+          connectionStatus={gcalStatus}
+          calendars={gcalCalendars}
+          loading={gcalLoading}
+          onConnect={onGcalConnect}
+          onDisconnect={onGcalDisconnect}
+          onToggleCalendar={onGcalToggleCalendar}
+          onSync={onGcalSync}
         />
 
         {/* Nostr */}

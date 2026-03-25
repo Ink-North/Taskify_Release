@@ -231,6 +231,7 @@ import {
   type AgentSecurityConfig,
 } from "./agent/agentSecurity";
 import { setAgentRuntime } from "./agent/agentRuntime";
+import { useGoogleCalendar, isGcalBoardId } from "./hooks/useGoogleCalendar";
 
 
 const DEBUG_CONSOLE_STORAGE_KEY = "taskify.debugConsole.enabled";
@@ -6342,6 +6343,19 @@ export default function App() {
   const inboxPoolRef = useRef<SessionPool | null>(null);
   const inboxSubCloserRef = useRef<(() => void) | null>(null);
   const nostrSkHex = useMemo(() => bytesToHex(nostrSK), [nostrSK]);
+
+  // ── Google Calendar integration ──────────────────────────────────────────
+  const {
+    connectionStatus: gcalStatus,
+    calendars: gcalCalendars,
+    gcalEvents: gcalCalendarEvents,
+    loading: gcalLoading,
+    connect: gcalConnect,
+    disconnect: gcalDisconnect,
+    toggleCalendar: gcalToggleCalendar,
+    sync: gcalSync,
+  } = useGoogleCalendar(workerBaseUrl, nostrSkHex || null);
+
   const inboxRelays = useMemo(
     () =>
       Array.from(
@@ -10970,14 +10984,18 @@ export default function App() {
       const ts = Date.parse(ev.startISO);
       return !Number.isNaN(ts);
     });
-    if (!upcomingUsHolidaysEnabled) return boardEvents;
-    return [...boardEvents, ...upcomingUsHolidayEvents];
+    let result = upcomingUsHolidaysEnabled ? [...boardEvents, ...upcomingUsHolidayEvents] : boardEvents;
+    if (gcalCalendarEvents.length > 0) {
+      result = [...result, ...(gcalCalendarEvents as unknown as typeof result)];
+    }
+    return result;
   }, [
     calendarEvents,
     messagesBoardId,
     upcomingBoardOrder,
     upcomingUsHolidayEvents,
     upcomingUsHolidaysEnabled,
+    gcalCalendarEvents,
   ]);
 
   const upcomingItemCount = upcoming.length + upcomingEvents.length;
@@ -11024,6 +11042,7 @@ export default function App() {
         const { selectedBoards, selectedLists } = upcomingFilterMap;
         filtered = upcomingEvents.filter((ev) => {
           if (isUsHolidayCalendarEvent(ev)) return upcomingUsHolidaysEnabled;
+          if (isGcalBoardId(ev.boardId)) return upcomingFilter === null || upcomingFilter.includes(ev.boardId);
           if (ev.external) return true;
           const board = boardMap.get(ev.boardId);
           const listSet = selectedLists.get(ev.boardId);
@@ -19062,6 +19081,13 @@ export default function App() {
           onRegenerateBoardId={regenerateBoardId}
           onBoardChanged={handleBoardChanged}
           onClose={closeSettings}
+          gcalStatus={gcalStatus}
+          gcalCalendars={gcalCalendars}
+          gcalLoading={gcalLoading}
+          onGcalConnect={gcalConnect}
+          onGcalDisconnect={gcalDisconnect}
+          onGcalToggleCalendar={gcalToggleCalendar}
+          onGcalSync={gcalSync}
         />
       )}
       </div>
@@ -19573,6 +19599,51 @@ export default function App() {
                 <span className="upcoming-filter__label">{SPECIAL_CALENDAR_US_HOLIDAYS_LABEL}</span>
               </button>
             </div>
+            {gcalStatus.connected && gcalCalendars.map((cal) => {
+              const boardId = `gcal:${cal.id}`;
+              const isSelected = upcomingFilter === null || upcomingFilter.includes(boardId);
+              return (
+                <div key={cal.id} className="upcoming-filter__group">
+                  <button
+                    type="button"
+                    className="upcoming-filter__row pressable"
+                    onClick={() => {
+                      if (upcomingFilter === null) {
+                        // Deselect just this calendar
+                        const allIds = upcomingFilterOptions.map((o) => o.id);
+                        setUpcomingFilter(allIds.filter((id) => id !== boardId));
+                      } else if (isSelected) {
+                        setUpcomingFilter(upcomingFilter.filter((id) => id !== boardId));
+                      } else {
+                        setUpcomingFilter([...upcomingFilter, boardId]);
+                      }
+                    }}
+                    role="checkbox"
+                    aria-checked={isSelected}
+                  >
+                    <span
+                      className={`upcoming-filter__check${isSelected ? " is-checked" : ""}`}
+                      aria-hidden="true"
+                    >
+                      {isSelected && (
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M5 12l4 4 10-10" />
+                        </svg>
+                      )}
+                    </span>
+                    <span className="upcoming-filter__label">
+                      {cal.color && (
+                        <span
+                          className="inline-block w-2 h-2 rounded-full mr-1.5"
+                          style={{ backgroundColor: cal.color, verticalAlign: "middle" }}
+                        />
+                      )}
+                      {cal.name}
+                    </span>
+                  </button>
+                </div>
+              );
+            })}
             <div>
               <button
                 type="button"
