@@ -37,7 +37,8 @@ export function ImagePreviewModal({ src, alt, onClose }: ImagePreviewModalProps)
       {/* Close button */}
       <button
         type="button"
-        className="absolute top-4 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white text-xl leading-none pressable"
+        className="absolute right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white text-xl leading-none pressable"
+        style={{ top: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}
         onClick={(e) => { e.stopPropagation(); onClose(); }}
         aria-label="Close preview"
       >
