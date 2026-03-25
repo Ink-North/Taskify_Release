@@ -4,7 +4,8 @@ Purpose: lock UI/interaction parity targets before additional native implementat
 
 Repo context:
 - PWA source of truth: `taskify-pwa/src/App.tsx`
-- Native iOS source: `taskify-ios/Sources/TaskifyApp/TaskifyApp.swift`
+- Native iOS source (active migration workspace): `taskify-ios-native/Sources/TaskifyApp/TaskifyApp.swift`
+- Legacy webwrapper app (kept stable during migration): `taskify-ios/`
 
 ---
 
