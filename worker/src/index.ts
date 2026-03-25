@@ -4019,6 +4019,8 @@ type GcalEventRow = {
   all_day: number;
   status: string;
   html_link: string | null;
+  calendar_name?: string | null;
+  calendar_color?: string | null;
 };
 
 // --- Token helpers -----------------------------------------------------------
@@ -4584,14 +4586,14 @@ async function handleGcalEvents(request: Request, env: Env): Promise<Response> {
     .prepare<GcalEventRow>(
       `SELECT e.id, e.npub, e.calendar_id, e.provider_event_id,
               e.title, e.description, e.location,
-              e.start_iso, e.end_iso, e.all_day, e.status, e.html_link
+              e.start_iso, e.end_iso, e.all_day, e.status, e.html_link,
+              c.name AS calendar_name, c.color AS calendar_color
          FROM gcal_events e
          JOIN gcal_calendars c ON c.id = e.calendar_id AND c.npub = e.npub
         WHERE e.npub = ?
           AND e.start_iso >= ?
           AND e.start_iso <= ?
           AND e.status != 'cancelled'
-          AND c.selected = 1
         ORDER BY e.start_iso ASC`,
     )
     .bind(auth.npub, from, to)
@@ -4601,15 +4603,18 @@ async function handleGcalEvents(request: Request, env: Env): Promise<Response> {
     id: r.id,
     calendarId: r.calendar_id,
     providerEventId: r.provider_event_id,
+    calendarName: r.calendar_name ?? r.calendar_id,
+    calendarColor: r.calendar_color ?? undefined,
     title: r.title,
     description: r.description,
     location: r.location,
-    startIso: r.start_iso,
-    endIso: r.end_iso,
+    startISO: r.start_iso,
+    endISO: r.end_iso,
     allDay: r.all_day === 1,
     status: r.status,
     htmlLink: r.html_link,
     source: "google" as const,
+    kind: "calendar_event" as const,
   }));
 
   return jsonResponse(events);
@@ -4636,7 +4641,7 @@ async function handleGcalSync(request: Request, env: Env): Promise<Response> {
 
   const calendarsResult = await db
     .prepare<GcalCalendarRow>(
-      `SELECT * FROM gcal_calendars WHERE npub = ? AND selected = 1`,
+      `SELECT * FROM gcal_calendars WHERE npub = ?`,
     )
     .bind(auth.npub)
     .all<GcalCalendarRow>();

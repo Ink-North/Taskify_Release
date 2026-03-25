@@ -9385,10 +9385,17 @@ export default function App() {
     return groups;
   }, [visibleBoards]);
 
-  const upcomingFilterOptions = useMemo(
-    () => upcomingFilterGroups.flatMap((group) => [group.boardOption, ...group.listOptions]),
-    [upcomingFilterGroups],
-  );
+  const upcomingFilterOptions = useMemo(() => {
+    const boardOptions = upcomingFilterGroups.flatMap((group) => [group.boardOption, ...group.listOptions]);
+    const gcalOptions: UpcomingFilterOption[] = gcalStatus.connected
+      ? gcalCalendars.map((cal) => ({
+          id: `gcal:${cal.id}`,
+          label: cal.name,
+          boardId: `gcal:${cal.id}`,
+        }))
+      : [];
+    return [...boardOptions, ...gcalOptions];
+  }, [upcomingFilterGroups, gcalCalendars, gcalStatus.connected]);
   const upcomingFilterOptionMap = useMemo(() => {
     const map = new Map<string, UpcomingFilterOption>();
     upcomingFilterOptions.forEach((option) => {
@@ -11467,10 +11474,18 @@ export default function App() {
 
 	  const renderUpcomingEventCard = useCallback((ev: CalendarEvent) => {
 	    const isUsHoliday = isUsHolidayCalendarEvent(ev);
+	    const isGcal = (ev as any).gcalSource === true;
+	    const gcalCalendarName = isGcal && typeof (ev as any).gcalCalendarName === "string"
+	      ? (ev as any).gcalCalendarName
+	      : "";
 	    const board = boardMap.get(ev.boardId);
-	    const boardLabel = isUsHoliday ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL : board?.name || "Board";
+	    const boardLabel = isUsHoliday
+	      ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL
+	      : isGcal
+	        ? (gcalCalendarName || "Google Calendar")
+	        : (board?.name || "Board");
 	    const listLabel =
-	      board?.kind === "lists"
+	      !isGcal && board?.kind === "lists"
 	        ? board.columns.find((column) => column.id === ev.columnId)?.name || ""
 	        : "";
 	    const placementLabel = listLabel ? `${boardLabel} • ${listLabel}` : boardLabel;
