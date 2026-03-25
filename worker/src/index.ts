@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 import { getPreviewFromContent } from "link-preview-js";
+import { schnorr } from "@noble/curves/secp256k1.js";
 interface R2ObjectBody {
   body: ReadableStream<Uint8Array> | null;
   text(): Promise<string>;
@@ -3813,24 +3814,77 @@ function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
 
 // --- NIP-01 auth verification helper -----------------------------------------
 
-// TODO: wire full NIP-01 Schnorr sig verification once secp256k1 crypto lib confirmed
+// Minimal bech32 decode for npub (no checksum verification — sufficient for auth use)
+const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+function bech32Decode(str: string): { hrp: string; data: Uint8Array } | null {
+  const s = str.toLowerCase();
+  const sep = s.lastIndexOf("1");
+  if (sep < 1 || sep + 7 > s.length) return null;
+  const hrp = s.slice(0, sep);
+  const dataPart = s.slice(sep + 1);
+  // Decode 5-bit words (strip 6-char checksum suffix)
+  const words: number[] = [];
+  for (let i = 0; i < dataPart.length - 6; i++) {
+    const idx = BECH32_CHARSET.indexOf(dataPart[i]);
+    if (idx < 0) return null;
+    words.push(idx);
+  }
+  // Convert 5-bit groups → 8-bit bytes
+  let acc = 0, bits = 0;
+  const bytes: number[] = [];
+  for (const w of words) {
+    acc = (acc << 5) | w;
+    bits += 5;
+    while (bits >= 8) {
+      bits -= 8;
+      bytes.push((acc >> bits) & 0xff);
+    }
+  }
+  return { hrp, data: new Uint8Array(bytes) };
+}
+
+// Accept either raw 64-hex pubkey or bech32 "npub1…" string → lowercase hex
+function npubToHex(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) return trimmed.toLowerCase();
+  const decoded = bech32Decode(trimmed);
+  if (!decoded || decoded.hrp !== "npub" || decoded.data.length !== 32) return null;
+  return [...decoded.data].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// NIP-01 Schnorr request authentication
+// Headers: X-Taskify-Npub, X-Taskify-Timestamp, X-Taskify-Sig
+// Sig is a hex Schnorr signature over SHA-256(timestamp + "." + body)
+// GET requests use empty string as body.
 async function verifyGcalAuth(request: Request): Promise<{ npub: string } | null> {
   const npubHeader = request.headers.get("X-Taskify-Npub");
-  const timestampHeader = request.headers.get("X-Taskify-Timestamp");
+  const tsHeader = request.headers.get("X-Taskify-Timestamp");
+  const sigHeader = request.headers.get("X-Taskify-Sig");
 
-  if (!npubHeader || !timestampHeader) return null;
+  if (!npubHeader || !tsHeader || !sigHeader) return null;
 
-  const ts = parseInt(timestampHeader, 10);
+  const ts = parseInt(tsHeader, 10);
   if (!Number.isFinite(ts)) return null;
   const now = Math.floor(Date.now() / 1000);
   if (Math.abs(now - ts) > 300) return null;
 
-  const npub = npubHeader.trim();
-  if (!npub) return null;
+  const pubkeyHex = npubToHex(npubHeader);
+  if (!pubkeyHex) return null;
 
-  // Normalise: accept bech32 npub or hex pubkey; store as-is for now
-  // TODO: wire full NIP-01 Schnorr sig verification once secp256k1 crypto lib confirmed
-  return { npub };
+  // Compute signing payload: SHA-256(timestamp + "." + body)
+  const body = await request.clone().text();
+  const payload = `${ts}.${body}`;
+  const msgHashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
+  const msgHash = new Uint8Array(msgHashBuf);
+
+  try {
+    const valid = schnorr.verify(hexToBytes(sigHeader), msgHash, hexToBytes(pubkeyHex));
+    if (!valid) return null;
+  } catch {
+    return null;
+  }
+
+  return { npub: pubkeyHex };
 }
 
 // --- ensureGcalSchema --------------------------------------------------------
@@ -4693,3 +4747,6 @@ async function gcalRetryFailedSyncs(env: Env): Promise<void> {
     }
   }
 }
+
+// Named exports for unit testing
+export { gcalEncryptToken, gcalDecryptToken, verifyGcalAuth };

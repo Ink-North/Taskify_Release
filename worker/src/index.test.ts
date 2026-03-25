@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import worker from "./index.ts";
+import { gcalEncryptToken, gcalDecryptToken, verifyGcalAuth } from "./index.ts";
+import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 
 type DeviceRow = {
   device_id: string;
@@ -1034,4 +1037,485 @@ test("POST /api/voice/finalize returns 503 (no local due parsing fallback) when 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+// =============================================================================
+// GCal Integration Tests
+// =============================================================================
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function gcalBytesToHex(b: Uint8Array): string {
+  return [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+function gcalHexToBytes(h: string): Uint8Array {
+  const bytes = new Uint8Array(h.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
+
+// Minimal bech32 encode (standard bech32, used only to generate test npub strings)
+const B32_CHARSET_TEST = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+const B32_GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+function b32Polymod(values: number[]): number {
+  let chk = 1;
+  for (const v of values) {
+    const b = chk >> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((b >> i) & 1) chk ^= B32_GEN[i];
+  }
+  return chk;
+}
+function b32HrpExpand(hrp: string): number[] {
+  const r: number[] = [];
+  for (const c of hrp) r.push(c.charCodeAt(0) >> 5);
+  r.push(0);
+  for (const c of hrp) r.push(c.charCodeAt(0) & 31);
+  return r;
+}
+function convertTo5Bits(data: Uint8Array): number[] {
+  let acc = 0, bits = 0;
+  const out: number[] = [];
+  for (const b of data) {
+    acc = (acc << 8) | b;
+    bits += 8;
+    while (bits >= 5) { bits -= 5; out.push((acc >> bits) & 31); }
+  }
+  if (bits > 0) out.push((acc << (5 - bits)) & 31);
+  return out;
+}
+function npubEncode(pubkeyHex: string): string {
+  const words = convertTo5Bits(gcalHexToBytes(pubkeyHex));
+  const hrp = "npub";
+  const polymod = b32Polymod([...b32HrpExpand(hrp), ...words, 0, 0, 0, 0, 0, 0]) ^ 1;
+  const checksum = [0, 1, 2, 3, 4, 5].map((i) => (polymod >> (5 * (5 - i))) & 31);
+  return `${hrp}1${[...words, ...checksum].map((w) => B32_CHARSET_TEST[w]).join("")}`;
+}
+
+// Produce NIP-01 auth headers for a gcal request
+function makeGcalAuthHeaders(privKey: Uint8Array, pubkeyHex: string, body = ""): Record<string, string> {
+  const ts = Math.floor(Date.now() / 1000);
+  const msgHash = sha256(new TextEncoder().encode(`${ts}.${body}`));
+  const sig = schnorr.sign(msgHash, privKey);
+  return {
+    "X-Taskify-Npub": pubkeyHex,
+    "X-Taskify-Timestamp": String(ts),
+    "X-Taskify-Sig": gcalBytesToHex(sig),
+  };
+}
+
+// Gcal-aware MockD1 subclass
+type GcalCalRow = {
+  id: string;
+  npub: string;
+  provider_cal_id: string;
+  name: string;
+  primary_cal: number;
+  selected: number;
+  color: string | null;
+  timezone: string | null;
+  sync_token: string | null;
+  watch_channel_id: string | null;
+  watch_expiry: number | null;
+};
+
+class MockD1WithGcal extends MockD1 {
+  gcalCalendars = new Map<string, GcalCalRow>();
+
+  override prepare(query: string) {
+    const sql = query.replace(/\s+/g, " ").trim();
+    const db = this;
+
+    if (!sql.toLowerCase().includes("gcal_calendars")) {
+      return super.prepare(query);
+    }
+
+    let params: unknown[] = [];
+    return {
+      _sql: sql,
+      bind(...values: unknown[]) {
+        params = values;
+        return this;
+      },
+      async run() {
+        if (/^CREATE TABLE/i.test(sql) || /^CREATE INDEX/i.test(sql)) return { success: true };
+        // UPDATE gcal_calendars SET selected = ?, updated_at = ? WHERE id = ? AND npub = ?
+        if (/UPDATE gcal_calendars SET selected/i.test(sql)) {
+          const [selected, , calId, npub] = params as [number, number, string, string];
+          const row = db.gcalCalendars.get(calId as string);
+          if (row && row.npub === npub) row.selected = selected as number;
+          return { success: true };
+        }
+        return { success: true };
+      },
+      async first() {
+        if (sql.includes("WHERE watch_channel_id = ?")) {
+          const [channelId] = params as [string];
+          const row = [...db.gcalCalendars.values()].find((c) => c.watch_channel_id === channelId);
+          return row ?? null;
+        }
+        return null;
+      },
+      async all() {
+        return { success: true, results: [] };
+      },
+    };
+  }
+}
+
+const TEST_GCAL_ENC_KEY = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+const TEST_WEBHOOK_SECRET = "gcal-webhook-test-secret";
+
+async function makeGcalEnv(db: MockD1 = new MockD1()) {
+  const base = await makeEnv(db);
+  return {
+    ...base,
+    GCAL_CLIENT_ID: "test-client-id",
+    GCAL_CLIENT_SECRET: "test-client-secret",
+    GCAL_TOKEN_ENC_KEY: TEST_GCAL_ENC_KEY,
+    GCAL_WEBHOOK_SECRET: TEST_WEBHOOK_SECRET,
+  } as any;
+}
+
+const mockCtx = { waitUntil: (_p: Promise<unknown>) => void _p } as any;
+
+// ── A. AES-256-GCM encryption round-trip ─────────────────────────────────────
+
+test("gcal crypto: encrypt then decrypt returns original plaintext", async () => {
+  const plaintext = "access_token_abc123";
+  const { enc, iv, tag } = await gcalEncryptToken(plaintext, TEST_GCAL_ENC_KEY);
+  const decrypted = await gcalDecryptToken(enc, iv, tag, TEST_GCAL_ENC_KEY);
+  assert.equal(decrypted, plaintext);
+});
+
+test("gcal crypto: different IVs produced on each encrypt call", async () => {
+  const { iv: iv1 } = await gcalEncryptToken("token", TEST_GCAL_ENC_KEY);
+  const { iv: iv2 } = await gcalEncryptToken("token", TEST_GCAL_ENC_KEY);
+  assert.notEqual(iv1, iv2, "IVs must be non-deterministic");
+});
+
+test("gcal crypto: wrong key fails to decrypt", async () => {
+  const { enc, iv, tag } = await gcalEncryptToken("secret", TEST_GCAL_ENC_KEY);
+  const wrongKey = "deadbeef".repeat(8); // 64 hex chars
+  await assert.rejects(
+    () => gcalDecryptToken(enc, iv, tag, wrongKey),
+    "decryption with wrong key must throw",
+  );
+});
+
+// ── B. verifyGcalAuth ─────────────────────────────────────────────────────────
+
+test("verifyGcalAuth: missing X-Taskify-Npub returns null", async () => {
+  const ts = Math.floor(Date.now() / 1000);
+  const req = new Request("https://example.com/api/gcal/status", {
+    method: "GET",
+    headers: { "X-Taskify-Timestamp": String(ts), "X-Taskify-Sig": "a".repeat(128) },
+  });
+  assert.equal(await verifyGcalAuth(req), null);
+});
+
+test("verifyGcalAuth: missing X-Taskify-Timestamp returns null", async () => {
+  const req = new Request("https://example.com/api/gcal/status", {
+    method: "GET",
+    headers: { "X-Taskify-Npub": "a".repeat(64), "X-Taskify-Sig": "a".repeat(128) },
+  });
+  assert.equal(await verifyGcalAuth(req), null);
+});
+
+test("verifyGcalAuth: missing X-Taskify-Sig returns null", async () => {
+  const ts = Math.floor(Date.now() / 1000);
+  const req = new Request("https://example.com/api/gcal/status", {
+    method: "GET",
+    headers: { "X-Taskify-Npub": "a".repeat(64), "X-Taskify-Timestamp": String(ts) },
+  });
+  assert.equal(await verifyGcalAuth(req), null);
+});
+
+test("verifyGcalAuth: timestamp older than 300s returns null", async () => {
+  const privKey = schnorr.utils.randomSecretKey();
+  const pubKeyHex = gcalBytesToHex(schnorr.getPublicKey(privKey));
+  const staleTs = Math.floor(Date.now() / 1000) - 301;
+  const msgHash = sha256(new TextEncoder().encode(`${staleTs}.`));
+  const sig = schnorr.sign(msgHash, privKey);
+  const req = new Request("https://example.com/api/gcal/status", {
+    method: "GET",
+    headers: {
+      "X-Taskify-Npub": pubKeyHex,
+      "X-Taskify-Timestamp": String(staleTs),
+      "X-Taskify-Sig": gcalBytesToHex(sig),
+    },
+  });
+  assert.equal(await verifyGcalAuth(req), null);
+});
+
+test("verifyGcalAuth: timestamp in future beyond 300s returns null", async () => {
+  const privKey = schnorr.utils.randomSecretKey();
+  const pubKeyHex = gcalBytesToHex(schnorr.getPublicKey(privKey));
+  const futureTs = Math.floor(Date.now() / 1000) + 301;
+  const msgHash = sha256(new TextEncoder().encode(`${futureTs}.`));
+  const sig = schnorr.sign(msgHash, privKey);
+  const req = new Request("https://example.com/api/gcal/status", {
+    method: "GET",
+    headers: {
+      "X-Taskify-Npub": pubKeyHex,
+      "X-Taskify-Timestamp": String(futureTs),
+      "X-Taskify-Sig": gcalBytesToHex(sig),
+    },
+  });
+  assert.equal(await verifyGcalAuth(req), null);
+});
+
+test("verifyGcalAuth: invalid signature returns null", async () => {
+  const privKey = schnorr.utils.randomSecretKey();
+  const pubKeyHex = gcalBytesToHex(schnorr.getPublicKey(privKey));
+  const ts = Math.floor(Date.now() / 1000);
+  // Sign a *different* payload (wrong message)
+  const wrongHash = sha256(new TextEncoder().encode("completely-wrong-payload"));
+  const wrongSig = schnorr.sign(wrongHash, privKey);
+  const req = new Request("https://example.com/api/gcal/status", {
+    method: "GET",
+    headers: {
+      "X-Taskify-Npub": pubKeyHex,
+      "X-Taskify-Timestamp": String(ts),
+      "X-Taskify-Sig": gcalBytesToHex(wrongSig),
+    },
+  });
+  assert.equal(await verifyGcalAuth(req), null);
+});
+
+test("verifyGcalAuth: valid hex pubkey + correct sig returns { npub: hexPubkey }", async () => {
+  const privKey = schnorr.utils.randomSecretKey();
+  const pubKeyHex = gcalBytesToHex(schnorr.getPublicKey(privKey));
+  const ts = Math.floor(Date.now() / 1000);
+  const body = '{"hello":"world"}';
+  const msgHash = sha256(new TextEncoder().encode(`${ts}.${body}`));
+  const sig = schnorr.sign(msgHash, privKey);
+  const req = new Request("https://example.com/api/gcal/status", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Taskify-Npub": pubKeyHex,
+      "X-Taskify-Timestamp": String(ts),
+      "X-Taskify-Sig": gcalBytesToHex(sig),
+    },
+    body,
+  });
+  const result = await verifyGcalAuth(req);
+  assert.ok(result, "should return a result");
+  assert.equal(result.npub, pubKeyHex);
+});
+
+test("verifyGcalAuth: valid bech32 npub + correct sig on GET (empty body) returns { npub }", async () => {
+  const privKey = schnorr.utils.randomSecretKey();
+  const pubKeyHex = gcalBytesToHex(schnorr.getPublicKey(privKey));
+  const npub = npubEncode(pubKeyHex);
+  const ts = Math.floor(Date.now() / 1000);
+  const msgHash = sha256(new TextEncoder().encode(`${ts}.`));
+  const sig = schnorr.sign(msgHash, privKey);
+  const req = new Request("https://example.com/api/gcal/status", {
+    method: "GET",
+    headers: {
+      "X-Taskify-Npub": npub,
+      "X-Taskify-Timestamp": String(ts),
+      "X-Taskify-Sig": gcalBytesToHex(sig),
+    },
+  });
+  const result = await verifyGcalAuth(req);
+  assert.ok(result, "bech32 npub should be accepted");
+  assert.equal(result.npub, pubKeyHex, "should normalise to hex pubkey");
+});
+
+test("verifyGcalAuth: tampered body returns null", async () => {
+  const privKey = schnorr.utils.randomSecretKey();
+  const pubKeyHex = gcalBytesToHex(schnorr.getPublicKey(privKey));
+  const ts = Math.floor(Date.now() / 1000);
+  const originalBody = '{"key":"value"}';
+  const tamperedBody = '{"key":"tampered"}';
+  // Sign original body
+  const msgHash = sha256(new TextEncoder().encode(`${ts}.${originalBody}`));
+  const sig = schnorr.sign(msgHash, privKey);
+  // But send tampered body
+  const req = new Request("https://example.com/api/gcal/status", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Taskify-Npub": pubKeyHex,
+      "X-Taskify-Timestamp": String(ts),
+      "X-Taskify-Sig": gcalBytesToHex(sig),
+    },
+    body: tamperedBody,
+  });
+  assert.equal(await verifyGcalAuth(req), null);
+});
+
+// ── C. Endpoint isolation: 401 without valid auth ────────────────────────────
+
+test("GET /api/gcal/status with no auth headers returns 401", async () => {
+  const env = await makeGcalEnv();
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/status", { method: "GET" }),
+    env,
+  );
+  assert.equal(res.status, 401);
+});
+
+test("GET /api/gcal/calendars with no auth headers returns 401", async () => {
+  const env = await makeGcalEnv();
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/calendars", { method: "GET" }),
+    env,
+  );
+  assert.equal(res.status, 401);
+});
+
+test("GET /api/gcal/events with no auth headers returns 401", async () => {
+  const env = await makeGcalEnv();
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/events", { method: "GET" }),
+    env,
+  );
+  assert.equal(res.status, 401);
+});
+
+test("POST /api/gcal/sync with no auth headers returns 401", async () => {
+  const env = await makeGcalEnv();
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }),
+    env,
+  );
+  assert.equal(res.status, 401);
+});
+
+test("PATCH /api/gcal/calendars/abc with no auth headers returns 401", async () => {
+  const env = await makeGcalEnv();
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/calendars/abc", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: '{"selected":true}',
+    }),
+    env,
+  );
+  assert.equal(res.status, 401);
+});
+
+test("DELETE /api/gcal/connection with no auth headers returns 401", async () => {
+  const env = await makeGcalEnv();
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/connection", { method: "DELETE" }),
+    env,
+  );
+  assert.equal(res.status, 401);
+});
+
+// ── D. Webhook security ───────────────────────────────────────────────────────
+
+test("POST /api/gcal/webhook/channel123 with wrong X-Goog-Channel-Token returns 403", async () => {
+  const db = new MockD1WithGcal();
+  const env = await makeGcalEnv(db);
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/webhook/channel123", {
+      method: "POST",
+      headers: { "X-Goog-Channel-Token": "wrong-secret" },
+    }),
+    env,
+    mockCtx,
+  );
+  assert.equal(res.status, 403);
+});
+
+test("POST /api/gcal/webhook/channel123 with correct token but unknown channelId returns 404", async () => {
+  const db = new MockD1WithGcal();
+  const env = await makeGcalEnv(db);
+  // No calendar with watch_channel_id = "channel123" in DB
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/webhook/channel123", {
+      method: "POST",
+      headers: { "X-Goog-Channel-Token": TEST_WEBHOOK_SECRET },
+    }),
+    env,
+    mockCtx,
+  );
+  assert.equal(res.status, 404);
+});
+
+test("POST /api/gcal/webhook/channel123 with correct token and known channelId returns 200", async () => {
+  const db = new MockD1WithGcal();
+  db.gcalCalendars.set("cal-1", {
+    id: "cal-1",
+    npub: "aa".repeat(32),
+    provider_cal_id: "primary",
+    name: "Primary",
+    primary_cal: 1,
+    selected: 1,
+    color: null,
+    timezone: null,
+    sync_token: null,
+    watch_channel_id: "channel123",
+    watch_expiry: null,
+  });
+  const env = await makeGcalEnv(db);
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/webhook/channel123", {
+      method: "POST",
+      headers: { "X-Goog-Channel-Token": TEST_WEBHOOK_SECRET },
+    }),
+    env,
+    mockCtx,
+  );
+  assert.equal(res.status, 200);
+});
+
+// ── E. Calendar toggle isolation ─────────────────────────────────────────────
+
+test("PATCH /api/gcal/calendars: user A cannot toggle user B's calendar", async () => {
+  const db = new MockD1WithGcal();
+
+  // User B's private/public key
+  const privKeyB = schnorr.utils.randomSecretKey();
+  const pubKeyB = gcalBytesToHex(schnorr.getPublicKey(privKeyB));
+
+  // Seed user B's calendar (selected = 1)
+  db.gcalCalendars.set("cal-b", {
+    id: "cal-b",
+    npub: pubKeyB,
+    provider_cal_id: "b-primary",
+    name: "B Primary",
+    primary_cal: 1,
+    selected: 1,
+    color: null,
+    timezone: null,
+    sync_token: null,
+    watch_channel_id: null,
+    watch_expiry: null,
+  });
+
+  // User A's private/public key (different from B)
+  const privKeyA = schnorr.utils.randomSecretKey();
+  const pubKeyA = gcalBytesToHex(schnorr.getPublicKey(privKeyA));
+
+  const patchBody = '{"selected":false}';
+  const authHeaders = makeGcalAuthHeaders(privKeyA, pubKeyA, patchBody);
+
+  const env = await makeGcalEnv(db);
+  const res = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/gcal/calendars/cal-b", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: patchBody,
+    }),
+    env,
+  );
+
+  // Request succeeds (200) but no rows were matched because npub didn't match
+  assert.equal(res.status, 200);
+
+  // User B's calendar must still be selected = 1 — user A's update had no effect
+  const calRow = db.gcalCalendars.get("cal-b");
+  assert.equal(calRow?.selected, 1, "user B's calendar must remain unchanged");
 });
