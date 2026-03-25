@@ -13054,11 +13054,13 @@ export default function CashuWalletModal({
   }
 
   const contactInitials = (value: string) => {
-    const trimmed = (value || "").trim();
-    if (!trimmed) return "?";
-    const parts = trimmed.split(/\s+/).filter(Boolean);
-    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    const parts = (value || "").trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "?";
+    const cp = parts[0].codePointAt(0) ?? 0;
+    const isEmoji = (cp >= 0x2600 && cp <= 0x27bf) || (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x1f900 && cp <= 0x1f9ff);
+    if (isEmoji) return [...parts[0]][0] ?? "?";
+    if (parts.length === 1) return [...parts[0]].slice(0, 2).join("").toUpperCase();
+    return ([...parts[0]][0] ?? "" + ([...parts[parts.length - 1]][0] ?? "")).toUpperCase();
   };
 
   const contactSubtitle = useCallback(
