@@ -6317,9 +6317,11 @@ export default function CashuWalletModal({
 
   const profileShareValue = useMemo(() => {
     if (profileSharePayload) return profileSharePayload;
-    const identity = nostrIdentityRef.current;
+    // Read identity directly — not gated by paymentRequestsEnabled so new accounts
+    // without payment requests still get a QR on their contact card.
+    const identity = readNostrIdentity().identity ?? nostrIdentityRef.current;
     return identity ? formatNpub(identity.pubkey) : null;
-  }, [formatNpub, profileSharePayload]);
+  }, [formatNpub, profileSharePayload, readNostrIdentity]);
   const nwcFundInProgress = nwcFundState === "creating" || nwcFundState === "paying" || nwcFundState === "waiting" || nwcFundState === "claiming";
   const nwcWithdrawInProgress = nwcWithdrawState === "requesting" || nwcWithdrawState === "paying";
 
@@ -13094,7 +13096,11 @@ export default function CashuWalletModal({
   const myCardUsername = formatContactUsername(profileForm.username);
   const myCardName = profileForm.displayName.trim() || myCardUsername || "My Card";
   const myCardLightning = profileForm.lud16.trim() || deriveDefaultLightningAddress();
-  const myCardNpub = nostrIdentityRef.current ? formatNpub(nostrIdentityRef.current.pubkey) : "";
+  const myCardNpub = useMemo(() => {
+    const identity = readNostrIdentity().identity ?? nostrIdentityRef.current;
+    return identity ? formatNpub(identity.pubkey) : "";
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formatNpub, readNostrIdentity, profileSharePayload]);
   const myCardSubtitle =
     myCardLightning || profileForm.nip05.trim() || myCardNpub || "My Card";
   const profileCard = {
