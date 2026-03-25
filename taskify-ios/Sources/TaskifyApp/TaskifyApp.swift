@@ -67,6 +67,7 @@ private struct BoardsShellScreen: View {
     @ObservedObject var shellVM: AppShellViewModel
     @StateObject private var boardListVM = BoardListViewModel()
     @StateObject private var boardDetailVM = BoardDetailViewModel()
+    @StateObject private var boardModeVM = BoardModeViewModel()
 
     var body: some View {
         NavigationStack {
@@ -109,7 +110,17 @@ private struct BoardsShellScreen: View {
                     }
                     .pickerStyle(.menu)
 
-                    BoardDetailPane(viewModel: boardDetailVM)
+                    Picker("Board Mode", selection: Binding(
+                        get: { boardModeVM.mode },
+                        set: { boardModeVM.setMode($0) }
+                    )) {
+                        Text("Board").tag(BoardPageMode.board)
+                        Text("Upcoming").tag(BoardPageMode.boardUpcoming)
+                        Text("Completed").tag(BoardPageMode.completed)
+                    }
+                    .pickerStyle(.segmented)
+
+                    BoardModePane(modeVM: boardModeVM, detailVM: boardDetailVM)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
@@ -119,11 +130,69 @@ private struct BoardsShellScreen: View {
             .onAppear {
                 boardListVM.setBoards(shellVM.profile.boards)
                 boardDetailVM.setSelectedBoard(id: boardListVM.selectedBoardId)
+                seedBoardModeState()
             }
             .onChange(of: boardListVM.selectedBoardId) { _, newValue in
                 boardDetailVM.setSelectedBoard(id: newValue)
+                seedBoardModeState()
             }
         }
+    }
+
+    private func seedBoardModeState() {
+        boardModeVM.setBoardItems(boardDetailVM.visibleTasks.map(\.id))
+        boardModeVM.setUpcomingItems([])
+        boardModeVM.setCompletedItems(boardDetailVM.visibleTasks.filter(\.completed).map(\.id))
+    }
+}
+
+private struct BoardModePane: View {
+    @ObservedObject var modeVM: BoardModeViewModel
+    @ObservedObject var detailVM: BoardDetailViewModel
+
+    var body: some View {
+        Group {
+            switch modeVM.currentState {
+            case .loading(let text):
+                ProgressView(text)
+            case .error(let message):
+                VStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.title2)
+                        .foregroundStyle(.orange)
+                    Text(message)
+                        .font(.subheadline)
+                }
+            case .empty(let message):
+                VStack(spacing: 10) {
+                    Image(systemName: "checklist")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text(message)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            case .ready:
+                switch modeVM.mode {
+                case .board:
+                    BoardDetailPane(viewModel: detailVM)
+                case .boardUpcoming:
+                    Text("Board upcoming list scaffold")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                case .completed:
+                    List(detailVM.visibleTasks.filter(\.completed)) { task in
+                        HStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Text(task.title)
+                            Spacer()
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -164,7 +233,6 @@ private struct BoardDetailPane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Tasks")
     }
 }
 
