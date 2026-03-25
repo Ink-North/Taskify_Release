@@ -169,7 +169,7 @@ type ExternalCalendarEvent = {
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET`  | `/api/gcal/events` | Return cached events for npub's selected calendars. Query params: `?from=ISO&to=ISO`. Default window: today − 7d to today + 90d. |
+| `GET`  | `/api/gcal/events` | Return cached events for npub's selected calendars. Query params: `?from=ISO&to=ISO`. Default window: today − 7d to today + 180d. Client caches in IDB; incremental sync returns only changes. |
 
 ### Sync
 
@@ -246,7 +246,7 @@ On every request that uses an access token:
 ### Initial sync (on connect)
 
 1. Fetch Google calendar list → upsert into `gcal_calendars`
-2. For each calendar: fetch events in window (today − 7d to today + 90d)
+2. For each calendar: fetch events in window (today − 7d to today + 180d)
 3. Store sync token per calendar
 4. Register push watch channel per calendar (expiry: 7 days; renew via cron)
 5. Upsert events into `gcal_events`
@@ -257,6 +257,7 @@ On every request that uses an access token:
 2. Upsert new/updated events; mark `status = 'cancelled'` for deleted events
 3. Update `sync_token`
 4. Update `last_sync_at` and clear `last_error` on success
+5. Client caches full event list in IDB — only needs to fetch delta on subsequent syncs, not the full 180d window
 
 ### Cron (existing `*/1 * * * *` trigger, extend `scheduled()`)
 
@@ -325,14 +326,53 @@ PWA watches for `?gcal=connected` or `?gcal=error` on app load and shows appropr
 
 ---
 
-## 10. Open questions (resolve before implementation)
+## 10. Decisions (locked 2026-03-24)
 
-1. **Nostr auth for Worker endpoints** — confirm: use same NIP-01 sig pattern as voice quota, or session cookie? Voice quota currently uses `npub` header but without sig verification — needs hardening for calendar (tokens are higher value).
-2. **OAuth redirect URI** — must be a stable URL registered in Google Cloud Console: `https://taskify.solife.me/api/gcal/auth/callback` (Worker handles it, serves PWA assets on same domain).
-3. **Google Cloud project** — does one exist for Taskify already, or needs to be created?
-4. **Event window** — confirm: 7d back / 90d ahead as default? Should users be able to extend?
-5. **`GCAL_TOKEN_ENC_KEY` rotation** — out of scope for v1 but note: if key changes, all refresh tokens need re-encryption. Plan for it.
+| # | Decision |
+|---|----------|
+| 1 | **NIP-01 sig verification required** on all `/api/gcal/*` endpoints. Same approach as voice quota but with full signature check — not just npub header. |
+| 2 | **OAuth redirect URI**: `https://taskify.solife.me/api/gcal/auth/callback` (domain confirmed). Register this in Google Cloud Console. |
+| 3 | **Google Cloud project**: Nathan to create. Needs OAuth 2.0 client ID/secret + Calendar API enabled. |
+| 4 | **Event window**: 7 days back / 180 days ahead. Client caches received events in IDB so incremental sync only fetches changes — not the full window on every load. |
+| 5 | **Token encryption key rotation: include in v1.** See section 11 below. |
 
 ---
 
-_Spec version: 2026-03-24. Ready for implementation once open questions are resolved._
+## 11. Token encryption key rotation (v1)
+
+Key rotation must be possible without downtime or data loss.
+
+### Approach: versioned keys + lazy re-encryption
+
+Add a `key_version` column to `gcal_connections`:
+
+```sql
+ALTER TABLE gcal_connections ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1;
+```
+
+Worker secrets hold the current key and optionally the previous key:
+- `GCAL_TOKEN_ENC_KEY` — current key (hex, 32 bytes)
+- `GCAL_TOKEN_ENC_KEY_PREV` — previous key (hex, 32 bytes), only set during rotation window
+
+**Rotation procedure:**
+1. Generate new key → set as `GCAL_TOKEN_ENC_KEY_PREV = old`, `GCAL_TOKEN_ENC_KEY = new`, bump `KEY_VERSION` (Worker var)
+2. On next token use per user: decrypt with version's key → re-encrypt with current key → update `key_version` in DB
+3. Run cron batch re-encryption for any rows not yet rotated (lazy migration completes passively)
+4. Once all rows have `key_version = current`, clear `GCAL_TOKEN_ENC_KEY_PREV`
+
+This means rotation is zero-downtime: old tokens keep working until lazily re-encrypted on next access.
+
+### Decryption helper logic
+
+```ts
+function decryptToken(enc: string, iv: string, tag: string, keyVersion: number, env: Env): string {
+  const key = keyVersion === currentKeyVersion(env)
+    ? hexDecode(env.GCAL_TOKEN_ENC_KEY)
+    : hexDecode(env.GCAL_TOKEN_ENC_KEY_PREV);  // fallback during rotation
+  return aesgcmDecrypt(key, enc, iv, tag);
+}
+```
+
+---
+
+_Spec version: 2026-03-24 rev2. All open questions resolved. Ready for implementation._
