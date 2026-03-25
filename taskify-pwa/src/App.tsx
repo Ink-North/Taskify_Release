@@ -8116,11 +8116,13 @@ export default function App() {
   }, []);
 
   const createBoardFromName = useCallback(
-    (name: string, type: "lists" | "compound") => {
+    (name: string, type: "lists" | "compound", shared = true) => {
       if (shouldReloadForNavigation()) return null;
       const trimmed = name.trim();
       if (!trimmed) return null;
       const id = crypto.randomUUID();
+      const nostrBoardId = shared ? crypto.randomUUID() : undefined;
+      const relayList = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
       let board: Board;
       if (type === "compound") {
         board = {
@@ -8133,7 +8135,8 @@ export default function App() {
           clearCompletedDisabled: false,
           indexCardEnabled: false,
           hideChildBoardNames: false,
-        };
+          ...(nostrBoardId ? { nostr: { boardId: nostrBoardId, relays: relayList } } : {}),
+        } as Board;
       } else {
         board = {
           id,
@@ -8144,13 +8147,17 @@ export default function App() {
           hidden: false,
           clearCompletedDisabled: false,
           indexCardEnabled: false,
-        };
+          ...(nostrBoardId ? { nostr: { boardId: nostrBoardId, relays: relayList } } : {}),
+        } as Board;
       }
       setBoards((prev) => [...prev, board]);
       changeBoard(id);
+      if (shared && nostrBoardId) {
+        publishBoardMetadataRef.current?.(board).catch(() => {});
+      }
       return id;
     },
-    [changeBoard, setBoards, shouldReloadForNavigation],
+    [changeBoard, defaultRelays, setBoards, shouldReloadForNavigation],
   );
 
   const joinSharedBoard = useCallback(
