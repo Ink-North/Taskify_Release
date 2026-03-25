@@ -153,3 +153,14 @@ For every new native shell/UI slice:
 - include explicit PWA source anchors in PR description
 - include parity checklist section: "Matched / Deferred / Not in scope"
 - tests must encode behavior, not just render scaffolding
+- keep file placement in PWA-style domains (`App/`, `Features/Boards`, `Features/Upcoming`, `Features/Settings`, `Features/Auth`); avoid returning to monolithic app files
+
+## Architecture parity baseline (now enforced)
+
+Active native codebase `taskify-ios-native/Sources/TaskifyApp` is organized as:
+- `App/` — entrypoint, root routing, auth orchestration
+- `Features/Auth/` — sign-in UI flow
+- `Features/Boards/` — board shell, board mode pane, board detail pane
+- `Features/Upcoming/` — upcoming page shell
+- `Features/Settings/` — settings page shell
+- `Legacy/` — temporary webwrapper compatibility components
