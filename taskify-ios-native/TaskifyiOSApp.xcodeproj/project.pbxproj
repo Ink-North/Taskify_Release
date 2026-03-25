@@ -8,12 +8,26 @@
 
 /* Begin PBXBuildFile section */
 		A00000000000000000000101 /* Sources/TaskifyApp/TaskifyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000201 /* Sources/TaskifyApp/TaskifyApp.swift */; };
+		A00000000000000000000102 /* Sources/TaskifyApp/App/AppAuthViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000202 /* Sources/TaskifyApp/App/AppAuthViewModel.swift */; };
+		A00000000000000000000103 /* Sources/TaskifyApp/App/RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000203 /* Sources/TaskifyApp/App/RootView.swift */; };
+		A00000000000000000000104 /* Sources/TaskifyApp/Features/Auth/SignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000204 /* Sources/TaskifyApp/Features/Auth/SignInView.swift */; };
+		A00000000000000000000105 /* Sources/TaskifyApp/Features/Boards/BoardsShellScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsShellScreen.swift */; };
+		A00000000000000000000106 /* Sources/TaskifyApp/Features/Settings/SettingsShellScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000206 /* Sources/TaskifyApp/Features/Settings/SettingsShellScreen.swift */; };
+		A00000000000000000000107 /* Sources/TaskifyApp/Features/Upcoming/UpcomingShellScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000207 /* Sources/TaskifyApp/Features/Upcoming/UpcomingShellScreen.swift */; };
+		A00000000000000000000108 /* Sources/TaskifyApp/Legacy/TaskifyWebWrapperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000208 /* Sources/TaskifyApp/Legacy/TaskifyWebWrapperView.swift */; };
 		A00000000000000000000120 /* TaskifyCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000601 /* TaskifyCore */; };
 		A00000000000000000000130 /* Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000230 /* Resources/Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A00000000000000000000201 /* Sources/TaskifyApp/TaskifyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/TaskifyApp.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000202 /* Sources/TaskifyApp/App/AppAuthViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/AppAuthViewModel.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000203 /* Sources/TaskifyApp/App/RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/RootView.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000204 /* Sources/TaskifyApp/Features/Auth/SignInView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Auth/SignInView.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsShellScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardsShellScreen.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000206 /* Sources/TaskifyApp/Features/Settings/SettingsShellScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsShellScreen.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000207 /* Sources/TaskifyApp/Features/Upcoming/UpcomingShellScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingShellScreen.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000208 /* Sources/TaskifyApp/Legacy/TaskifyWebWrapperView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Legacy/TaskifyWebWrapperView.swift; sourceTree = SOURCE_ROOT; };
 		A00000000000000000000220 /* Taskify.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Taskify.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000230 /* Resources/Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Resources/Assets.xcassets; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
@@ -43,9 +57,13 @@
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000201 /* Sources/TaskifyApp/TaskifyApp.swift */,
-				A00000000000000000000404 /* TaskifyApp/Theme */,
-				A00000000000000000000405 /* TaskifyApp/ViewModels */,
-				A00000000000000000000406 /* TaskifyApp/Views */,
+				A00000000000000000000202 /* Sources/TaskifyApp/App/AppAuthViewModel.swift */,
+				A00000000000000000000203 /* Sources/TaskifyApp/App/RootView.swift */,
+				A00000000000000000000204 /* Sources/TaskifyApp/Features/Auth/SignInView.swift */,
+				A00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsShellScreen.swift */,
+				A00000000000000000000206 /* Sources/TaskifyApp/Features/Settings/SettingsShellScreen.swift */,
+				A00000000000000000000207 /* Sources/TaskifyApp/Features/Upcoming/UpcomingShellScreen.swift */,
+				A00000000000000000000208 /* Sources/TaskifyApp/Legacy/TaskifyWebWrapperView.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -164,6 +182,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000101 /* Sources/TaskifyApp/TaskifyApp.swift in Sources */,
+				A00000000000000000000102 /* Sources/TaskifyApp/App/AppAuthViewModel.swift in Sources */,
+				A00000000000000000000103 /* Sources/TaskifyApp/App/RootView.swift in Sources */,
+				A00000000000000000000104 /* Sources/TaskifyApp/Features/Auth/SignInView.swift in Sources */,
+				A00000000000000000000105 /* Sources/TaskifyApp/Features/Boards/BoardsShellScreen.swift in Sources */,
+				A00000000000000000000106 /* Sources/TaskifyApp/Features/Settings/SettingsShellScreen.swift in Sources */,
+				A00000000000000000000107 /* Sources/TaskifyApp/Features/Upcoming/UpcomingShellScreen.swift in Sources */,
+				A00000000000000000000108 /* Sources/TaskifyApp/Legacy/TaskifyWebWrapperView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
