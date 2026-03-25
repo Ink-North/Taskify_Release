@@ -7,9 +7,9 @@ public final class BoardHeaderControlsViewModel: ObservableObject {
     public let completedTabEnabled: Bool
     public let canShareBoard: Bool
 
-    private let onFilterSort: () -> Void
-    private let onShareBoard: () -> Void
-    private let onClearCompleted: () -> Void
+    private var onFilterSort: () -> Void
+    private var onShareBoard: () -> Void
+    private var onClearCompleted: () -> Void
 
     public init(
         completedTabEnabled: Bool,
@@ -27,6 +27,16 @@ public final class BoardHeaderControlsViewModel: ObservableObject {
 
     public func bind(mode: BoardPageMode) {
         self.mode = mode
+    }
+
+    public func setActionHandlers(
+        onFilterSort: @escaping () -> Void,
+        onShareBoard: @escaping () -> Void,
+        onClearCompleted: @escaping () -> Void
+    ) {
+        self.onFilterSort = onFilterSort
+        self.onShareBoard = onShareBoard
+        self.onClearCompleted = onClearCompleted
     }
 
     public func primaryCompletedAction() {

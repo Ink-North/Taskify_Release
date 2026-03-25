@@ -4,11 +4,13 @@ public struct BoardTaskItem: Equatable, Identifiable {
     public let id: String
     public let title: String
     public let completed: Bool
+    public let dueISO: String?
 
-    public init(id: String, title: String, completed: Bool) {
+    public init(id: String, title: String, completed: Bool, dueISO: String? = nil) {
         self.id = id
         self.title = title
         self.completed = completed
+        self.dueISO = dueISO
     }
 }
 
@@ -54,6 +56,22 @@ public final class BoardDetailViewModel: ObservableObject {
 
     public func setError(_ message: String) {
         state = .error(message)
+    }
+
+    @discardableResult
+    public func clearCompletedForSelectedBoard() -> Int {
+        guard let id = selectedBoardId else { return 0 }
+        let existing = tasksByBoard[id] ?? []
+        let filtered = existing.filter { !$0.completed }
+        let removed = max(0, existing.count - filtered.count)
+        tasksByBoard[id] = filtered
+        visibleTasks = filtered
+        state = filtered.isEmpty ? .empty : .ready
+        return removed
+    }
+
+    public func upcomingTasks() -> [BoardTaskItem] {
+        visibleTasks.filter { !$0.completed && $0.dueISO != nil }
     }
 
     public var emptyMessage: String {
