@@ -20,23 +20,6 @@ const LS_GCAL_STATUS = "taskify_gcal_status_v1";
 
 export type { GcalCalendar, GcalConnectionStatus };
 
-function normalizeExternalEvents(input: unknown): GcalExternalEvent[] {
-  if (!Array.isArray(input)) return [];
-  const out: GcalExternalEvent[] = [];
-  for (const item of input) {
-    if (!item || typeof item !== "object") continue;
-    const ev = item as Partial<GcalExternalEvent>;
-    if (typeof ev.id !== "string" || ev.id.length === 0) continue;
-    if (typeof ev.calendarId !== "string" || ev.calendarId.length === 0) continue;
-    if (typeof ev.calendarName !== "string") continue;
-    if (typeof ev.title !== "string") continue;
-    if (typeof ev.startISO !== "string" || ev.startISO.length === 0) continue;
-    if (typeof ev.allDay !== "boolean") continue;
-    out.push(ev as GcalExternalEvent);
-  }
-  return out;
-}
-
 export type UseGoogleCalendarResult = {
   /** Connection status from the Worker */
   connectionStatus: GcalConnectionStatus;
