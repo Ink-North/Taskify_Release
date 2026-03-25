@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   gcalFetch,
   gcalEventToCalendarEvent,
@@ -17,6 +17,49 @@ const LS_GCAL_CALENDARS = "taskify_gcal_calendars_v1";
 const LS_GCAL_STATUS = "taskify_gcal_status_v1";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+function normalizeExternalEvents(input: unknown): GcalExternalEvent[] {
+  if (!Array.isArray(input)) return [];
+  const out: GcalExternalEvent[] = [];
+  for (const item of input) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Record<string, unknown>;
+    const id = typeof raw.id === "string" ? raw.id : "";
+    const calendarId = typeof raw.calendarId === "string" ? raw.calendarId : "";
+    const title = typeof raw.title === "string" ? raw.title : "";
+    const startISO = typeof raw.startISO === "string"
+      ? raw.startISO
+      : (typeof raw.startIso === "string" ? raw.startIso : "");
+    const endISO = typeof raw.endISO === "string"
+      ? raw.endISO
+      : (typeof raw.endIso === "string" ? raw.endIso : undefined);
+    if (!id || !calendarId || !title || !startISO) continue;
+
+    out.push({
+      id,
+      calendarId,
+      providerEventId: typeof raw.providerEventId === "string" ? raw.providerEventId : id,
+      calendarName:
+        typeof raw.calendarName === "string" && raw.calendarName.trim().length > 0
+          ? raw.calendarName
+          : calendarId,
+      calendarColor: typeof raw.calendarColor === "string" ? raw.calendarColor : undefined,
+      title,
+      description: typeof raw.description === "string" ? raw.description : undefined,
+      location: typeof raw.location === "string" ? raw.location : undefined,
+      startISO,
+      endISO,
+      allDay: typeof raw.allDay === "boolean" ? raw.allDay : false,
+      status: raw.status === "tentative" || raw.status === "cancelled" ? raw.status : "confirmed",
+      htmlLink: typeof raw.htmlLink === "string" ? raw.htmlLink : undefined,
+      isRecurring: Boolean(raw.isRecurring),
+      readonly: true,
+      source: "google",
+      kind: "calendar_event",
+    });
+  }
+  return out;
+}
 
 export type { GcalCalendar, GcalConnectionStatus };
 
@@ -66,7 +109,7 @@ export function useGoogleCalendar(
   const [rawEvents, setRawEvents] = useState<GcalExternalEvent[]>(() => {
     try {
       const raw = kvStorage.getItem(LS_GCAL_EVENTS);
-      if (raw) return JSON.parse(raw) as GcalExternalEvent[];
+      if (raw) return normalizeExternalEvents(JSON.parse(raw));
     } catch {}
     return [];
   });
@@ -81,7 +124,17 @@ export function useGoogleCalendar(
 
   // ── Derived: converted CalendarEvent items ────────────────────────────────
 
-  const gcalEvents: GcalCalendarEvent[] = rawEvents.map(gcalEventToCalendarEvent);
+  const gcalEvents: GcalCalendarEvent[] = useMemo(() => {
+    const converted: GcalCalendarEvent[] = [];
+    for (const ev of rawEvents) {
+      try {
+        converted.push(gcalEventToCalendarEvent(ev));
+      } catch (err) {
+        console.warn("Skipping invalid Google Calendar event payload", err, ev);
+      }
+    }
+    return converted;
+  }, [rawEvents]);
 
   // ── Persist to IDB/localStorage on change ────────────────────────────────
 
@@ -138,8 +191,8 @@ export function useGoogleCalendar(
       );
       if (!mountedRef.current) return;
       if (res.ok) {
-        const data = await res.json() as GcalExternalEvent[];
-        setRawEvents(data);
+        const data = await res.json();
+        setRawEvents(normalizeExternalEvents(data));
       }
     } catch {}
   }, [workerBaseUrl, privkeyHex]);
