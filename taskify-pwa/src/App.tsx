@@ -11474,10 +11474,18 @@ export default function App() {
 
 	  const renderUpcomingEventCard = useCallback((ev: CalendarEvent) => {
 	    const isUsHoliday = isUsHolidayCalendarEvent(ev);
+	    const isGcal = (ev as any).gcalSource === true;
+	    const gcalCalendarName = isGcal && typeof (ev as any).gcalCalendarName === "string"
+	      ? (ev as any).gcalCalendarName
+	      : "";
 	    const board = boardMap.get(ev.boardId);
-	    const boardLabel = isUsHoliday ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL : board?.name || "Board";
+	    const boardLabel = isUsHoliday
+	      ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL
+	      : isGcal
+	        ? (gcalCalendarName || "Google Calendar")
+	        : (board?.name || "Board");
 	    const listLabel =
-	      board?.kind === "lists"
+	      !isGcal && board?.kind === "lists"
 	        ? board.columns.find((column) => column.id === ev.columnId)?.name || ""
 	        : "";
 	    const placementLabel = listLabel ? `${boardLabel} • ${listLabel}` : boardLabel;
