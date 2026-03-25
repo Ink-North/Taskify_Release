@@ -55,8 +55,55 @@ struct AuthSessionManagerTests {
         }
     }
 
-    @Test("sign in failure surfaces auth error state")
-    func signInFailure() async throws {
+    @Test("blank profile name defaults to Default")
+    func signInBlankProfileDefaults() async throws {
+        var saved: TaskifyProfile?
+        let manager = AuthSessionManager(
+            loadActiveProfile: { nil },
+            saveProfile: { profile in saved = profile },
+            importIdentity: { _ in NostrIdentity(nsecHex: String(repeating: "2", count: 64), npub: "npub1def") }
+        )
+
+        await manager.signIn(secretKeyInput: "nsec1...", profileName: "   ", relays: ["wss://relay.damus.io"])
+
+        #expect(saved?.name == "Default")
+    }
+
+    @Test("empty relays fall back to default relay preset")
+    func signInEmptyRelaysDefaults() async throws {
+        var saved: TaskifyProfile?
+        let manager = AuthSessionManager(
+            loadActiveProfile: { nil },
+            saveProfile: { profile in saved = profile },
+            importIdentity: { _ in NostrIdentity(nsecHex: String(repeating: "3", count: 64), npub: "npub1ghi") }
+        )
+
+        await manager.signIn(secretKeyInput: "nsec1...", profileName: "Nathan", relays: [])
+
+        #expect(saved?.relays == ["wss://relay.damus.io", "wss://relay.snort.social"])
+    }
+
+    @Test("invalid nsec/hex shows PWA-parity validation message")
+    func signInInvalidKeyMessage() async throws {
+        let manager = AuthSessionManager(
+            loadActiveProfile: { nil },
+            saveProfile: { _ in },
+            importIdentity: { _ in throw NostrIdentityService.IdentityError.invalidSecretKey }
+        )
+
+        await manager.signIn(secretKeyInput: "bad", profileName: "Nathan", relays: [])
+
+        let state = await manager.state
+        switch state {
+        case .error(let message):
+            #expect(message == "Enter a valid nsec or 64-hex private key.")
+        default:
+            Issue.record("Expected error state")
+        }
+    }
+
+    @Test("unexpected sign-in failure shows generic message")
+    func signInFailureGeneric() async throws {
         enum DummyError: Error { case badKey }
         let manager = AuthSessionManager(
             loadActiveProfile: { nil },
@@ -69,7 +116,7 @@ struct AuthSessionManagerTests {
         let state = await manager.state
         switch state {
         case .error(let message):
-            #expect(message.contains("Unable to sign in"))
+            #expect(message == "Unable to sign in. Please check your private key.")
         default:
             Issue.record("Expected error state")
         }

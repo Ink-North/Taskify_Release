@@ -11,6 +11,8 @@ public enum AuthState: Equatable {
 public final class AuthSessionManager {
     public private(set) var state: AuthState = .signedOut
 
+    public static let defaultRelayPreset = ["wss://relay.damus.io", "wss://relay.snort.social"]
+
     private let loadActiveProfileFn: () throws -> TaskifyProfile?
     private let saveProfileFn: (TaskifyProfile) throws -> Void
     private let importIdentityFn: (String) throws -> NostrIdentity
@@ -41,15 +43,24 @@ public final class AuthSessionManager {
         state = .importing
         do {
             let identity = try importIdentityFn(secretKeyInput)
+            let trimmedName = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let selectedRelays = relays.isEmpty ? Self.defaultRelayPreset : relays
             let profile = TaskifyProfile(
-                name: profileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Default" : profileName.trimmingCharacters(in: .whitespacesAndNewlines),
+                name: trimmedName.isEmpty ? "Default" : trimmedName,
                 nsecHex: identity.nsecHex,
                 npub: identity.npub,
-                relays: relays,
+                relays: selectedRelays,
                 boards: []
             )
             try saveProfileFn(profile)
             state = .signedIn(profile)
+        } catch let e as NostrIdentityService.IdentityError {
+            switch e {
+            case .invalidSecretKey, .invalidNsec:
+                state = .error("Enter a valid nsec or 64-hex private key.")
+            case .invalidPrivateKey:
+                state = .error("Unable to derive npub from the provided key.")
+            }
         } catch {
             state = .error("Unable to sign in. Please check your private key.")
         }
