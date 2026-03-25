@@ -1,4 +1,6 @@
 node_modules/
 .build/
 *.xcuserdata
+taskify-ios/build/
+worker/node_modules/
 dist/

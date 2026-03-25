@@ -44,6 +44,14 @@ binding = "TASKIFY_BACKUPS"
 bucket_name = "taskify-backups"
 preview_bucket_name = "taskify-backups-preview"
 
+# Google Calendar
+# - GCAL_CLIENT_ID
+# - GCAL_CLIENT_SECRET
+# - GCAL_TOKEN_ENC_KEY
+# - GCAL_TOKEN_ENC_KEY_PREV
+# - GCAL_WEBHOOK_SECRET
+# - GCAL_KEY_VERSION
+
 [[d1_databases]]
 binding = "TASKIFY_DB"
 database_name = "taskify-notifications"
