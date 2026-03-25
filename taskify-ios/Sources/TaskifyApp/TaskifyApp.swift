@@ -61,18 +61,16 @@ private struct NativeAppShellView: View {
 
 private struct BoardsShellScreen: View {
     @ObservedObject var shellVM: AppShellViewModel
+    @StateObject private var boardListVM = BoardListViewModel()
 
     var body: some View {
         NavigationStack {
             Group {
-                if shellVM.hasBoards {
-                    List(shellVM.profile.boards, id: \.id) { board in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(board.name).font(.headline)
-                            Text(board.id).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                } else {
+                switch boardListVM.state {
+                case .loading:
+                    ProgressView("Loading boards…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .empty:
                     VStack(spacing: 12) {
                         Image(systemName: "tray")
                             .font(.title2)
@@ -84,9 +82,42 @@ private struct BoardsShellScreen: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(24)
+                case .error(let message):
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.title2)
+                            .foregroundStyle(.orange)
+                        Text(message)
+                            .font(.subheadline)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(24)
+                case .ready:
+                    List(boardListVM.visibleBoards, id: \.id) { board in
+                        Button {
+                            boardListVM.selectBoard(id: board.id)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(board.name).font(.headline)
+                                    Text(board.id).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if boardListVM.selectedBoardId == board.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.blue)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
             .navigationTitle("Boards")
+            .onAppear {
+                boardListVM.setBoards(shellVM.profile.boards)
+            }
         }
     }
 }
