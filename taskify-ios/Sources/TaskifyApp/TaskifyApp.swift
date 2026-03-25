@@ -1,15 +1,98 @@
 import SwiftUI
 import WebKit
+import TaskifyCore
 
 // MARK: - App
 
 @main
 struct TaskifyApp: App {
+    @StateObject private var authVM = AppAuthViewModel()
+
     var body: some Scene {
         WindowGroup {
+            RootView()
+                .environmentObject(authVM)
+                .task { await authVM.bootstrap() }
+        }
+    }
+}
+
+private struct RootView: View {
+    @EnvironmentObject private var authVM: AppAuthViewModel
+
+    var body: some View {
+        switch authVM.state {
+        case .signedIn:
             TaskifyWebWrapperView(url: URL(string: "https://taskify.solife.me")!)
                 .ignoresSafeArea()
+        case .importing:
+            ProgressView("Signing in…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black.opacity(0.02))
+        case .error(let message):
+            SignInView(errorMessage: message)
+        case .signedOut:
+            SignInView(errorMessage: nil)
         }
+    }
+}
+
+private struct SignInView: View {
+    @EnvironmentObject private var authVM: AppAuthViewModel
+    let errorMessage: String?
+
+    @State private var secretKeyInput = ""
+    @State private var profileName = ""
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Taskify")
+                .font(.largeTitle.bold())
+            Text("Sign in with nsec or 64-hex private key")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            TextField("Profile name", text: $profileName)
+                .textFieldStyle(.roundedBorder)
+            TextField("nsec1... or 64-hex", text: $secretKeyInput)
+                .textFieldStyle(.roundedBorder)
+
+            if let errorMessage, !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+
+            Button("Sign In") {
+                Task { await authVM.signIn(secretKeyInput: secretKeyInput, profileName: profileName) }
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(24)
+        .frame(maxWidth: 460)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.opacity(0.02))
+    }
+}
+
+@MainActor
+private final class AppAuthViewModel: ObservableObject {
+    @Published var state: AuthState = .signedOut
+
+    private let manager = AuthSessionManager(
+        loadActiveProfile: { try KeychainStore.loadActiveProfile() },
+        saveProfile: { profile in try KeychainStore.saveProfile(profile) },
+        importIdentity: { input in try NostrIdentityService.importIdentity(secretKeyInput: input) }
+    )
+
+    func bootstrap() async {
+        manager.bootstrap()
+        state = manager.state
+    }
+
+    func signIn(secretKeyInput: String, profileName: String) async {
+        manager.signIn(secretKeyInput: secretKeyInput, profileName: profileName, relays: ["wss://relay.damus.io", "wss://relay.snort.social"])
+        state = manager.state
     }
 }
 
