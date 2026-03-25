@@ -9385,10 +9385,17 @@ export default function App() {
     return groups;
   }, [visibleBoards]);
 
-  const upcomingFilterOptions = useMemo(
-    () => upcomingFilterGroups.flatMap((group) => [group.boardOption, ...group.listOptions]),
-    [upcomingFilterGroups],
-  );
+  const upcomingFilterOptions = useMemo(() => {
+    const boardOptions = upcomingFilterGroups.flatMap((group) => [group.boardOption, ...group.listOptions]);
+    const gcalOptions: UpcomingFilterOption[] = gcalStatus.connected
+      ? gcalCalendars.map((cal) => ({
+          id: `gcal:${cal.id}`,
+          label: cal.name,
+          boardId: `gcal:${cal.id}`,
+        }))
+      : [];
+    return [...boardOptions, ...gcalOptions];
+  }, [upcomingFilterGroups, gcalCalendars, gcalStatus.connected]);
   const upcomingFilterOptionMap = useMemo(() => {
     const map = new Map<string, UpcomingFilterOption>();
     upcomingFilterOptions.forEach((option) => {
