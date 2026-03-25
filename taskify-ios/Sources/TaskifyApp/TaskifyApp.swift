@@ -41,10 +41,8 @@ private struct SignInView: View {
     @EnvironmentObject private var authVM: AppAuthViewModel
     let errorMessage: String?
 
-    @State private var secretKeyInput = ""
-    @State private var profileName = ""
-
     var body: some View {
+        let signInVM = authVM.signInViewModel
         VStack(spacing: 16) {
             Text("Taskify")
                 .font(.largeTitle.bold())
@@ -52,22 +50,32 @@ private struct SignInView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            TextField("Profile name", text: $profileName)
-                .textFieldStyle(.roundedBorder)
-            TextField("nsec1... or 64-hex", text: $secretKeyInput)
-                .textFieldStyle(.roundedBorder)
+            TextField("Profile name", text: Binding(
+                get: { signInVM.profileName },
+                set: { signInVM.profileName = $0 }
+            ))
+            .textFieldStyle(.roundedBorder)
 
-            if let errorMessage, !errorMessage.isEmpty {
-                Text(errorMessage)
+            TextField("nsec1... or 64-hex", text: Binding(
+                get: { signInVM.secretKeyInput },
+                set: { signInVM.secretKeyInput = $0 }
+            ))
+            .textFieldStyle(.roundedBorder)
+
+            if let msg = signInVM.errorMessage, !msg.isEmpty {
+                Text(msg)
                     .font(.footnote)
                     .foregroundStyle(.red)
             }
 
             Button("Sign In") {
-                Task { await authVM.signIn(secretKeyInput: secretKeyInput, profileName: profileName) }
+                _ = signInVM.submit()
             }
             .buttonStyle(.borderedProminent)
+            .disabled(!signInVM.canSubmit)
         }
+        .onAppear { signInVM.applyExternalError(errorMessage) }
+        .onChange(of: errorMessage) { _, newValue in signInVM.applyExternalError(newValue) }
         .padding(24)
         .frame(maxWidth: 460)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -85,13 +93,17 @@ private final class AppAuthViewModel: ObservableObject {
         importIdentity: { input in try NostrIdentityService.importIdentity(secretKeyInput: input) }
     )
 
+    lazy var signInViewModel: SignInViewModel = {
+        SignInViewModel { [weak self] secretKeyInput, profileName in
+            guard let self else { return .error("Unable to sign in. Please check your private key.") }
+            self.manager.signIn(secretKeyInput: secretKeyInput, profileName: profileName, relays: AuthSessionManager.defaultRelayPreset)
+            self.state = self.manager.state
+            return self.manager.state
+        }
+    }()
+
     func bootstrap() async {
         manager.bootstrap()
-        state = manager.state
-    }
-
-    func signIn(secretKeyInput: String, profileName: String) async {
-        manager.signIn(secretKeyInput: secretKeyInput, profileName: profileName, relays: ["wss://relay.damus.io", "wss://relay.snort.social"])
         state = manager.state
     }
 }
