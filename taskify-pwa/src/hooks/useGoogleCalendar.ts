@@ -18,6 +18,49 @@ const LS_GCAL_STATUS = "taskify_gcal_status_v1";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+function normalizeExternalEvents(input: unknown): GcalExternalEvent[] {
+  if (!Array.isArray(input)) return [];
+  const out: GcalExternalEvent[] = [];
+  for (const item of input) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Record<string, unknown>;
+    const id = typeof raw.id === "string" ? raw.id : "";
+    const calendarId = typeof raw.calendarId === "string" ? raw.calendarId : "";
+    const title = typeof raw.title === "string" ? raw.title : "";
+    const startISO = typeof raw.startISO === "string"
+      ? raw.startISO
+      : (typeof raw.startIso === "string" ? raw.startIso : "");
+    const endISO = typeof raw.endISO === "string"
+      ? raw.endISO
+      : (typeof raw.endIso === "string" ? raw.endIso : undefined);
+    if (!id || !calendarId || !title || !startISO) continue;
+
+    out.push({
+      id,
+      calendarId,
+      providerEventId: typeof raw.providerEventId === "string" ? raw.providerEventId : id,
+      calendarName:
+        typeof raw.calendarName === "string" && raw.calendarName.trim().length > 0
+          ? raw.calendarName
+          : calendarId,
+      calendarColor: typeof raw.calendarColor === "string" ? raw.calendarColor : undefined,
+      title,
+      description: typeof raw.description === "string" ? raw.description : undefined,
+      location: typeof raw.location === "string" ? raw.location : undefined,
+      startISO,
+      endISO,
+      allDay: typeof raw.allDay === "boolean" ? raw.allDay : false,
+      status: raw.status === "tentative" || raw.status === "cancelled" ? raw.status : "confirmed",
+      htmlLink: typeof raw.htmlLink === "string" ? raw.htmlLink : undefined,
+      isRecurring: Boolean(raw.isRecurring),
+      readonly: true,
+      source: "google",
+      kind: "calendar_event",
+    });
+  }
+  return out;
+}
+
 export type { GcalCalendar, GcalConnectionStatus };
 
 function normalizeExternalEvents(input: unknown): GcalExternalEvent[] {

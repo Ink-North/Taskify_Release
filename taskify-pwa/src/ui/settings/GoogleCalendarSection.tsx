@@ -1,6 +1,5 @@
 import React from "react";
 import type { GcalCalendar, GcalConnectionStatus } from "../../hooks/useGoogleCalendar";
-import { pillButtonClass } from "./settingsConstants";
 
 type Props = {
   connectionStatus: GcalConnectionStatus;
@@ -8,7 +7,6 @@ type Props = {
   loading: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
-  onToggleCalendar: (id: string, selected: boolean) => void;
   onSync: () => void;
 };
 
@@ -18,7 +16,6 @@ export function GoogleCalendarSection({
   loading,
   onConnect,
   onDisconnect,
-  onToggleCalendar,
   onSync,
 }: Props) {
   const connected = connectionStatus.connected;
@@ -77,33 +74,9 @@ export function GoogleCalendarSection({
             )}
           </div>
 
-          {/* Calendar toggles */}
           {calendars.length > 0 && (
-            <div className="space-y-1">
-              <div className="text-xs text-secondary mb-1">Calendars</div>
-              {calendars.map((cal) => (
-                <label
-                  key={cal.id}
-                  className="flex items-center gap-2 cursor-pointer py-0.5"
-                >
-                  <input
-                    type="checkbox"
-                    checked={cal.selected === 1}
-                    onChange={(e) => onToggleCalendar(cal.id, e.target.checked)}
-                    className="rounded"
-                  />
-                  {cal.color && (
-                    <span
-                      className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: cal.color }}
-                    />
-                  )}
-                  <span className="text-sm truncate">{cal.name}</span>
-                  {cal.primary_cal === 1 && (
-                    <span className="text-xs text-secondary ml-auto flex-shrink-0">Primary</span>
-                  )}
-                </label>
-              ))}
+            <div className="text-xs text-secondary">
+              {calendars.length} calendar{calendars.length === 1 ? "" : "s"} connected. Manage visibility from Upcoming filters.
             </div>
           )}
 
@@ -112,7 +85,7 @@ export function GoogleCalendarSection({
             {needsReauth ? (
               <button
                 type="button"
-                className={pillButtonClass}
+                className="ghost-button button-sm pressable"
                 onClick={onConnect}
                 disabled={loading}
               >
@@ -121,7 +94,7 @@ export function GoogleCalendarSection({
             ) : (
               <button
                 type="button"
-                className={pillButtonClass}
+                className="ghost-button button-sm pressable"
                 onClick={onSync}
                 disabled={loading}
               >
@@ -130,7 +103,7 @@ export function GoogleCalendarSection({
             )}
             <button
               type="button"
-              className={`${pillButtonClass} text-red-400`}
+              className="ghost-button button-sm pressable text-rose-400"
               onClick={onDisconnect}
               disabled={loading}
             >

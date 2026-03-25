@@ -411,7 +411,6 @@ export function SettingsModal({
           loading={gcalLoading}
           onConnect={onGcalConnect}
           onDisconnect={onGcalDisconnect}
-          onToggleCalendar={onGcalToggleCalendar}
           onSync={onGcalSync}
         />
 
