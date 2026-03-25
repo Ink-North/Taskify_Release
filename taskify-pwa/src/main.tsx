@@ -1,8 +1,34 @@
-import { StrictMode } from 'react'
+import { Component, StrictMode, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 
 const root = createRoot(document.getElementById('root')!);
+
+class RootErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.error('Taskify runtime render error', error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 20, fontFamily: '-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif', color: '#111' }}>
+          Taskify hit a runtime error and recovered safely. Please close and reopen once. If this repeats, contact support@solife.me.
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -83,15 +109,17 @@ async function bootstrapApp(): Promise<void> {
 
   root.render(
     <StrictMode>
-      <ToastProvider>
-        <NwcProvider>
-          <P2PKProvider>
-            <CashuProvider>
-              <App />
-            </CashuProvider>
-          </P2PKProvider>
-        </NwcProvider>
-      </ToastProvider>
+      <RootErrorBoundary>
+        <ToastProvider>
+          <NwcProvider>
+            <P2PKProvider>
+              <CashuProvider>
+                <App />
+              </CashuProvider>
+            </P2PKProvider>
+          </NwcProvider>
+        </ToastProvider>
+      </RootErrorBoundary>
     </StrictMode>,
   );
 
