@@ -22,9 +22,8 @@ private struct RootView: View {
 
     var body: some View {
         switch authVM.state {
-        case .signedIn:
-            TaskifyWebWrapperView(url: URL(string: "https://taskify.solife.me")!)
-                .ignoresSafeArea()
+        case .signedIn(let profile):
+            NativeAppShellView(profile: profile)
         case .importing:
             ProgressView("Signing in…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -33,6 +32,80 @@ private struct RootView: View {
             SignInView(errorMessage: message)
         case .signedOut:
             SignInView(errorMessage: nil)
+        }
+    }
+}
+
+private struct NativeAppShellView: View {
+    @StateObject private var shellVM: AppShellViewModel
+
+    init(profile: TaskifyProfile) {
+        _shellVM = StateObject(wrappedValue: AppShellViewModel(profile: profile))
+    }
+
+    var body: some View {
+        TabView(selection: Binding(
+            get: { shellVM.selectedTab },
+            set: { shellVM.select(tab: $0) }
+        )) {
+            BoardsShellScreen(shellVM: shellVM)
+                .tabItem { Label("Boards", systemImage: "square.grid.2x2") }
+                .tag(AppShellViewModel.Tab.boards)
+
+            HomeShellScreen(profileName: shellVM.profile.name)
+                .tabItem { Label("Home", systemImage: "house") }
+                .tag(AppShellViewModel.Tab.home)
+        }
+    }
+}
+
+private struct BoardsShellScreen: View {
+    @ObservedObject var shellVM: AppShellViewModel
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if shellVM.hasBoards {
+                    List(shellVM.profile.boards, id: \.id) { board in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(board.name).font(.headline)
+                            Text(board.id).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    VStack(spacing: 12) {
+                        Image(systemName: "tray")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                        Text(shellVM.boardsEmptyMessage)
+                            .font(.subheadline)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(24)
+                }
+            }
+            .navigationTitle("Boards")
+        }
+    }
+}
+
+private struct HomeShellScreen: View {
+    let profileName: String
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 8) {
+                Text("Welcome, \(profileName)")
+                    .font(.title3.bold())
+                Text("Native home scaffold — parity slices in progress.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(24)
+            .navigationTitle("Home")
         }
     }
 }
