@@ -19856,7 +19856,10 @@ export default function App() {
 
       {/* Undo Snackbar */}
       {undoTask && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-surface-muted border border-surface text-sm px-4 py-2 rounded-xl shadow-lg flex items-center gap-3">
+        <div
+          className="fixed left-1/2 -translate-x-1/2 bg-surface-muted border border-surface text-sm px-4 py-2 rounded-xl shadow-lg flex items-center gap-3 z-[9999]"
+          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-offset) + 0.75rem)" }}
+        >
           Task deleted
           <button onClick={undoDelete} className="accent-button button-sm pressable">Undo</button>
         </div>
