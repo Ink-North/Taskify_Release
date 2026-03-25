@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   gcalFetch,
   gcalEventToCalendarEvent,
@@ -19,6 +19,23 @@ const LS_GCAL_STATUS = "taskify_gcal_status_v1";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type { GcalCalendar, GcalConnectionStatus };
+
+function normalizeExternalEvents(input: unknown): GcalExternalEvent[] {
+  if (!Array.isArray(input)) return [];
+  const out: GcalExternalEvent[] = [];
+  for (const item of input) {
+    if (!item || typeof item !== "object") continue;
+    const ev = item as Partial<GcalExternalEvent>;
+    if (typeof ev.id !== "string" || ev.id.length === 0) continue;
+    if (typeof ev.calendarId !== "string" || ev.calendarId.length === 0) continue;
+    if (typeof ev.calendarName !== "string") continue;
+    if (typeof ev.title !== "string") continue;
+    if (typeof ev.startISO !== "string" || ev.startISO.length === 0) continue;
+    if (typeof ev.allDay !== "boolean") continue;
+    out.push(ev as GcalExternalEvent);
+  }
+  return out;
+}
 
 export type UseGoogleCalendarResult = {
   /** Connection status from the Worker */
@@ -66,7 +83,7 @@ export function useGoogleCalendar(
   const [rawEvents, setRawEvents] = useState<GcalExternalEvent[]>(() => {
     try {
       const raw = kvStorage.getItem(LS_GCAL_EVENTS);
-      if (raw) return JSON.parse(raw) as GcalExternalEvent[];
+      if (raw) return normalizeExternalEvents(JSON.parse(raw));
     } catch {}
     return [];
   });
@@ -81,7 +98,17 @@ export function useGoogleCalendar(
 
   // ── Derived: converted CalendarEvent items ────────────────────────────────
 
-  const gcalEvents: GcalCalendarEvent[] = rawEvents.map(gcalEventToCalendarEvent);
+  const gcalEvents: GcalCalendarEvent[] = useMemo(() => {
+    const converted: GcalCalendarEvent[] = [];
+    for (const ev of rawEvents) {
+      try {
+        converted.push(gcalEventToCalendarEvent(ev));
+      } catch (err) {
+        console.warn("Skipping invalid Google Calendar event payload", err, ev);
+      }
+    }
+    return converted;
+  }, [rawEvents]);
 
   // ── Persist to IDB/localStorage on change ────────────────────────────────
 
@@ -138,8 +165,8 @@ export function useGoogleCalendar(
       );
       if (!mountedRef.current) return;
       if (res.ok) {
-        const data = await res.json() as GcalExternalEvent[];
-        setRawEvents(data);
+        const data = await res.json();
+        setRawEvents(normalizeExternalEvents(data));
       }
     } catch {}
   }, [workerBaseUrl, privkeyHex]);
