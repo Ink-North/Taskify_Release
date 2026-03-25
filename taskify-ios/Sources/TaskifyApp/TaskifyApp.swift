@@ -62,6 +62,7 @@ private struct NativeAppShellView: View {
 private struct BoardsShellScreen: View {
     @ObservedObject var shellVM: AppShellViewModel
     @StateObject private var boardListVM = BoardListViewModel()
+    @StateObject private var boardDetailVM = BoardDetailViewModel()
 
     var body: some View {
         NavigationStack {
@@ -94,31 +95,80 @@ private struct BoardsShellScreen: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(24)
                 case .ready:
-                    List(boardListVM.visibleBoards, id: \.id) { board in
-                        Button {
-                            boardListVM.selectBoard(id: board.id)
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(board.name).font(.headline)
-                                    Text(board.id).font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if boardListVM.selectedBoardId == board.id {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.blue)
+                    NavigationSplitView {
+                        List(boardListVM.visibleBoards, id: \.id) { board in
+                            Button {
+                                boardListVM.selectBoard(id: board.id)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(board.name).font(.headline)
+                                        Text(board.id).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if boardListVM.selectedBoardId == board.id {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.blue)
+                                    }
                                 }
                             }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+                    } detail: {
+                        BoardDetailPane(viewModel: boardDetailVM)
                     }
                 }
             }
             .navigationTitle("Boards")
             .onAppear {
                 boardListVM.setBoards(shellVM.profile.boards)
+                boardDetailVM.setSelectedBoard(id: boardListVM.selectedBoardId)
+            }
+            .onChange(of: boardListVM.selectedBoardId) { _, newValue in
+                boardDetailVM.setSelectedBoard(id: newValue)
             }
         }
+    }
+}
+
+private struct BoardDetailPane: View {
+    @ObservedObject var viewModel: BoardDetailViewModel
+
+    var body: some View {
+        Group {
+            switch viewModel.state {
+            case .loading:
+                ProgressView("Loading tasks…")
+            case .empty:
+                VStack(spacing: 10) {
+                    Image(systemName: "checklist")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text(viewModel.emptyMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            case .error(let message):
+                VStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.title2)
+                        .foregroundStyle(.orange)
+                    Text(message)
+                        .font(.subheadline)
+                }
+            case .ready:
+                List(viewModel.visibleTasks) { task in
+                    HStack(spacing: 10) {
+                        Image(systemName: task.completed ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(task.completed ? .green : .secondary)
+                        Text(task.title)
+                        Spacer()
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle("Tasks")
     }
 }
 
