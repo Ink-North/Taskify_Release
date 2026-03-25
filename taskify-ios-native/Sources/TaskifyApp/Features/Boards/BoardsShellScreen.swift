@@ -6,6 +6,7 @@ struct BoardsShellScreen: View {
     @StateObject private var boardListVM = BoardListViewModel()
     @StateObject private var boardDetailVM = BoardDetailViewModel()
     @StateObject private var boardModeVM = BoardModeViewModel()
+    @StateObject private var headerVM = BoardHeaderControlsViewModel(completedTabEnabled: true, canShareBoard: true)
 
     var body: some View {
         NavigationStack {
@@ -48,9 +49,34 @@ struct BoardsShellScreen: View {
                     }
                     .pickerStyle(.menu)
 
+                    HStack(spacing: 10) {
+                        if headerVM.canShareBoard {
+                            Button("Share") { headerVM.openShareBoard() }
+                                .buttonStyle(.bordered)
+                        }
+
+                        Button("Completed") {
+                            headerVM.primaryCompletedAction()
+                            boardModeVM.setMode(headerVM.mode)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Board Upcoming") {
+                            headerVM.toggleBoardUpcomingMode()
+                            boardModeVM.setMode(headerVM.mode)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Filter/Sort") { headerVM.openFilterSort() }
+                            .buttonStyle(.bordered)
+                    }
+
                     Picker("Board Mode", selection: Binding(
                         get: { boardModeVM.mode },
-                        set: { boardModeVM.setMode($0) }
+                        set: {
+                            boardModeVM.setMode($0)
+                            headerVM.bind(mode: $0)
+                        }
                     )) {
                         Text("Board").tag(BoardPageMode.board)
                         Text("Upcoming").tag(BoardPageMode.boardUpcoming)
@@ -69,10 +95,14 @@ struct BoardsShellScreen: View {
                 boardListVM.setBoards(shellVM.profile.boards)
                 boardDetailVM.setSelectedBoard(id: boardListVM.selectedBoardId)
                 seedBoardModeState()
+                headerVM.bind(mode: boardModeVM.mode)
             }
             .onChange(of: boardListVM.selectedBoardId) { _, newValue in
                 boardDetailVM.setSelectedBoard(id: newValue)
                 seedBoardModeState()
+            }
+            .onChange(of: boardModeVM.mode) { _, newValue in
+                headerVM.bind(mode: newValue)
             }
         }
     }
