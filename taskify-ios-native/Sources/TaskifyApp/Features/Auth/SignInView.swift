@@ -1,10 +1,13 @@
 import SwiftUI
 import Security
+import TaskifyCore
 
 private enum OnboardingPage {
     case home
     case signIn
     case create
+    case restore
+    case notifications
 }
 
 struct SignInView: View {
@@ -14,6 +17,9 @@ struct SignInView: View {
     @State private var page: OnboardingPage = .home
     @State private var createdSecret: String = ""
     @State private var createMessage: String?
+    @State private var restoreInput: String = ""
+    @State private var pendingSecret: String = ""
+    @State private var pendingProfile: String = ""
 
     var body: some View {
         let signInVM = authVM.signInViewModel
@@ -37,14 +43,9 @@ struct SignInView: View {
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
 
-                    Button("Restore from backup") {}
+                    Button("Restore from backup") { page = .restore }
                         .buttonStyle(.bordered)
                         .frame(maxWidth: .infinity)
-                        .disabled(true)
-
-                    Text("Restore flow coming in next parity slice")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                 }
 
             case .signIn:
@@ -73,9 +74,13 @@ struct SignInView: View {
                     HStack {
                         Button("Back") { page = .home }
                             .buttonStyle(.bordered)
-                        Button("Continue") { _ = signInVM.submit() }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!signInVM.canSubmit)
+                        Button("Continue") {
+                            pendingSecret = signInVM.secretKeyInput
+                            pendingProfile = signInVM.profileName
+                            page = .notifications
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(signInVM.secretKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
 
@@ -103,8 +108,9 @@ struct SignInView: View {
                         .buttonStyle(.bordered)
 
                         Button("Use this key") {
-                            signInVM.secretKeyInput = createdSecret
-                            _ = signInVM.submit()
+                            pendingSecret = createdSecret
+                            pendingProfile = signInVM.profileName
+                            page = .notifications
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(createdSecret.isEmpty)
@@ -119,6 +125,60 @@ struct SignInView: View {
                     Button("Back") { page = .home }
                         .buttonStyle(.bordered)
                 }
+
+            case .restore:
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Restore from backup")
+                        .font(.headline)
+
+                    Text("Paste your nsec or 64-character key to restore this account.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    TextField("nsec1... or 64-character key", text: $restoreInput)
+                        .textFieldStyle(.roundedBorder)
+
+                    HStack {
+                        Button("Back") { page = .home }
+                            .buttonStyle(.bordered)
+                        Button("Continue") {
+                            pendingSecret = restoreInput
+                            pendingProfile = signInVM.profileName
+                            page = .notifications
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(restoreInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+
+            case .notifications:
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Enable reminder notifications?")
+                        .font(.headline)
+
+                    Text("Taskify only sends reminders you create. You can change this later in Settings.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    if let msg = signInVM.errorMessage, !msg.isEmpty {
+                        Text(msg)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+
+                    HStack {
+                        Button("Not now") {
+                            submitPending(signInVM)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button(signInVM.isSubmitting ? "Enabling..." : "Enable notifications") {
+                            submitPending(signInVM)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(signInVM.isSubmitting)
+                    }
+                }
             }
         }
         .onAppear { signInVM.applyExternalError(errorMessage) }
@@ -127,6 +187,12 @@ struct SignInView: View {
         .frame(maxWidth: 520)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.opacity(0.02))
+    }
+
+    private func submitPending(_ signInVM: SignInViewModel) {
+        signInVM.secretKeyInput = pendingSecret
+        signInVM.profileName = pendingProfile
+        _ = signInVM.submit()
     }
 
     private func generateSecretKeyHex() -> String {
