@@ -169,11 +169,7 @@ struct BoardsShellScreen: View {
             id: selected.id,
             name: selected.name,
             kind: .lists,
-            columns: [
-                .init(id: "todo", name: "To do"),
-                .init(id: "doing", name: "Doing"),
-                .init(id: "done", name: "Done"),
-            ]
+            columns: BoardColumnDerivation.deriveColumns(from: boardDetailVM.visibleTasks)
         )
         listColumnsVM.configure(currentBoard: definition, boards: [definition])
         listColumnsVM.setTasks(boardDetailVM.visibleTasks.map {
