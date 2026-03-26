@@ -38,7 +38,7 @@ struct AppShellViewModelTests {
     func tabSwitching() {
         let profile = TaskifyProfile(name: "Nathan", nsecHex: String(repeating: "a", count: 64), npub: "npub1x", relays: [], boards: [])
         let vm = AppShellViewModel(profile: profile)
-        vm.select(tab: .upcoming)
-        #expect(vm.selectedTab == .upcoming)
+        vm.select(tab: .contacts)
+        #expect(vm.selectedTab == .contacts)
     }
 }

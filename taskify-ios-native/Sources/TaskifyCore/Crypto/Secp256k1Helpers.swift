@@ -20,10 +20,34 @@ public enum Secp256k1Helpers {
         let kaPriv = try P256K.KeyAgreement.PrivateKey(dataRepresentation: privateKeyBytes)
         let shared = try kaPriv.sharedSecretFromKeyAgreement(with: kaPriv.publicKey)
         let sharedData = shared.withUnsafeBytes { Data($0) }
-        let conv = SHA256.hash(data: sharedData)
+        let conv = CryptoKit.SHA256.hash(data: sharedData)
         let conversationKey = Data(conv)
 
         return (compressedPub, conversationKey)
+    }
+
+    /// Derives a NIP-44 conversation key for a private key and a peer public key.
+    /// Matches nostr-tools nip44.v2.utils.getConversationKey().
+    public static func nip44ConversationKey(
+        privateKeyBytes: Data,
+        publicKeyHex: String
+    ) throws -> Data {
+        let normalizedPublicKey = try NostrIdentityService.normalizePublicKeyInput(publicKeyHex)
+        guard let compressed = Data(hexString: "02" + normalizedPublicKey) else {
+            throw NostrIdentityService.IdentityError.invalidPublicKey
+        }
+
+        let privateKey = try P256K.KeyAgreement.PrivateKey(dataRepresentation: privateKeyBytes)
+        let publicKey = try P256K.KeyAgreement.PublicKey(dataRepresentation: compressed, format: .compressed)
+        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey, format: .compressed)
+        let sharedData = sharedSecret.withUnsafeBytes { Data($0) }
+        guard sharedData.count >= 33 else {
+            throw NostrIdentityService.IdentityError.invalidPublicKey
+        }
+        let sharedX = sharedData.subdata(in: 1..<33)
+        let salt = SymmetricKey(data: Data("nip44-v2".utf8))
+        let extracted = HMAC<CryptoKit.SHA256>.authenticationCode(for: sharedX, using: salt)
+        return Data(extracted)
     }
 
     /// Returns x-only pubkey (32 bytes) from private key.

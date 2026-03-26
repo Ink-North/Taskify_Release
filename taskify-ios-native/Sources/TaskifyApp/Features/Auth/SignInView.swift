@@ -100,9 +100,7 @@ struct SignInView: View {
 
                     HStack {
                         Button("Copy") {
-                            #if canImport(UIKit)
-                            UIPasteboard.general.string = createdSecret
-                            #endif
+                            PlatformServices.copyToPasteboard(createdSecret)
                             createMessage = "Key copied"
                         }
                         .buttonStyle(.bordered)

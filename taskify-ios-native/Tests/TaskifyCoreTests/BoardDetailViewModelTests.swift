@@ -94,4 +94,63 @@ struct BoardDetailViewModelTests {
         #expect(BoardDetailFixture.error(boardId: "b1", message: "x").state == .error("x"))
         #expect(BoardDetailFixture.sample(boardId: "b1").visibleTasks.count == 3)
     }
+
+    @Test("week board groups tasks by weekday in configured week-start order")
+    func weekBoardGroupingUsesWeekStart() {
+        let vm = BoardDetailViewModel()
+        vm.setSelectedBoard(id: "b1")
+        vm.setTasks(for: "b1", tasks: [
+            BoardTaskItem(id: "wed-open", title: "Wednesday", completed: false, dueISO: "2026-03-25T15:00:00Z", dueDateEnabled: true),
+            BoardTaskItem(id: "mon-open", title: "Monday", completed: false, dueISO: "2026-03-23T15:00:00Z", dueDateEnabled: true),
+            BoardTaskItem(id: "sun-done", title: "Sunday done", completed: true, dueISO: "2026-03-29T15:00:00Z", dueDateEnabled: true),
+        ])
+
+        let days = vm.weekBoardDays(
+            weekStart: 1,
+            includeCompleted: false,
+            referenceDate: fixedDate("2026-03-25T12:00:00Z")
+        )
+
+        #expect(days.map(\.weekday) == [1, 2, 3, 4, 5, 6, 0])
+        #expect(days.first(where: { $0.weekday == 1 })?.tasks.map(\.id) == ["mon-open"])
+        #expect(days.first(where: { $0.weekday == 3 })?.tasks.map(\.id) == ["wed-open"])
+        #expect(days.first(where: { $0.weekday == 0 })?.tasks.isEmpty == true)
+        #expect(days.first(where: { $0.weekday == 3 })?.isToday == true)
+    }
+
+    @Test("week board can include completed tasks when completed tab is hidden")
+    func weekBoardCanIncludeCompletedTasks() {
+        let vm = BoardDetailViewModel()
+        vm.setSelectedBoard(id: "b1")
+        vm.setTasks(for: "b1", tasks: [
+            BoardTaskItem(id: "done", title: "Done", completed: true, dueISO: "2026-03-24T15:00:00Z", dueDateEnabled: true),
+        ])
+
+        let days = vm.weekBoardDays(
+            weekStart: 0,
+            includeCompleted: true,
+            referenceDate: fixedDate("2026-03-25T12:00:00Z")
+        )
+
+        #expect(days.first(where: { $0.weekday == 2 })?.tasks.map(\.id) == ["done"])
+    }
+
+    @Test("week board quick-add dates anchor to the configured week start")
+    func weekBoardQuickAddDateAnchorsToWeekStart() {
+        let base = fixedDate("2026-03-25T12:00:00Z")
+
+        let mondayISO = BoardDetailViewModel.isoForWeekday(1, base: base, weekStart: 1)
+        let sundayISO = BoardDetailViewModel.isoForWeekday(0, base: base, weekStart: 1)
+        let saturdayISO = BoardDetailViewModel.isoForWeekday(6, base: base, weekStart: 6)
+
+        #expect(mondayISO.hasPrefix("2026-03-23"))
+        #expect(sundayISO.hasPrefix("2026-03-29"))
+        #expect(saturdayISO.hasPrefix("2026-03-21"))
+    }
+}
+
+private func fixedDate(_ iso: String) -> Date {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) ?? Date(timeIntervalSince1970: 0)
 }

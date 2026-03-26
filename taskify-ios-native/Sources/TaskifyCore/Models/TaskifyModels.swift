@@ -106,9 +106,11 @@ public final class TaskifyBoard {
     public var clearCompletedDisabled: Bool
     public var hideChildBoardNames: Bool
     public var lastSyncAt: Int?         // Unix seconds — incremental sync cursor
+    public var metadataCreatedAt: Int?  // Unix seconds — latest kind 30300 board-definition event
     // JSON-encoded arrays
     public var columnsJSON: String?
     public var childrenJSON: String?
+    public var relayHintsJSON: String?
     public var sortMode: String?
     public var sortDirection: String?
 
@@ -181,7 +183,7 @@ public struct TaskAssignee: Codable {
 
 // MARK: - Column
 
-public struct BoardColumn: Codable, Identifiable {
+public struct BoardColumn: Codable, Identifiable, Equatable {
     public var id: String
     public var name: String
 
@@ -199,4 +201,238 @@ public enum TaskStatus {
 
 public enum TaskSortMode: String {
     case manual, dueDate, priority, createdAt, alphabetical
+}
+
+// MARK: - Contacts
+
+public enum TaskifyContactKind: String, Codable, CaseIterable, Sendable {
+    case nostr
+    case custom
+}
+
+public enum TaskifyContactSource: String, Codable, CaseIterable, Sendable {
+    case manual
+    case profile
+    case scan
+    case sync
+}
+
+@Model
+public final class TaskifyContact {
+    @Attribute(.unique) public var id: String
+    public var kindRaw: String
+    public var name: String
+    public var address: String
+    public var paymentRequest: String
+    public var npub: String
+    public var username: String?
+    public var displayName: String?
+    public var nip05: String?
+    public var about: String?
+    public var picture: String?
+    public var relaysJSON: String?
+    public var createdAt: Int
+    public var updatedAt: Int
+    public var sourceRaw: String?
+
+    public init(
+        id: String,
+        kind: TaskifyContactKind = .custom,
+        name: String = "",
+        address: String = "",
+        paymentRequest: String = "",
+        npub: String = "",
+        createdAt: Int = Int(Date().timeIntervalSince1970 * 1000),
+        updatedAt: Int = Int(Date().timeIntervalSince1970 * 1000),
+        source: TaskifyContactSource? = nil
+    ) {
+        self.id = id
+        self.kindRaw = kind.rawValue
+        self.name = name
+        self.address = address
+        self.paymentRequest = paymentRequest
+        self.npub = npub
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.sourceRaw = source?.rawValue
+    }
+}
+
+@Model
+public final class TaskifyPublicFollow {
+    @Attribute(.unique) public var pubkey: String
+    public var relay: String?
+    public var petname: String?
+    public var username: String?
+    public var nip05: String?
+    public var updatedAt: Int
+
+    public init(
+        pubkey: String,
+        relay: String? = nil,
+        petname: String? = nil,
+        username: String? = nil,
+        nip05: String? = nil,
+        updatedAt: Int = Int(Date().timeIntervalSince1970 * 1000)
+    ) {
+        self.pubkey = pubkey
+        self.relay = relay
+        self.petname = petname
+        self.username = username
+        self.nip05 = nip05
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct TaskifyContactRecord: Identifiable, Equatable, Sendable {
+    public var id: String
+    public var kind: TaskifyContactKind
+    public var name: String
+    public var address: String
+    public var paymentRequest: String
+    public var npub: String
+    public var username: String?
+    public var displayName: String?
+    public var nip05: String?
+    public var about: String?
+    public var picture: String?
+    public var relays: [String]
+    public var createdAt: Int
+    public var updatedAt: Int
+    public var source: TaskifyContactSource?
+
+    public init(
+        id: String,
+        kind: TaskifyContactKind,
+        name: String,
+        address: String,
+        paymentRequest: String,
+        npub: String,
+        username: String? = nil,
+        displayName: String? = nil,
+        nip05: String? = nil,
+        about: String? = nil,
+        picture: String? = nil,
+        relays: [String] = [],
+        createdAt: Int,
+        updatedAt: Int,
+        source: TaskifyContactSource? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.name = name
+        self.address = address
+        self.paymentRequest = paymentRequest
+        self.npub = npub
+        self.username = username
+        self.displayName = displayName
+        self.nip05 = nip05
+        self.about = about
+        self.picture = picture
+        self.relays = relays
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.source = source
+    }
+}
+
+public struct TaskifyContactDraft: Equatable, Sendable {
+    public var id: String?
+    public var kind: TaskifyContactKind
+    public var name: String
+    public var address: String
+    public var paymentRequest: String
+    public var npub: String
+    public var username: String
+    public var displayName: String
+    public var nip05: String
+    public var about: String
+    public var picture: String
+    public var relays: [String]
+    public var source: TaskifyContactSource?
+
+    public init(
+        id: String? = nil,
+        kind: TaskifyContactKind = .custom,
+        name: String = "",
+        address: String = "",
+        paymentRequest: String = "",
+        npub: String = "",
+        username: String = "",
+        displayName: String = "",
+        nip05: String = "",
+        about: String = "",
+        picture: String = "",
+        relays: [String] = [],
+        source: TaskifyContactSource? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.name = name
+        self.address = address
+        self.paymentRequest = paymentRequest
+        self.npub = npub
+        self.username = username
+        self.displayName = displayName
+        self.nip05 = nip05
+        self.about = about
+        self.picture = picture
+        self.relays = relays
+        self.source = source
+    }
+}
+
+public struct TaskifyPublicFollowRecord: Identifiable, Equatable, Codable, Sendable {
+    public var pubkey: String
+    public var relay: String?
+    public var petname: String?
+    public var username: String?
+    public var nip05: String?
+    public var updatedAt: Int
+
+    public init(
+        pubkey: String,
+        relay: String? = nil,
+        petname: String? = nil,
+        username: String? = nil,
+        nip05: String? = nil,
+        updatedAt: Int = Int(Date().timeIntervalSince1970 * 1000)
+    ) {
+        self.pubkey = pubkey
+        self.relay = relay
+        self.petname = petname
+        self.username = username
+        self.nip05 = nip05
+        self.updatedAt = updatedAt
+    }
+
+    public var id: String { pubkey }
+}
+
+public struct TaskifyProfileMetadata: Codable, Equatable, Sendable {
+    public var username: String
+    public var displayName: String
+    public var lud16: String
+    public var nip05: String
+    public var about: String
+    public var picture: String
+    public var updatedAt: Int?
+
+    public init(
+        username: String = "",
+        displayName: String = "",
+        lud16: String = "",
+        nip05: String = "",
+        about: String = "",
+        picture: String = "",
+        updatedAt: Int? = nil
+    ) {
+        self.username = username
+        self.displayName = displayName
+        self.lud16 = lud16
+        self.nip05 = nip05
+        self.about = about
+        self.picture = picture
+        self.updatedAt = updatedAt
+    }
 }

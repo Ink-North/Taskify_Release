@@ -25,6 +25,19 @@ struct BoardListViewModelTests {
         #expect(vm.selectedBoardId == "b1")
     }
 
+    @Test("preferred board is selected when available")
+    func preferredBoardSelection() {
+        let vm = BoardListViewModel()
+        vm.setBoards(
+            [
+                ProfileBoardEntry(id: "b1", name: "Personal"),
+                ProfileBoardEntry(id: "b2", name: "Work"),
+            ],
+            preferredBoardId: "b2"
+        )
+        #expect(vm.selectedBoardId == "b2")
+    }
+
     @Test("defaults to empty state when no boards")
     func emptyState() {
         let vm = BoardListViewModel()

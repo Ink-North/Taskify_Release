@@ -58,7 +58,7 @@ public final class AuthSessionManager {
             switch e {
             case .invalidSecretKey, .invalidNsec:
                 state = .error("Enter a valid nsec or 64-hex private key.")
-            case .invalidPrivateKey:
+            case .invalidPrivateKey, .invalidNpub, .invalidPublicKey:
                 state = .error("Unable to derive npub from the provided key.")
             }
         } catch {

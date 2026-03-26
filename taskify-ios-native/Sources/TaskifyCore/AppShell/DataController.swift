@@ -44,13 +44,19 @@ public final class DataController: ObservableObject {
     @Published public private(set) var relayConnected: Int = 0
     @Published public private(set) var syncing: Bool = false
     @Published public private(set) var lastError: String?
+    @Published public private(set) var activeBoardItems: [BoardTaskItem] = []
+    @Published public private(set) var boardDefinitionsVersion: Int = 0
+    @Published public private(set) var contactsVersion: Int = 0
+    @Published public private(set) var publicFollowsVersion: Int = 0
+    @Published public private(set) var contactSyncState = ContactSyncState()
+    @Published public private(set) var myProfileMetadata = TaskifyProfileMetadata()
 
     // MARK: Dependencies
 
     private var relayPool: RelayPool?
     private var modelContext: ModelContext?
     private var profile: TaskifyProfile?
-    private var activeSubscriptionKey: String?
+    private var activeSubscriptionKeys: Set<String> = []
     private var activeBoardId: String?
 
     public init() {}
@@ -61,12 +67,10 @@ public final class DataController: ObservableObject {
     public func bootstrap(profile: TaskifyProfile, modelContext: ModelContext) async {
         self.profile = profile
         self.modelContext = modelContext
-
-        let pool = RelayPool(relayURLs: profile.relays)
-        self.relayPool = pool
-
-        await pool.connect()
-        relayConnected = await pool.connectedCount()
+        myProfileMetadata = ContactPreferencesStore.loadProfileMetadata(npub: profile.npub)
+        ensureStoredBoards(profile.boards)
+        await rebuildRelayPool()
+        await refreshAllBoardMetadata(boardIds: profile.boards.map(\.id))
     }
 
     /// Refresh relay connection count.
@@ -80,67 +84,25 @@ public final class DataController: ObservableObject {
     /// Subscribe to a board's task events on all connected relays.
     /// Fetches tasks from SwiftData first (local-first), then syncs from relays.
     public func subscribeToBoard(_ boardId: String) async -> [BoardTaskItem] {
-        // Cancel previous subscription
-        if let prevKey = activeSubscriptionKey, let pool = relayPool {
-            await pool.unsubscribe(key: prevKey)
-        }
+        await unsubscribe()
         activeBoardId = boardId
         syncing = true
-
-        // 1. Read from SwiftData immediately (local-first, mirrors PWA IDB render)
-        let localTasks = fetchTasksFromStore(boardId: boardId)
-
-        // 2. Start relay subscription in background
-        if let pool = relayPool, let ctx = modelContext {
-            let bTag = boardTagHash(boardId)
-            let coldFetchDays = 30
-            let board = fetchOrCreateBoard(boardId: boardId)
-            let since: Int
-            if let cursor = board.lastSyncAt, cursor > 0 {
-                since = max(0, cursor - 300)
-            } else {
-                since = Int(Date().timeIntervalSince1970) - coldFetchDays * 86400
-            }
-
-            let filter: [String: Any] = [
-                "kinds": [30301],
-                "#b": [bTag],
-                "since": since,
-            ]
-
-            let key = await pool.subscribe(
-                filters: [filter],
-                onEvent: { [weak self] event, relayUrl in
-                    guard let self else { return }
-                    Task { @MainActor in
-                        self.handleIncomingTaskEvent(event, boardId: boardId)
-                    }
-                },
-                onEose: { [weak self] _ in
-                    Task { @MainActor in
-                        self?.syncing = false
-                    }
-                }
-            )
-            activeSubscriptionKey = key
-
-            // Absolute timeout
-            Task {
-                try? await Task.sleep(nanoseconds: 25_000_000_000)
-                await MainActor.run { self.syncing = false }
-            }
-        }
-
+        await refreshBoardMetadata(boardId: boardId)
+        let localTasks = refreshActiveBoardItems()
+        subscribeToBoardTasks(boardId: boardId)
         return localTasks
     }
 
     /// Unsubscribe from the current board.
     public func unsubscribe() async {
-        if let key = activeSubscriptionKey, let pool = relayPool {
-            await pool.unsubscribe(key: key)
+        if let pool = relayPool {
+            for key in activeSubscriptionKeys {
+                await pool.unsubscribe(key: key)
+            }
         }
-        activeSubscriptionKey = nil
+        activeSubscriptionKeys.removeAll()
         activeBoardId = nil
+        activeBoardItems = []
         syncing = false
     }
 
@@ -148,20 +110,33 @@ public final class DataController: ObservableObject {
 
     /// Fetch all non-deleted tasks for a board from SwiftData.
     public func fetchTasksFromStore(boardId: String) -> [BoardTaskItem] {
+        fetchTasksFromStore(boardIds: [boardId])
+    }
+
+    public func fetchTasksFromStore(boardIds: [String]) -> [BoardTaskItem] {
         guard let ctx = modelContext else { return [] }
         let descriptor = FetchDescriptor<TaskifyTask>(
             predicate: #Predicate<TaskifyTask> { t in
-                t.boardId == boardId && t.deleted == false
+                t.deleted == false
             },
             sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
         )
         guard let tasks = try? ctx.fetch(descriptor) else { return [] }
-        return tasks.map { BoardTaskItem.from($0) }
+        let allowed = Set(boardIds)
+        let boardNames = boardNamesById()
+        return tasks
+            .filter { allowed.contains($0.boardId) }
+            .map { task in
+                var item = BoardTaskItem.from(task)
+                item.boardName = task.boardName ?? boardNames[task.boardId]
+                return item
+            }
     }
 
     /// Fetch all non-deleted tasks across all boards that have due dates.
     public func fetchUpcomingTasks(boardIds: [String]) -> [BoardTaskItem] {
         guard let ctx = modelContext else { return [] }
+        let boardNames = boardNamesById()
         let descriptor = FetchDescriptor<TaskifyTask>(
             predicate: #Predicate<TaskifyTask> { t in
                 t.deleted == false && t.completed == false
@@ -171,7 +146,27 @@ public final class DataController: ObservableObject {
         guard let tasks = try? ctx.fetch(descriptor) else { return [] }
         return tasks
             .filter { boardIds.contains($0.boardId) }
-            .map { BoardTaskItem.from($0) }
+            .map {
+                var item = BoardTaskItem.from($0)
+                item.boardName = $0.boardName ?? boardNames[$0.boardId]
+                return item
+            }
+    }
+
+    public func upcomingBoardDefinitions(boardIds: [String]) -> [UpcomingBoardDefinition] {
+        boardIds.compactMap { boardId in
+            if let board = fetchBoardModel(id: boardId) {
+                return UpcomingBoardDefinition(
+                    id: board.id,
+                    name: board.name,
+                    kind: board.kind,
+                    columns: decodedColumns(board.columnsJSON)
+                )
+            }
+
+            guard let fallbackName = boardName(boardId: boardId) else { return nil }
+            return UpcomingBoardDefinition(id: boardId, name: fallbackName, kind: "lists", columns: [])
+        }
     }
 
     // MARK: - Write: Create task
@@ -188,18 +183,26 @@ public final class DataController: ObservableObject {
             deleted: false,
             createdAt: Int(Date().timeIntervalSince1970)
         )
+        task.boardName = boardName(boardId: editVM.location.boardId)
         applyEditToModel(editVM, task: task)
         ctx.insert(task)
         try? ctx.save()
 
         // Publish to relays
         await publishTask(task, status: "open")
+        _ = refreshActiveBoardItems()
 
         return BoardTaskItem.from(task)
     }
 
     /// Quick-add a task with just a title.
-    public func quickAddTask(title: String, boardId: String, columnId: String?) async -> BoardTaskItem? {
+    public func quickAddTask(
+        title: String,
+        boardId: String,
+        columnId: String?,
+        dueISO: String? = nil,
+        dueDateEnabled: Bool? = nil
+    ) async -> BoardTaskItem? {
         guard let ctx = modelContext else { return nil }
         let task = TaskifyTask(
             id: UUID().uuidString,
@@ -209,11 +212,19 @@ public final class DataController: ObservableObject {
             deleted: false,
             createdAt: Int(Date().timeIntervalSince1970)
         )
+        task.boardName = boardName(boardId: boardId)
         task.column = columnId
+        if let dueISO {
+            task.dueISO = dueISO
+        }
+        if let dueDateEnabled {
+            task.dueDateEnabled = dueDateEnabled
+        }
         ctx.insert(task)
         try? ctx.save()
 
         await publishTask(task, status: "open")
+        _ = refreshActiveBoardItems()
         return BoardTaskItem.from(task)
     }
 
@@ -229,6 +240,7 @@ public final class DataController: ObservableObject {
 
         let status = task.completed ? "done" : (task.deleted ? "deleted" : "open")
         await publishTask(task, status: status)
+        _ = refreshActiveBoardItems()
         return BoardTaskItem.from(task)
     }
 
@@ -249,6 +261,7 @@ public final class DataController: ObservableObject {
         try? ctx.save()
 
         await publishTask(task, status: task.completed ? "done" : "open")
+        _ = refreshActiveBoardItems()
         return BoardTaskItem.from(task)
     }
 
@@ -262,6 +275,7 @@ public final class DataController: ObservableObject {
         try? ctx.save()
 
         await publishTask(task, status: "deleted")
+        _ = refreshActiveBoardItems()
         return true
     }
 
@@ -285,13 +299,20 @@ public final class DataController: ObservableObject {
         try? ctx.save()
 
         await publishTask(task, status: task.completed ? "done" : "open")
+        _ = refreshActiveBoardItems()
         return BoardTaskItem.from(task)
     }
 
     // MARK: - Board management
 
     /// Creates a new board and adds it to the profile.
-    public func createBoard(name: String, kind: String = "lists", columns: [BoardColumn] = []) async -> ProfileBoardEntry? {
+    public func createBoard(
+        name: String,
+        kind: String = "lists",
+        columns: [BoardColumn] = [],
+        children: [String] = [],
+        relayHints: [String] = []
+    ) async -> ProfileBoardEntry? {
         guard let ctx = modelContext, var prof = profile else { return nil }
         let boardId = UUID().uuidString
         let board = TaskifyBoard(id: boardId, name: name, kind: kind)
@@ -299,14 +320,26 @@ public final class DataController: ObservableObject {
             let colData = try? JSONEncoder().encode(columns)
             board.columnsJSON = colData.flatMap { String(data: $0, encoding: .utf8) }
         }
+        if !children.isEmpty {
+            board.childrenJSON = encodeJSONString(children)
+        }
+        let normalizedRelayHints = normalizeRelayList(relayHints)
+        if !normalizedRelayHints.isEmpty {
+            board.relayHintsJSON = encodeJSONString(normalizedRelayHints)
+        }
+        if !children.isEmpty {
+            createCompoundChildStubs(children, relayHints: normalizeRelayList((profile?.relays ?? []) + normalizedRelayHints))
+        }
         ctx.insert(board)
         try? ctx.save()
 
         let entry = ProfileBoardEntry(id: boardId, name: name)
         prof.boards.append(entry)
         profile = prof
-        // Save profile update to Keychain
-        try? KeychainStore.saveProfile(prof)
+        persistProfile(prof)
+        await rebuildRelayPool()
+        await publishBoardMetadata(board)
+        boardDefinitionsVersion &+= 1
 
         return entry
     }
@@ -314,27 +347,727 @@ public final class DataController: ObservableObject {
     /// Joins an existing board by ID (from a share link).
     public func joinBoard(boardId: String, name: String, relays: [String]? = nil) async -> ProfileBoardEntry? {
         guard let ctx = modelContext, var prof = profile else { return nil }
+        let relayHints = normalizeRelayList(relays ?? [])
 
         // Don't re-add if already a member
-        guard !prof.boards.contains(where: { $0.id == boardId }) else {
+        if prof.boards.contains(where: { $0.id == boardId }) {
+            if let board = fetchBoardModel(id: boardId), !relayHints.isEmpty {
+                board.relayHintsJSON = encodeJSONString(relayHints)
+                try? ctx.save()
+                await rebuildRelayPool()
+                await refreshBoardMetadata(boardId: boardId)
+            }
             return prof.boards.first(where: { $0.id == boardId })
         }
 
         let board = TaskifyBoard(id: boardId, name: name, kind: "lists")
+        if !relayHints.isEmpty {
+            board.relayHintsJSON = encodeJSONString(relayHints)
+        }
         ctx.insert(board)
         try? ctx.save()
 
         let entry = ProfileBoardEntry(id: boardId, name: name)
         prof.boards.append(entry)
         profile = prof
-        try? KeychainStore.saveProfile(prof)
+        persistProfile(prof)
+        await rebuildRelayPool()
+        await refreshBoardMetadata(boardId: boardId)
+        boardDefinitionsVersion &+= 1
 
         // Start syncing this board
         let _ = await subscribeToBoard(boardId)
         return entry
     }
 
+    public func boardDefinition(boardId: String) -> ListBoardDefinition? {
+        guard let board = fetchBoardModel(id: boardId) else { return nil }
+        return listBoardDefinition(from: board)
+    }
+
+    public func boardSettings(boardId: String) -> BoardSettingsSnapshot? {
+        guard let board = fetchBoardModel(id: boardId) else { return nil }
+        let children = decodedStringArray(board.childrenJSON).map { childId in
+            let childBoard = fetchBoardModel(id: childId)
+            return BoardChildSnapshot(
+                id: childId,
+                name: childBoard?.name ?? boardName(boardId: childId) ?? "Linked board",
+                relayHints: childBoard.map { decodedStringArray($0.relayHintsJSON) } ?? []
+            )
+        }
+        return BoardSettingsSnapshot(
+            id: board.id,
+            name: board.name,
+            kind: board.kind,
+            columns: decodedColumns(board.columnsJSON),
+            children: children,
+            clearCompletedDisabled: board.clearCompletedDisabled,
+            indexCardEnabled: board.indexCardEnabled,
+            hideChildBoardNames: board.hideChildBoardNames,
+            relayHints: decodedStringArray(board.relayHintsJSON)
+        )
+    }
+
+    public func relatedBoardDefinitions(for boardId: String) -> [ListBoardDefinition] {
+        guard let current = boardDefinition(boardId: boardId) else { return [] }
+        if current.kind != .compound { return [current] }
+
+        var definitions = [current]
+        for childId in current.children {
+            if let child = boardDefinition(boardId: childId) {
+                definitions.append(child)
+            }
+        }
+        return definitions
+    }
+
+    public func boardKind(boardId: String) -> String? {
+        fetchBoardModel(id: boardId)?.kind
+    }
+
+    public func boardRelayHints(boardId: String) -> [String] {
+        guard let board = fetchBoardModel(id: boardId) else { return [] }
+        return decodedStringArray(board.relayHintsJSON)
+    }
+
+    public func profileBoardSummaries() -> [ProfileBoardSummary] {
+        let storedById = Dictionary(uniqueKeysWithValues: fetchStoredBoards().map { ($0.id, $0) })
+        var seen = Set<String>()
+        var summaries: [ProfileBoardSummary] = []
+
+        for entry in profile?.boards ?? [] {
+            guard seen.insert(entry.id).inserted else { continue }
+            let stored = storedById[entry.id]
+            summaries.append(
+                ProfileBoardSummary(
+                    id: entry.id,
+                    name: stored?.name ?? entry.name,
+                    kind: stored?.kind ?? "lists",
+                    archived: stored?.archived ?? false,
+                    hidden: stored?.hidden ?? false,
+                    relayHints: stored.map { decodedStringArray($0.relayHintsJSON) } ?? []
+                )
+            )
+        }
+
+        return summaries
+    }
+
+    public func availableCompoundBoards(excluding boardId: String, selectedChildren: [String] = []) -> [BoardOption] {
+        let selectedIds = Set(selectedChildren)
+        let storedById = Dictionary(uniqueKeysWithValues: fetchStoredBoards().map { ($0.id, $0) })
+        var seen = Set<String>()
+        var options: [BoardOption] = []
+
+        for entry in profile?.boards ?? [] {
+            guard entry.id != boardId, !selectedIds.contains(entry.id), seen.insert(entry.id).inserted else { continue }
+            if let stored = storedById[entry.id] {
+                guard stored.kind == "lists", stored.archived == false else { continue }
+                options.append(BoardOption(id: stored.id, name: stored.name))
+            } else {
+                options.append(BoardOption(id: entry.id, name: entry.name))
+            }
+        }
+
+        return options.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    public func boardShareEnvelope(boardId: String) -> String? {
+        guard let board = fetchBoardModel(id: boardId) else { return nil }
+        return BoardShareContract.buildEnvelopeString(
+            boardId: board.id,
+            boardName: board.name,
+            relays: effectiveRelays(for: board)
+        )
+    }
+
+    @discardableResult
+    public func ensureCompoundChildBoard(_ child: BoardChildSnapshot) async -> BoardChildSnapshot? {
+        let childId = child.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !childId.isEmpty else { return nil }
+        if let existing = fetchBoardModel(id: childId), existing.kind != "lists" {
+            return nil
+        }
+
+        let normalizedRelays = normalizeRelayList(child.relayHints)
+        let requestedName = normalizedBoardName(child.name) ?? "Linked board"
+        let board = fetchOrCreateBoard(boardId: childId)
+        let isProfileBoard = profile?.boards.contains(where: { $0.id == childId }) == true
+        var needsSave = false
+        var needsRelayRefresh = false
+
+        if board.columnsJSON == nil {
+            board.columnsJSON = encodeJSONString([BoardColumn(id: "items", name: "Items")])
+            needsSave = true
+        }
+
+        if !isProfileBoard && (board.hidden == false || board.archived == false) {
+            board.hidden = true
+            board.archived = true
+            needsSave = true
+        }
+
+        if isGenericBoardName(board.name), requestedName != "Linked board" {
+            board.name = requestedName
+            needsSave = true
+        }
+
+        if !normalizedRelays.isEmpty {
+            let existing = decodedStringArray(board.relayHintsJSON)
+            if existing != normalizedRelays {
+                board.relayHintsJSON = encodeJSONString(normalizedRelays)
+                needsSave = true
+                needsRelayRefresh = true
+            }
+        }
+
+        if needsSave {
+            try? modelContext?.save()
+        }
+        if needsRelayRefresh {
+            await rebuildRelayPool()
+        }
+        if needsRelayRefresh || board.metadataCreatedAt == nil {
+            await refreshBoardMetadata(boardId: childId)
+        }
+
+        let resolvedBoard = fetchBoardModel(id: childId) ?? board
+        return BoardChildSnapshot(
+            id: childId,
+            name: resolvedBoard.name,
+            relayHints: decodedStringArray(resolvedBoard.relayHintsJSON)
+        )
+    }
+
+    public func republishBoardMetadata(boardId: String) async {
+        guard let board = fetchBoardModel(id: boardId) else { return }
+        await publishBoardMetadata(board)
+        boardDefinitionsVersion &+= 1
+    }
+
     // MARK: - Internal helpers
+
+    private func persistProfile(_ profile: TaskifyProfile) {
+        try? KeychainStore.saveProfile(profile)
+    }
+
+    private func ensureStoredBoards(_ entries: [ProfileBoardEntry]) {
+        for entry in entries {
+            let board = fetchOrCreateBoard(boardId: entry.id)
+            if board.name == "Board" || board.name == "Unknown" {
+                board.name = entry.name
+            }
+        }
+        try? modelContext?.save()
+    }
+
+    private func rebuildRelayPool() async {
+        let relayURLs = allRelayURLs()
+        await relayPool?.disconnect()
+        let pool = RelayPool(relayURLs: relayURLs)
+        relayPool = pool
+        await pool.connect()
+        relayConnected = await pool.connectedCount()
+    }
+
+    private func allRelayURLs() -> [String] {
+        let profileRelays = profile?.relays ?? []
+        let boardRelays = allStoredRelayHints()
+        return normalizeRelayList(profileRelays + boardRelays)
+    }
+
+    private func allStoredRelayHints() -> [String] {
+        fetchStoredBoards().flatMap { decodedStringArray($0.relayHintsJSON) }
+    }
+
+    private func refreshAllBoardMetadata(boardIds: [String]) async {
+        var seen = Set<String>()
+        for boardId in boardIds where seen.insert(boardId).inserted {
+            await refreshBoardMetadata(boardId: boardId)
+        }
+    }
+
+    private func refreshBoardMetadata(boardId: String) async {
+        guard let pool = relayPool else { return }
+        let bTag = boardTagHash(boardId)
+        let events = await pool.fetchEvents(filters: [[
+            "kinds": [TaskifyEventKind.boardDefinition.rawValue],
+            "#d": [bTag],
+            "limit": 20,
+        ]])
+
+        guard let latest = events.max(by: { $0.created_at < $1.created_at }) else { return }
+        applyIncomingBoardDefinition(latest, boardId: boardId)
+    }
+
+    private func applyIncomingBoardDefinition(_ event: NostrEvent, boardId: String) {
+        let board = fetchOrCreateBoard(boardId: boardId)
+        if let last = board.metadataCreatedAt, event.created_at < last { return }
+
+        let decoded: BoardDefinitionPayload?
+        if let plaintext = try? decryptTaskPayload(event.content, boardId: boardId) {
+            decoded = BoardDefinitionCodec.decode(plaintext)
+        } else {
+            decoded = BoardDefinitionCodec.decode(event.content)
+        }
+        guard let payload = decoded else { return }
+
+        board.metadataCreatedAt = event.created_at
+        if let kind = event.tagValue("k"), !kind.isEmpty {
+            board.kind = kind
+        }
+        if let name = event.tagValue("name"), !name.isEmpty {
+            board.name = name
+            syncProfileBoardName(boardId: boardId, name: name)
+        }
+        board.clearCompletedDisabled = payload.clearCompletedDisabled
+        if let columns = payload.columns {
+            board.columnsJSON = encodeJSONString(columns)
+        }
+        if let children = payload.children {
+            board.childrenJSON = encodeJSONString(children)
+            createCompoundChildStubs(children, relayHints: effectiveRelays(for: board))
+        }
+        if let listIndex = payload.listIndex {
+            board.indexCardEnabled = listIndex
+        }
+        if let hideBoardNames = payload.hideBoardNames {
+            board.hideChildBoardNames = hideBoardNames
+        }
+
+        try? modelContext?.save()
+        boardDefinitionsVersion &+= 1
+        _ = refreshActiveBoardItems()
+    }
+
+    private func createCompoundChildStubs(_ childIds: [String], relayHints: [String]) {
+        for childId in childIds {
+            let child = fetchOrCreateBoard(boardId: childId)
+            let isProfileBoard = profile?.boards.contains(where: { $0.id == childId }) == true
+            if child.columnsJSON == nil {
+                child.columnsJSON = encodeJSONString([BoardColumn(id: "items", name: "Items")])
+            }
+            if !isProfileBoard {
+                child.hidden = true
+                child.archived = true
+            }
+            if child.relayHintsJSON == nil && !relayHints.isEmpty {
+                child.relayHintsJSON = encodeJSONString(relayHints)
+            }
+        }
+        try? modelContext?.save()
+    }
+
+    private func subscribeToBoardTasks(boardId: String) {
+        guard let pool = relayPool else {
+            syncing = false
+            return
+        }
+
+        let sourceBoardIds = activeSourceBoardIds(for: boardId)
+        guard !sourceBoardIds.isEmpty else {
+            syncing = false
+            return
+        }
+
+        for sourceBoardId in sourceBoardIds {
+            let bTag = boardTagHash(sourceBoardId)
+            let board = fetchOrCreateBoard(boardId: sourceBoardId)
+            let since: Int
+            if let cursor = board.lastSyncAt, cursor > 0 {
+                since = max(0, cursor - 300)
+            } else {
+                since = Int(Date().timeIntervalSince1970) - 30 * 86400
+            }
+
+            let filter: [String: Any] = [
+                "kinds": [TaskifyEventKind.task.rawValue],
+                "#b": [bTag],
+                "since": since,
+            ]
+
+            Task { [weak self] in
+                guard let self else { return }
+                let key = await pool.subscribe(
+                    filters: [filter],
+                    onEvent: { [weak self] event, _ in
+                        guard let self else { return }
+                        Task { @MainActor in
+                            self.handleIncomingTaskEvent(event, boardId: sourceBoardId)
+                        }
+                    },
+                    onEose: { [weak self] _ in
+                        Task { @MainActor in
+                            self?.syncing = false
+                            _ = self?.refreshActiveBoardItems()
+                        }
+                    }
+                )
+                await MainActor.run {
+                    self.activeSubscriptionKeys.insert(key)
+                }
+            }
+        }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 25_000_000_000)
+            await MainActor.run {
+                self.syncing = false
+                _ = self.refreshActiveBoardItems()
+            }
+        }
+    }
+
+    private func refreshActiveBoardItems() -> [BoardTaskItem] {
+        guard let activeBoardId else {
+            activeBoardItems = []
+            return []
+        }
+        let tasks = fetchTasksFromStore(boardIds: activeSourceBoardIds(for: activeBoardId))
+        activeBoardItems = tasks
+        return tasks
+    }
+
+    private func activeSourceBoardIds(for boardId: String) -> [String] {
+        guard let board = fetchBoardModel(id: boardId) else { return [boardId] }
+        if board.kind == "compound" {
+            let childIds = decodedStringArray(board.childrenJSON)
+            return childIds.isEmpty ? [boardId] : childIds
+        }
+        return [boardId]
+    }
+
+    private func effectiveRelays(for board: TaskifyBoard) -> [String] {
+        normalizeRelayList((profile?.relays ?? []) + decodedStringArray(board.relayHintsJSON))
+    }
+
+    private func syncProfileBoardName(boardId: String, name: String) {
+        guard var prof = profile,
+              let index = prof.boards.firstIndex(where: { $0.id == boardId }),
+              prof.boards[index].name != name else { return }
+        prof.boards[index].name = name
+        profile = prof
+        persistProfile(prof)
+    }
+
+    private func boardNamesById() -> [String: String] {
+        guard let ctx = modelContext else {
+            return Dictionary(uniqueKeysWithValues: (profile?.boards ?? []).map { ($0.id, $0.name) })
+        }
+        let descriptor = FetchDescriptor<TaskifyBoard>()
+        let stored = (try? ctx.fetch(descriptor)) ?? []
+        var names = Dictionary(uniqueKeysWithValues: stored.map { ($0.id, $0.name) })
+        for entry in profile?.boards ?? [] where names[entry.id] == nil {
+            names[entry.id] = entry.name
+        }
+        return names
+    }
+
+    private func boardName(boardId: String) -> String? {
+        boardNamesById()[boardId]
+    }
+
+    private func listBoardDefinition(from board: TaskifyBoard) -> ListBoardDefinition {
+        let kind: ListBoardKind
+        switch board.kind {
+        case "lists": kind = .lists
+        case "compound": kind = .compound
+        default: kind = .other
+        }
+        return ListBoardDefinition(
+            id: board.id,
+            name: board.name,
+            kind: kind,
+            columns: decodedColumns(board.columnsJSON),
+            children: decodedStringArray(board.childrenJSON),
+            hideChildBoardNames: board.hideChildBoardNames
+        )
+    }
+
+    private func fetchBoardModel(id: String) -> TaskifyBoard? {
+        guard let ctx = modelContext else { return nil }
+        let descriptor = FetchDescriptor<TaskifyBoard>(
+            predicate: #Predicate<TaskifyBoard> { b in b.id == id }
+        )
+        return try? ctx.fetch(descriptor).first
+    }
+
+    private func fetchStoredBoards() -> [TaskifyBoard] {
+        guard let ctx = modelContext else { return [] }
+        let descriptor = FetchDescriptor<TaskifyBoard>()
+        return (try? ctx.fetch(descriptor)) ?? []
+    }
+
+    private func decodedColumns(_ raw: String?) -> [BoardColumn] {
+        guard let raw,
+              let data = raw.data(using: .utf8),
+              let columns = try? JSONDecoder().decode([BoardColumn].self, from: data) else {
+            return []
+        }
+        return columns
+    }
+
+    private func decodedStringArray(_ raw: String?) -> [String] {
+        guard let raw,
+              let data = raw.data(using: .utf8),
+              let values = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+        return values
+    }
+
+    private func encodeJSONString<T: Encodable>(_ value: T) -> String? {
+        guard let data = try? JSONEncoder().encode(value) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func normalizeRelayList(_ relays: [String]) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for relay in relays
+            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .filter({ !$0.isEmpty }) where seen.insert(relay).inserted {
+            ordered.append(relay)
+        }
+        return ordered
+    }
+
+    private func currentPublicKeyHex() -> String? {
+        guard let npub = profile?.npub else { return nil }
+        return try? NostrIdentityService.normalizePublicKeyInput(npub)
+    }
+
+    private func contactsRelayURLs() -> [String] {
+        let contactRelays = fetchContacts().flatMap(\.relays)
+        return normalizeRelayList((profile?.relays ?? []) + contactRelays)
+    }
+
+    private func fetchContactModels() -> [TaskifyContact] {
+        guard let ctx = modelContext else { return [] }
+        let descriptor = FetchDescriptor<TaskifyContact>()
+        return (try? ctx.fetch(descriptor)) ?? []
+    }
+
+    private func fetchPublicFollowModels() -> [TaskifyPublicFollow] {
+        guard let ctx = modelContext else { return [] }
+        let descriptor = FetchDescriptor<TaskifyPublicFollow>()
+        return (try? ctx.fetch(descriptor)) ?? []
+    }
+
+    private func findContactModel(id: String?, npub: String?) -> TaskifyContact? {
+        let contacts = fetchContactModels()
+        if let id, let matched = contacts.first(where: { $0.id == id }) {
+            return matched
+        }
+        guard let npub, !npub.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let publicKeyHex = try? NostrIdentityService.normalizePublicKeyInput(npub) else {
+            return nil
+        }
+        return contacts.first(where: {
+            guard let existingHex = try? NostrIdentityService.normalizePublicKeyInput($0.npub) else { return false }
+            return existingHex == publicKeyHex
+        })
+    }
+
+    private func mergeSyncedContacts(_ incoming: [TaskifyContactRecord], envelopeUpdatedAt: Int) {
+        guard let ctx = modelContext else { return }
+        var current = fetchContacts()
+        var byKey: [String: Int] = [:]
+        for (index, contact) in current.enumerated() {
+            let key = formatContactNpub(contact.npub).lowercased().nilIfEmpty ?? "id:\(contact.id)"
+            byKey[key] = index
+        }
+        for entry in incoming {
+            let npubKey = formatContactNpub(entry.npub).lowercased().nilIfEmpty
+            let key = npubKey ?? "id:\(entry.id)"
+            if let existingIndex = byKey[key] {
+                let prev = current[existingIndex]
+                current[existingIndex] = TaskifyContactRecord(
+                    id: prev.id,
+                    kind: entry.kind,
+                    name: entry.name.isEmpty ? prev.name : entry.name,
+                    address: entry.address.isEmpty ? prev.address : entry.address,
+                    paymentRequest: entry.paymentRequest.isEmpty ? prev.paymentRequest : entry.paymentRequest,
+                    npub: entry.npub.isEmpty ? prev.npub : entry.npub,
+                    username: entry.username ?? prev.username,
+                    displayName: entry.displayName ?? prev.displayName,
+                    nip05: entry.nip05 ?? prev.nip05,
+                    about: entry.about ?? prev.about,
+                    picture: entry.picture ?? prev.picture,
+                    relays: entry.relays.isEmpty ? prev.relays : entry.relays,
+                    createdAt: prev.createdAt,
+                    updatedAt: max(prev.updatedAt, envelopeUpdatedAt),
+                    source: prev.source ?? .sync
+                )
+            } else {
+                current.append(entry)
+            }
+        }
+
+        for record in current {
+            let model = findContactModel(id: record.id, npub: nil) ?? TaskifyContact(
+                id: record.id,
+                kind: record.kind,
+                createdAt: record.createdAt,
+                updatedAt: record.updatedAt,
+                source: record.source
+            )
+            if findContactModel(id: record.id, npub: nil) == nil {
+                ctx.insert(model)
+            }
+            model.kind = record.kind
+            model.name = record.name
+            model.address = record.address
+            model.paymentRequest = record.paymentRequest
+            model.npub = record.npub
+            model.username = record.username
+            model.displayName = record.displayName
+            model.nip05 = record.nip05
+            model.about = record.about
+            model.picture = record.picture
+            model.relays = record.relays
+            model.createdAt = record.createdAt
+            model.updatedAt = record.updatedAt
+            model.source = record.source
+        }
+
+        try? ctx.save()
+        contactsVersion &+= 1
+    }
+
+    private func persistPublicFollows(_ follows: [TaskifyPublicFollowRecord]) {
+        guard let ctx = modelContext else { return }
+        let existing = Dictionary(uniqueKeysWithValues: fetchPublicFollowModels().map { ($0.pubkey, $0) })
+        var touched = Set<String>()
+        for follow in follows {
+            let model = existing[follow.pubkey] ?? TaskifyPublicFollow(pubkey: follow.pubkey)
+            if existing[follow.pubkey] == nil {
+                ctx.insert(model)
+            }
+            model.apply(record: follow)
+            touched.insert(follow.pubkey)
+        }
+        for (pubkey, model) in existing where !touched.contains(pubkey) {
+            ctx.delete(model)
+        }
+        try? ctx.save()
+        publicFollowsVersion &+= 1
+    }
+
+    private func enrichPublicFollows(_ follows: [TaskifyPublicFollowRecord], relays: [String]) async -> [TaskifyPublicFollowRecord] {
+        guard let pool = relayPool, !follows.isEmpty else { return follows }
+        let pubkeys = follows.map(\.pubkey)
+        let events = await pool.fetchEvents(filters: [[
+            "kinds": [TaskifyEventKind.profileMetadata.rawValue],
+            "authors": pubkeys,
+            "limit": max(pubkeys.count * 3, 50),
+        ]], hardTimeoutMs: 10_000, eoseGraceMs: 250, inactivityMs: 2_000)
+        let latestByPubkey = Dictionary(grouping: events, by: \.pubkey).compactMapValues { group in
+            group.max(by: { $0.created_at < $1.created_at })
+        }
+        return follows.map { follow in
+            guard let event = latestByPubkey[follow.pubkey] else { return follow }
+            let meta = parseProfileMetadata(content: event.content)
+            return TaskifyPublicFollowRecord(
+                pubkey: follow.pubkey,
+                relay: follow.relay,
+                petname: follow.petname,
+                username: follow.username ?? meta.username.nilIfEmpty,
+                nip05: follow.nip05 ?? normalizeNip05(meta.nip05),
+                updatedAt: max(follow.updatedAt, event.created_at * 1000)
+            )
+        }
+    }
+
+    private func hydrateLookupDraft(
+        npub: String,
+        relayHints: [String],
+        fallback: TaskifyContactDraft
+    ) async throws -> TaskifyContactDraft {
+        let normalizedHex = try NostrIdentityService.normalizePublicKeyInput(npub)
+        let relays = normalizeRelayList(relayHints + (profile?.relays ?? []))
+        guard let pool = relayPool, !relays.isEmpty else {
+            return TaskifyContactDraft(
+                id: fallback.id,
+                kind: .nostr,
+                name: fallback.name,
+                address: fallback.address,
+                paymentRequest: fallback.paymentRequest,
+                npub: npub,
+                username: fallback.username,
+                displayName: fallback.displayName,
+                nip05: fallback.nip05,
+                about: fallback.about,
+                picture: fallback.picture,
+                relays: normalizeRelayList(relayHints),
+                source: fallback.source
+            )
+        }
+        let events = await pool.fetchEvents(filters: [[
+            "kinds": [TaskifyEventKind.profileMetadata.rawValue],
+            "authors": [normalizedHex],
+            "limit": 1,
+        ]], hardTimeoutMs: 8_000, eoseGraceMs: 250, inactivityMs: 1_500)
+        let latest = events.max(by: { $0.created_at < $1.created_at })
+        let meta = latest.map { parseProfileMetadata(content: $0.content) } ?? TaskifyProfileMetadata()
+        return TaskifyContactDraft(
+            id: fallback.id,
+            kind: .nostr,
+            name: fallback.name.isEmpty ? (meta.displayName.isEmpty ? meta.username : meta.displayName) : fallback.name,
+            address: fallback.address.isEmpty ? meta.lud16 : fallback.address,
+            paymentRequest: fallback.paymentRequest,
+            npub: npub,
+            username: fallback.username.isEmpty ? meta.username : fallback.username,
+            displayName: fallback.displayName.isEmpty ? meta.displayName : fallback.displayName,
+            nip05: fallback.nip05.isEmpty ? meta.nip05 : fallback.nip05,
+            about: fallback.about.isEmpty ? meta.about : fallback.about,
+            picture: fallback.picture.isEmpty ? meta.picture : fallback.picture,
+            relays: normalizeRelayList(relayHints),
+            source: fallback.source
+        )
+    }
+
+    private func applyProfileField(
+        _ incoming: String?,
+        current: String?,
+        allowReplace: Bool,
+        update: (String?) -> Void
+    ) -> Bool {
+        let nextValue = incoming?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let currentValue = current?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        guard nextValue != nil else { return false }
+        if allowReplace || currentValue == nil {
+            guard nextValue != currentValue else { return false }
+            update(nextValue)
+            return true
+        }
+        return false
+    }
+
+    private func normalizedBoardName(_ value: String?) -> String? {
+        value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+    }
+
+    private func isGenericBoardName(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed == "Board" || trimmed == "Unknown" || trimmed == "Linked board"
+    }
+
+    private func normalizeCompoundChildren(_ children: [String], parentBoardId: String) -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        let trimmedParentId = parentBoardId.trimmingCharacters(in: .whitespacesAndNewlines)
+        for childId in children {
+            let trimmed = childId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, trimmed != trimmedParentId, seen.insert(trimmed).inserted else { continue }
+            ordered.append(trimmed)
+        }
+        return ordered
+    }
 
     private func fetchTaskModel(id: String) -> TaskifyTask? {
         guard let ctx = modelContext else { return nil }
@@ -397,9 +1130,11 @@ public final class DataController: ObservableObject {
             ctx.insert(task)
         }
         try? ctx.save()
+        _ = refreshActiveBoardItems()
     }
 
     private func applyPayloadToModel(_ payload: [String: Any], status: String, task: TaskifyTask, createdAt: Int, colTag: String?) {
+        task.boardName = boardName(boardId: task.boardId)
         task.title = payload["title"] as? String ?? task.title
         task.note = payload["note"] as? String
         task.dueISO = payload["dueISO"] as? String ?? ""
@@ -428,10 +1163,55 @@ public final class DataController: ObservableObject {
         }
     }
 
+    private func publishBoardMetadata(_ board: TaskifyBoard) async {
+        guard let pool = relayPool else { return }
+        do {
+            let boardKeyInfo = try BoardKeyInfo(boardId: board.id)
+            let bTag = boardTagHash(board.id)
+            let payload: BoardDefinitionPayload
+            switch board.kind {
+            case "lists":
+                payload = BoardDefinitionPayload(
+                    clearCompletedDisabled: board.clearCompletedDisabled,
+                    columns: decodedColumns(board.columnsJSON),
+                    listIndex: board.indexCardEnabled
+                )
+            case "compound":
+                payload = BoardDefinitionPayload(
+                    clearCompletedDisabled: board.clearCompletedDisabled,
+                    listIndex: board.indexCardEnabled,
+                    children: decodedStringArray(board.childrenJSON),
+                    hideBoardNames: board.hideChildBoardNames
+                )
+            default:
+                payload = BoardDefinitionPayload(
+                    clearCompletedDisabled: board.clearCompletedDisabled
+                )
+            }
+            guard let raw = BoardDefinitionCodec.encode(payload) else { return }
+            let encrypted = try encryptTaskPayload(raw, boardId: board.id)
+            let unsigned = UnsignedNostrEvent(
+                pubkey: boardKeyInfo.publicKeyHex,
+                kind: TaskifyEventKind.boardDefinition.rawValue,
+                tags: [["d", bTag], ["b", bTag], ["k", board.kind], ["name", board.name]],
+                content: encrypted
+            )
+            let event = try unsigned.sign(privateKeyBytes: boardKeyInfo.privateKeyBytes)
+            await pool.publish(event: event)
+            board.metadataCreatedAt = event.created_at
+            try? modelContext?.save()
+        } catch {
+            lastError = "Board publish failed: \(error.localizedDescription)"
+        }
+    }
+
     /// Publish a task event to relays. Mirrors SyncEngine.publishTask().
     private func publishTask(_ task: TaskifyTask, status: String) async {
-        guard let pool = relayPool, let prof = profile else { return }
+        guard let pool = relayPool else { return }
         do {
+            if let board = fetchBoardModel(id: task.boardId) {
+                await publishBoardMetadata(board)
+            }
             let boardKeyInfo = try BoardKeyInfo(boardId: task.boardId)
             let payload = buildTaskPayload(task)
             let json = try JSONSerialization.data(withJSONObject: payload)
@@ -481,11 +1261,644 @@ public final class DataController: ObservableObject {
         return obj
     }
 
+    // MARK: - Board management (edit/remove)
+
+    /// Update a board's name and columns.
+    public func updateBoard(
+        boardId: String,
+        name: String,
+        columns: [BoardColumn],
+        children: [String]? = nil,
+        clearCompletedDisabled: Bool? = nil,
+        indexCardEnabled: Bool? = nil,
+        hideChildBoardNames: Bool? = nil,
+        relayHints: [String]? = nil
+    ) async {
+        guard let ctx = modelContext else { return }
+        let descriptor = FetchDescriptor<TaskifyBoard>(
+            predicate: #Predicate<TaskifyBoard> { b in b.id == boardId }
+        )
+        guard let board = try? ctx.fetch(descriptor).first else { return }
+        let trimmedName = normalizedBoardName(name) ?? board.name
+        board.name = trimmedName
+        if let colData = try? JSONEncoder().encode(columns),
+           let colJSON = String(data: colData, encoding: .utf8) {
+            board.columnsJSON = colJSON
+        }
+        if let relayHints {
+            let normalized = normalizeRelayList(relayHints)
+            board.relayHintsJSON = normalized.isEmpty ? nil : encodeJSONString(normalized)
+        }
+        if let children {
+            let normalizedChildren = normalizeCompoundChildren(children, parentBoardId: boardId)
+            board.childrenJSON = encodeJSONString(normalizedChildren)
+            createCompoundChildStubs(normalizedChildren, relayHints: effectiveRelays(for: board))
+        }
+        if let clearCompletedDisabled {
+            board.clearCompletedDisabled = clearCompletedDisabled
+        }
+        if let indexCardEnabled {
+            board.indexCardEnabled = indexCardEnabled
+        }
+        if let hideChildBoardNames {
+            board.hideChildBoardNames = hideChildBoardNames
+        }
+        try? ctx.save()
+
+        // Update profile board entry
+        if var prof = profile,
+           let idx = prof.boards.firstIndex(where: { $0.id == boardId }) {
+            prof.boards[idx].name = trimmedName
+            profile = prof
+            persistProfile(prof)
+        }
+        await rebuildRelayPool()
+        await publishBoardMetadata(board)
+        boardDefinitionsVersion &+= 1
+        _ = refreshActiveBoardItems()
+    }
+
+    /// Update board sort preferences.
+    public func updateBoardSort(boardId: String, sortMode: TaskSortMode, ascending: Bool) async {
+        guard let ctx = modelContext else { return }
+        let descriptor = FetchDescriptor<TaskifyBoard>(
+            predicate: #Predicate<TaskifyBoard> { b in b.id == boardId }
+        )
+        guard let board = try? ctx.fetch(descriptor).first else { return }
+        board.sortMode = sortMode.rawValue
+        board.sortDirection = ascending ? "asc" : "desc"
+        try? ctx.save()
+    }
+
+    /// Fetch the stored sort mode for a board.
+    public func boardSortPreferences(boardId: String) -> (mode: TaskSortMode, ascending: Bool) {
+        guard let ctx = modelContext else { return (.manual, true) }
+        let descriptor = FetchDescriptor<TaskifyBoard>(
+            predicate: #Predicate<TaskifyBoard> { b in b.id == boardId }
+        )
+        guard let board = try? ctx.fetch(descriptor).first else { return (.manual, true) }
+        let mode = TaskSortMode(rawValue: board.sortMode ?? "manual") ?? .manual
+        let asc = board.sortDirection != "desc"
+        return (mode, asc)
+    }
+
+    /// Fetch columns for a board from SwiftData.
+    public func boardColumns(boardId: String) -> [BoardColumn] {
+        guard let board = fetchBoardModel(id: boardId) else { return [] }
+        return decodedColumns(board.columnsJSON)
+    }
+
+    /// Remove a board from the profile (does not delete relay data).
+    public func removeBoard(boardId: String) async {
+        guard var prof = profile else { return }
+        prof.boards.removeAll { $0.id == boardId }
+        profile = prof
+        persistProfile(prof)
+
+        // Clean up local SwiftData
+        if let ctx = modelContext {
+            let descriptor = FetchDescriptor<TaskifyBoard>(
+                predicate: #Predicate<TaskifyBoard> { b in b.id == boardId }
+            )
+            if let board = try? ctx.fetch(descriptor).first {
+                ctx.delete(board)
+                try? ctx.save()
+            }
+        }
+        await rebuildRelayPool()
+        boardDefinitionsVersion &+= 1
+        _ = refreshActiveBoardItems()
+    }
+
+    /// Update relay list and reconnect.
+    public func updateRelays(_ relays: [String]) async {
+        guard var prof = profile else { return }
+        prof.relays = normalizeRelayList(relays)
+        profile = prof
+        persistProfile(prof)
+        await rebuildRelayPool()
+    }
+
+    // MARK: - Contacts
+
+    public func fetchContacts() -> [TaskifyContactRecord] {
+        guard let ctx = modelContext else { return [] }
+        let descriptor = FetchDescriptor<TaskifyContact>(
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+        )
+        let contacts = (try? ctx.fetch(descriptor)) ?? []
+        return contacts
+            .map { $0.toRecord() }
+            .sorted { lhs, rhs in
+                let left = (contactPrimaryName(lhs) + "|" + (contactSubtitle(lhs) ?? "")).lowercased()
+                let right = (contactPrimaryName(rhs) + "|" + (contactSubtitle(rhs) ?? "")).lowercased()
+                return left < right
+            }
+    }
+
+    public func fetchPublicFollows() -> [TaskifyPublicFollowRecord] {
+        guard let ctx = modelContext else { return [] }
+        let descriptor = FetchDescriptor<TaskifyPublicFollow>(
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+        )
+        let follows = (try? ctx.fetch(descriptor)) ?? []
+        return follows
+            .map { $0.toRecord() }
+            .sorted { lhs, rhs in
+                let left = ((lhs.petname ?? lhs.nip05 ?? lhs.username ?? lhs.pubkey)).lowercased()
+                let right = ((rhs.petname ?? rhs.nip05 ?? rhs.username ?? rhs.pubkey)).lowercased()
+                return left < right
+            }
+    }
+
+    @discardableResult
+    public func saveContact(_ draft: TaskifyContactDraft, publish: Bool = true) async -> TaskifyContactRecord? {
+        guard let ctx = modelContext else { return nil }
+        let timestampMs = Int(Date().timeIntervalSince1970 * 1000)
+
+        let normalizedNpub: String
+        if draft.npub.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            normalizedNpub = ""
+        } else {
+            guard let publicKeyHex = try? NostrIdentityService.normalizePublicKeyInput(draft.npub),
+                  let npub = try? NostrIdentityService.encodeNpub(fromPublicKeyHex: publicKeyHex) else {
+                lastError = "Unable to normalize contact pubkey."
+                return nil
+            }
+            normalizedNpub = npub
+        }
+
+        let normalizedDraft = TaskifyContactDraft(
+            id: draft.id,
+            kind: normalizedNpub.isEmpty ? draft.kind : .nostr,
+            name: draft.name,
+            address: draft.address,
+            paymentRequest: draft.paymentRequest,
+            npub: normalizedNpub,
+            username: draft.username,
+            displayName: draft.displayName,
+            nip05: draft.nip05,
+            about: draft.about,
+            picture: draft.picture,
+            relays: normalizeRelayList(draft.relays),
+            source: draft.source ?? .manual
+        )
+
+        let hasData =
+            !normalizedDraft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            !normalizedDraft.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            !sanitizeUsername(normalizedDraft.username).isEmpty ||
+            !normalizedDraft.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            !normalizedDraft.paymentRequest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            !normalizedDraft.npub.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            normalizeNip05(normalizedDraft.nip05) != nil ||
+            !normalizedDraft.about.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            !normalizedDraft.picture.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard hasData else { return nil }
+
+        let existing = findContactModel(id: normalizedDraft.id, npub: normalizedDraft.npub)
+        let model: TaskifyContact
+        if let existing {
+            model = existing
+        } else {
+            model = TaskifyContact(
+                id: normalizedDraft.id ?? makeContactId(),
+                kind: normalizedDraft.kind,
+                createdAt: timestampMs,
+                updatedAt: timestampMs,
+                source: normalizedDraft.source ?? .manual
+            )
+            ctx.insert(model)
+        }
+        model.apply(draft: normalizedDraft, timestampMs: timestampMs)
+        try? ctx.save()
+        contactsVersion &+= 1
+
+        if publish {
+            _ = await publishContactsToNostr(silent: true)
+        }
+
+        return model.toRecord()
+    }
+
+    @discardableResult
+    public func deleteContact(id: String, publish: Bool = true) async -> Bool {
+        guard let ctx = modelContext,
+              let model = findContactModel(id: id, npub: nil) else { return false }
+        ctx.delete(model)
+        try? ctx.save()
+        contactsVersion &+= 1
+        if publish {
+            _ = await publishContactsToNostr(silent: true)
+        }
+        return true
+    }
+
+    public func lookupContact(reference: String) async throws -> TaskifyContactDraft {
+        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw Nip05Error.invalidAddress
+        }
+
+        if let qrDraft = ContactShareContract.parseQRValue(trimmed) {
+            let npub = qrDraft.npub.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !npub.isEmpty else { return qrDraft }
+            return try await hydrateLookupDraft(npub: npub, relayHints: qrDraft.relays, fallback: qrDraft)
+        }
+
+        if let envelope = ContactShareContract.parseEnvelope(trimmed) {
+            let fallback = TaskifyContactDraft(
+                kind: .nostr,
+                name: envelope.name ?? "",
+                address: envelope.lud16 ?? "",
+                npub: envelope.npub,
+                username: envelope.username ?? "",
+                displayName: envelope.displayName ?? "",
+                nip05: envelope.nip05 ?? "",
+                about: envelope.about ?? "",
+                picture: envelope.picture ?? "",
+                relays: envelope.relays,
+                source: .sync
+            )
+            return try await hydrateLookupDraft(npub: envelope.npub, relayHints: envelope.relays, fallback: fallback)
+        }
+
+        if let publicKeyHex = try? NostrIdentityService.normalizePublicKeyInput(trimmed),
+           let npub = try? NostrIdentityService.encodeNpub(fromPublicKeyHex: publicKeyHex) {
+            return try await hydrateLookupDraft(npub: npub, relayHints: [], fallback: TaskifyContactDraft(kind: .nostr, npub: npub, source: .manual))
+        }
+
+        let resolution = try await Nip05Resolver.resolve(trimmed)
+        let npub = try NostrIdentityService.encodeNpub(fromPublicKeyHex: resolution.pubkey)
+        return try await hydrateLookupDraft(
+            npub: npub,
+            relayHints: resolution.relays,
+            fallback: TaskifyContactDraft(kind: .nostr, npub: npub, nip05: resolution.nip05, relays: resolution.relays, source: .manual)
+        )
+    }
+
+    @discardableResult
+    public func syncContactsFromNostr(silent: Bool = false) async -> ContactSyncState {
+        guard let pool = relayPool,
+              let profile,
+              let currentPubkeyHex = currentPublicKeyHex() else {
+            let state = ContactSyncState(status: .error, message: "Sign in to sync contacts.", updatedAt: nil)
+            contactSyncState = state
+            return state
+        }
+
+        let relays = contactsRelayURLs()
+        guard !relays.isEmpty else {
+            let state = ContactSyncState(status: .error, message: "Add at least one relay to sync contacts.", updatedAt: nil)
+            contactSyncState = state
+            return state
+        }
+
+        if !silent {
+            contactSyncState = ContactSyncState(status: .loading, message: "Syncing contacts…", updatedAt: contactSyncState.updatedAt)
+        }
+
+        let publicEvents = await pool.fetchEvents(filters: [[
+            "kinds": [TaskifyEventKind.contacts.rawValue],
+            "authors": [currentPubkeyHex],
+            "limit": 1,
+        ]], hardTimeoutMs: 12_000, eoseGraceMs: 250, inactivityMs: 2_000)
+
+        let privateEvents = await pool.fetchEvents(filters: [[
+            "kinds": [taskifyNip51ContactsKind],
+            "authors": [currentPubkeyHex],
+            "#d": [taskifyNip51ContactsDTag],
+            "limit": 1,
+        ]], hardTimeoutMs: 12_000, eoseGraceMs: 250, inactivityMs: 2_000)
+
+        if let latestPublic = publicEvents.max(by: { $0.created_at < $1.created_at }) {
+            let extracted = extractPublicFollows(from: latestPublic.tags)
+            let enriched = await enrichPublicFollows(extracted, relays: relays)
+            persistPublicFollows(enriched)
+        }
+
+        guard let latestPrivate = privateEvents.max(by: { $0.created_at < $1.created_at }) else {
+            let state = ContactSyncState(
+                status: .idle,
+                message: "No private contacts found on relays yet.",
+                updatedAt: ContactPreferencesStore.loadSyncMetadata(npub: profile.npub).lastUpdatedAt
+            )
+            contactSyncState = state
+            return state
+        }
+
+        do {
+            let items = try decryptNip51PrivateItems(
+                latestPrivate.content,
+                privateKeyHex: profile.nsecHex,
+                publicKeyHex: currentPubkeyHex
+            )
+            let contacts = extractNip51PrivateContacts(items)
+            let updatedAt = latestPrivate.created_at * 1000
+            let incoming = contacts.compactMap { contact -> TaskifyContactRecord? in
+                guard let npub = try? NostrIdentityService.encodeNpub(fromPublicKeyHex: contact.pubkey) else { return nil }
+                return TaskifyContactRecord(
+                    id: makeContactId(),
+                    kind: .nostr,
+                    name: contact.petname ?? "",
+                    address: "",
+                    paymentRequest: "",
+                    npub: npub,
+                    relays: contact.relayHint.map { [$0] } ?? [],
+                    createdAt: updatedAt,
+                    updatedAt: updatedAt,
+                    source: .sync
+                )
+            }
+            mergeSyncedContacts(incoming, envelopeUpdatedAt: updatedAt)
+            let fingerprint = computeContactsFingerprint(fetchContacts())
+            ContactPreferencesStore.saveSyncMetadata(
+                ContactSyncMetadata(lastEventId: latestPrivate.id, lastUpdatedAt: updatedAt, fingerprint: fingerprint),
+                npub: profile.npub
+            )
+            await refreshContactProfiles()
+            let state = ContactSyncState(
+                status: .success,
+                message: "Synced \(incoming.count) contact\(incoming.count == 1 ? "" : "s")",
+                updatedAt: updatedAt
+            )
+            contactSyncState = state
+            return state
+        } catch {
+            let state = ContactSyncState(status: .error, message: error.localizedDescription, updatedAt: contactSyncState.updatedAt)
+            contactSyncState = state
+            return state
+        }
+    }
+
+    @discardableResult
+    public func publishContactsToNostr(silent: Bool = false) async -> ContactSyncState {
+        guard let pool = relayPool,
+              let profile,
+              let currentPubkeyHex = currentPublicKeyHex(),
+              let privateKeyBytes = Data(hexString: profile.nsecHex) else {
+            let state = ContactSyncState(status: .error, message: "Sign in to sync contacts.", updatedAt: nil)
+            contactSyncState = state
+            return state
+        }
+
+        let relays = contactsRelayURLs()
+        guard !relays.isEmpty else {
+            let state = ContactSyncState(status: .error, message: "Add at least one relay to sync contacts.", updatedAt: nil)
+            contactSyncState = state
+            return state
+        }
+
+        if !silent {
+            contactSyncState = ContactSyncState(status: .loading, message: "Publishing contacts…", updatedAt: contactSyncState.updatedAt)
+        }
+
+        do {
+            let contacts = fetchContacts().filter { contactHasNpub($0) }
+            let privateItems = buildNip51PrivateItems(contacts)
+            let encrypted = try encryptNip51PrivateItems(privateItems, privateKeyHex: profile.nsecHex, publicKeyHex: currentPubkeyHex)
+            let createdAt = Int(Date().timeIntervalSince1970)
+            let privateEvent = try UnsignedNostrEvent(
+                pubkey: currentPubkeyHex,
+                kind: taskifyNip51ContactsKind,
+                tags: [["d", taskifyNip51ContactsDTag]],
+                content: encrypted,
+                created_at: createdAt
+            ).sign(privateKeyBytes: privateKeyBytes)
+            await pool.publish(event: privateEvent)
+
+            let publicFollowTags = buildPublicFollowTags(fetchPublicFollows())
+            let publicEvent = try UnsignedNostrEvent(
+                pubkey: currentPubkeyHex,
+                kind: TaskifyEventKind.contacts.rawValue,
+                tags: publicFollowTags,
+                content: "",
+                created_at: createdAt
+            ).sign(privateKeyBytes: privateKeyBytes)
+            await pool.publish(event: publicEvent)
+
+            let updatedAt = privateEvent.created_at * 1000
+            let fingerprint = computeContactsFingerprint(contacts)
+            ContactPreferencesStore.saveSyncMetadata(
+                ContactSyncMetadata(lastEventId: privateEvent.id, lastUpdatedAt: updatedAt, fingerprint: fingerprint),
+                npub: profile.npub
+            )
+            let state = ContactSyncState(status: .success, message: "Contacts synced", updatedAt: updatedAt)
+            contactSyncState = state
+            return state
+        } catch {
+            let state = ContactSyncState(status: .error, message: error.localizedDescription, updatedAt: contactSyncState.updatedAt)
+            contactSyncState = state
+            return state
+        }
+    }
+
+    public func refreshContactProfiles() async {
+        guard let pool = relayPool else { return }
+        let contacts = fetchContacts()
+        let publicKeyHexes = Array(Set(contacts.compactMap { try? NostrIdentityService.normalizePublicKeyInput($0.npub) }))
+        guard !publicKeyHexes.isEmpty else { return }
+        let relays = contactsRelayURLs().isEmpty ? (profile?.relays ?? []) : contactsRelayURLs()
+        let events = await pool.fetchEvents(filters: [[
+            "kinds": [TaskifyEventKind.profileMetadata.rawValue],
+            "authors": publicKeyHexes,
+            "limit": max(publicKeyHexes.count * 3, 50),
+        ]], hardTimeoutMs: 10_000, eoseGraceMs: 250, inactivityMs: 2_000)
+        let latestByPubkey = Dictionary(grouping: events, by: \.pubkey).compactMapValues { group in
+            group.max(by: { $0.created_at < $1.created_at })
+        }
+        guard !latestByPubkey.isEmpty, let ctx = modelContext else { return }
+
+        var changed = false
+        for contact in fetchContactModels() {
+            guard let pubkeyHex = try? NostrIdentityService.normalizePublicKeyInput(contact.npub),
+                  let event = latestByPubkey[pubkeyHex] else {
+                continue
+            }
+            let profileMeta = parseProfileMetadata(content: event.content)
+            let baseline = max(contact.updatedAt, contact.createdAt)
+            let incomingUpdatedAt = event.created_at * 1000
+            let isNewer = incomingUpdatedAt > baseline
+            let shouldFill = contact.displayName == nil || contact.username == nil || contact.address.isEmpty || contact.nip05 == nil || contact.about == nil || contact.picture == nil || contact.name.isEmpty
+            guard isNewer || shouldFill else { continue }
+
+            var localChanged = false
+            let preferredName = !profileMeta.displayName.isEmpty ? profileMeta.displayName : (!profileMeta.username.isEmpty ? profileMeta.username : contact.name)
+            if (contact.source != .manual || contact.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
+               !preferredName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               preferredName != contact.name {
+                contact.name = preferredName
+                localChanged = true
+            }
+            localChanged = applyProfileField(profileMeta.displayName, current: contact.displayName, allowReplace: isNewer) { contact.displayName = $0 } || localChanged
+            localChanged = applyProfileField(sanitizeUsername(profileMeta.username), current: contact.username, allowReplace: isNewer) { contact.username = $0 } || localChanged
+            localChanged = applyProfileField(profileMeta.lud16, current: contact.address, allowReplace: isNewer) { contact.address = $0 ?? "" } || localChanged
+            localChanged = applyProfileField(normalizeNip05(profileMeta.nip05), current: contact.nip05, allowReplace: isNewer) { contact.nip05 = $0 } || localChanged
+            localChanged = applyProfileField(profileMeta.about, current: contact.about, allowReplace: isNewer) { contact.about = $0 } || localChanged
+            localChanged = applyProfileField(profileMeta.picture, current: contact.picture, allowReplace: isNewer) { contact.picture = $0 } || localChanged
+
+            if localChanged {
+                contact.updatedAt = isNewer ? incomingUpdatedAt : baseline
+                changed = true
+            }
+        }
+
+        if changed {
+            try? ctx.save()
+            contactsVersion &+= 1
+        }
+
+        let follows = fetchPublicFollowModels()
+        var followsChanged = false
+        for follow in follows {
+            guard let event = latestByPubkey[follow.pubkey] else { continue }
+            let meta = parseProfileMetadata(content: event.content)
+            let updatedAt = event.created_at * 1000
+            if (follow.username == nil || follow.updatedAt <= updatedAt) && !meta.username.isEmpty {
+                follow.username = sanitizeUsername(meta.username)
+                followsChanged = true
+            }
+            if (follow.nip05 == nil || follow.updatedAt <= updatedAt), let nip05 = normalizeNip05(meta.nip05) {
+                follow.nip05 = nip05
+                followsChanged = true
+            }
+            if followsChanged {
+                follow.updatedAt = max(follow.updatedAt, updatedAt)
+            }
+        }
+        if followsChanged {
+            try? ctx.save()
+            publicFollowsVersion &+= 1
+        }
+
+        _ = relays
+    }
+
+    @discardableResult
+    public func loadMyProfileMetadata() async -> TaskifyProfileMetadata {
+        guard let pool = relayPool, let currentPubkeyHex = currentPublicKeyHex() else {
+            return myProfileMetadata
+        }
+        let relays = contactsRelayURLs()
+        guard !relays.isEmpty else { return myProfileMetadata }
+        let events = await pool.fetchEvents(filters: [[
+            "kinds": [TaskifyEventKind.profileMetadata.rawValue],
+            "authors": [currentPubkeyHex],
+            "limit": 1,
+        ]], hardTimeoutMs: 10_000, eoseGraceMs: 250, inactivityMs: 2_000)
+        guard let latest = events.max(by: { $0.created_at < $1.created_at }) else {
+            return myProfileMetadata
+        }
+        var metadata = parseProfileMetadata(content: latest.content)
+        metadata.updatedAt = latest.created_at * 1000
+        if let profile {
+            ContactPreferencesStore.saveProfileMetadata(metadata, npub: profile.npub)
+        }
+        myProfileMetadata = metadata
+        return metadata
+    }
+
+    @discardableResult
+    public func publishMyProfileMetadata(_ metadata: TaskifyProfileMetadata) async -> ContactSyncState {
+        guard let pool = relayPool,
+              let profile,
+              let currentPubkeyHex = currentPublicKeyHex(),
+              let privateKeyBytes = Data(hexString: profile.nsecHex) else {
+            let state = ContactSyncState(status: .error, message: "Sign in to publish your profile.", updatedAt: nil)
+            contactSyncState = state
+            return state
+        }
+        let relays = contactsRelayURLs()
+        guard !relays.isEmpty else {
+            let state = ContactSyncState(status: .error, message: "Add at least one relay to publish your profile.", updatedAt: nil)
+            contactSyncState = state
+            return state
+        }
+        do {
+            let event = try UnsignedNostrEvent(
+                pubkey: currentPubkeyHex,
+                kind: TaskifyEventKind.profileMetadata.rawValue,
+                tags: [],
+                content: buildProfileMetadataContent(metadata)
+            ).sign(privateKeyBytes: privateKeyBytes)
+            await pool.publish(event: event)
+            var stored = metadata
+            stored.updatedAt = event.created_at * 1000
+            ContactPreferencesStore.saveProfileMetadata(stored, npub: profile.npub)
+            myProfileMetadata = stored
+            let state = ContactSyncState(status: .success, message: "Profile saved", updatedAt: stored.updatedAt)
+            contactSyncState = state
+            return state
+        } catch {
+            let state = ContactSyncState(status: .error, message: error.localizedDescription, updatedAt: myProfileMetadata.updatedAt)
+            contactSyncState = state
+            return state
+        }
+    }
+
+    public func contactShareValue(contactId: String) -> String? {
+        guard let contact = findContactModel(id: contactId, npub: nil)?.toRecord() else { return nil }
+        return ContactShareContract.buildQRValue(contact: contact)
+    }
+
+    public func contactShareEnvelope(contactId: String) -> String? {
+        guard let contact = findContactModel(id: contactId, npub: nil)?.toRecord() else { return nil }
+        return ContactShareContract.buildEnvelopeString(contact: contact, sender: currentSenderIdentity())
+    }
+
+    public func myContactShareValue() -> String? {
+        guard let profile else { return nil }
+        return ContactShareContract.buildQRValue(contact: myContactRecord(profile: profile))
+    }
+
+    public func myContactShareEnvelope() -> String? {
+        guard let profile else { return nil }
+        return ContactShareContract.buildEnvelopeString(contact: myContactRecord(profile: profile), sender: currentSenderIdentity())
+    }
+
+    private func currentSenderIdentity() -> (npub: String?, name: String?) {
+        let senderName = myProfileMetadata.displayName.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            ?? sanitizeUsername(myProfileMetadata.username).nilIfEmpty
+            ?? profile?.name
+        return (profile?.npub, senderName)
+    }
+
+    private func myContactRecord(profile: TaskifyProfile) -> TaskifyContactRecord {
+        TaskifyContactRecord(
+            id: "profile",
+            kind: .nostr,
+            name: myProfileMetadata.displayName.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+                ?? sanitizeUsername(myProfileMetadata.username).nilIfEmpty
+                ?? profile.name,
+            address: myProfileMetadata.lud16,
+            paymentRequest: "",
+            npub: profile.npub,
+            username: myProfileMetadata.username.nilIfEmpty,
+            displayName: myProfileMetadata.displayName.nilIfEmpty,
+            nip05: myProfileMetadata.nip05.nilIfEmpty,
+            about: myProfileMetadata.about.nilIfEmpty,
+            picture: myProfileMetadata.picture.nilIfEmpty,
+            relays: profile.relays,
+            createdAt: myProfileMetadata.updatedAt ?? 0,
+            updatedAt: myProfileMetadata.updatedAt ?? 0,
+            source: .profile
+        )
+    }
+
+    /// Returns the current profile (for views that need relay list, etc.).
+    public var currentProfile: TaskifyProfile? { profile }
+
     // MARK: - Disconnect
 
     public func disconnect() async {
         await unsubscribe()
         await relayPool?.disconnect()
         relayPool = nil
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

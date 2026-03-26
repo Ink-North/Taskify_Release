@@ -4,6 +4,7 @@ import TaskifyCore
 struct TaskEditView: View {
     @ObservedObject var viewModel: TaskEditViewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appAccent) private var accentChoice
 
     @State private var newSubtaskTitle = ""
     @State private var showRecurrencePicker = false
@@ -12,6 +13,7 @@ struct TaskEditView: View {
     @State private var showEndRepeatPicker = false
 
     private var isCreate: Bool { viewModel.mode == .create }
+    private var accentColor: Color { ThemeColors.accent(for: accentChoice) }
 
     var body: some View {
         NavigationStack {
@@ -24,7 +26,7 @@ struct TaskEditView: View {
                 if !isCreate { dangerSection }
             }
             .navigationTitle(isCreate ? "New Task" : "Edit Task")
-            .navigationBarTitleDisplayMode(.inline)
+            .platformInlineTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -224,7 +226,7 @@ struct TaskEditView: View {
                 HStack(spacing: 8) {
                     Button(action: { viewModel.toggleSubtask(id: sub.id) }) {
                         Image(systemName: sub.completed ? "checkmark.square.fill" : "square")
-                            .foregroundStyle(sub.completed ? .green : .secondary)
+                            .foregroundStyle(sub.completed ? accentColor : .secondary)
                     }
                     .buttonStyle(.plain)
 
@@ -381,7 +383,7 @@ struct RecurrencePickerSheet: View {
                 }
             }
             .navigationTitle("Repeat")
-            .navigationBarTitleDisplayMode(.inline)
+            .platformInlineTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

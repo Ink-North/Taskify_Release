@@ -5,6 +5,7 @@ public final class AppShellViewModel: ObservableObject {
     public enum Tab: String {
         case boards
         case upcoming
+        case contacts
         case settings
     }
 

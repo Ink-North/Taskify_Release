@@ -5,6 +5,7 @@ import TaskifyCore
 struct RootView: View {
     @EnvironmentObject private var authVM: AppAuthViewModel
     @EnvironmentObject private var dataController: DataController
+    @EnvironmentObject private var settingsManager: SettingsManager
     @Environment(\.modelContext) private var modelContext
 
     var body: some View {
@@ -29,12 +30,14 @@ struct RootView: View {
 struct NativeAppShellView: View {
     @StateObject private var shellVM: AppShellViewModel
     @EnvironmentObject private var dataController: DataController
+    @EnvironmentObject private var settingsManager: SettingsManager
 
     init(profile: TaskifyProfile) {
         _shellVM = StateObject(wrappedValue: AppShellViewModel(profile: profile))
     }
 
     var body: some View {
+        let currentProfile = dataController.currentProfile ?? shellVM.profile
         TabView(selection: Binding(
             get: { shellVM.selectedTab },
             set: { shellVM.select(tab: $0) }
@@ -43,13 +46,18 @@ struct NativeAppShellView: View {
                 .tabItem { Label("Boards", systemImage: "square.grid.2x2") }
                 .tag(AppShellViewModel.Tab.boards)
 
-            UpcomingShellScreen(profile: shellVM.profile)
+            UpcomingShellScreen(profile: currentProfile)
                 .tabItem { Label("Upcoming", systemImage: "calendar") }
                 .tag(AppShellViewModel.Tab.upcoming)
 
-            SettingsShellScreen(profile: shellVM.profile)
+            ContactsShellScreen(profile: currentProfile)
+                .tabItem { Label("Contacts", systemImage: "person.2") }
+                .tag(AppShellViewModel.Tab.contacts)
+
+            SettingsShellScreen(profile: currentProfile)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(AppShellViewModel.Tab.settings)
         }
+        .tint(ThemeColors.accent(for: settingsManager.settings.accent))
     }
 }

@@ -19,7 +19,7 @@ public final class BoardListViewModel: ObservableObject {
         state = .loading
     }
 
-    public func setBoards(_ boards: [ProfileBoardEntry]) {
+    public func setBoards(_ boards: [ProfileBoardEntry], preferredBoardId: String? = nil) {
         visibleBoards = boards.sorted { lhs, rhs in
             lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
@@ -29,7 +29,12 @@ public final class BoardListViewModel: ObservableObject {
         } else {
             state = .ready
             if selectedBoardId == nil || !visibleBoards.contains(where: { $0.id == selectedBoardId }) {
-                selectedBoardId = visibleBoards.first?.id
+                if let preferredBoardId,
+                   visibleBoards.contains(where: { $0.id == preferredBoardId }) {
+                    selectedBoardId = preferredBoardId
+                } else {
+                    selectedBoardId = visibleBoards.first?.id
+                }
             }
         }
     }

@@ -9,6 +9,8 @@ public enum NostrIdentityService {
     public enum IdentityError: Error {
         case invalidSecretKey
         case invalidNsec
+        case invalidNpub
+        case invalidPublicKey
         case invalidPrivateKey
     }
 
@@ -33,10 +35,51 @@ public enum NostrIdentityService {
     }
 
     public static func deriveNpub(fromSecretKeyHex secretKeyHex: String) throws -> String {
+        let publicKeyHex = try derivePublicKeyHex(fromSecretKeyHex: secretKeyHex)
+        return try encodeNpub(fromPublicKeyHex: publicKeyHex)
+    }
+
+    public static func derivePublicKeyHex(fromSecretKeyHex secretKeyHex: String) throws -> String {
         guard let sk = Data(hex: secretKeyHex), sk.count == 32 else { throw IdentityError.invalidSecretKey }
         let xonly = try Secp256k1Helpers.xOnlyPublicKey(from: sk)
-        let data5 = try Bech32.convertBits([UInt8](xonly), from: 8, to: 5, pad: true)
+        return xonly.map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func encodeNpub(fromPublicKeyHex publicKeyHex: String) throws -> String {
+        let normalized = try normalizePublicKeyInput(publicKeyHex)
+        guard let pk = Data(hex: normalized), pk.count == 32 else { throw IdentityError.invalidPublicKey }
+        let data5 = try Bech32.convertBits([UInt8](pk), from: 8, to: 5, pad: true)
         return try Bech32.encode(hrp: "npub", data: data5)
+    }
+
+    public static func deriveNsec(fromSecretKeyHex secretKeyHex: String) throws -> String {
+        let normalized = try normalizeSecretKeyInput(secretKeyHex)
+        guard let sk = Data(hex: normalized), sk.count == 32 else { throw IdentityError.invalidSecretKey }
+        let data5 = try Bech32.convertBits([UInt8](sk), from: 8, to: 5, pad: true)
+        return try Bech32.encode(hrp: "nsec", data: data5)
+    }
+
+    public static func normalizePublicKeyInput(_ raw: String) throws -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw IdentityError.invalidPublicKey }
+
+        if trimmed.lowercased().hasPrefix("npub") {
+            let (hrp, data5) = try Bech32.decode(trimmed.lowercased())
+            guard hrp == "npub" else { throw IdentityError.invalidNpub }
+            let bytes = try Bech32.convertBits(data5, from: 5, to: 8, pad: false)
+            guard bytes.count == 32 else { throw IdentityError.invalidNpub }
+            return Data(bytes).map { String(format: "%02x", $0) }.joined()
+        }
+
+        let lower = trimmed.lowercased()
+        if lower.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil {
+            return lower
+        }
+        if lower.range(of: "^(02|03)[0-9a-f]{64}$", options: .regularExpression) != nil {
+            return String(lower.dropFirst(2))
+        }
+
+        throw IdentityError.invalidPublicKey
     }
 
     public static func importIdentity(secretKeyInput: String) throws -> NostrIdentity {

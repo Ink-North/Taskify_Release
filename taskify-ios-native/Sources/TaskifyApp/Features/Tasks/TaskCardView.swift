@@ -3,19 +3,33 @@ import TaskifyCore
 
 struct TaskCardView: View {
     let task: BoardTaskItem
+    var metaLabel: String? = nil
     var priority: Int? = nil
     var subtasksJSON: String? = nil
     var dueTimeEnabled: Bool = false
     var streak: Int? = nil
     var hasRecurrence: Bool = false
+    var hideCompletedSubtasks: Bool = false
     var onToggleComplete: (() -> Void)? = nil
     var onTap: (() -> Void)? = nil
     var onToggleSubtask: ((String) -> Void)? = nil
+
+    @Environment(\.appAccent) private var accentChoice
+
+    private var accentColor: Color { ThemeColors.accent(for: accentChoice) }
 
     private var parsedSubtasks: [Subtask] {
         guard let json = subtasksJSON, let data = json.data(using: .utf8),
               let arr = try? JSONDecoder().decode([Subtask].self, from: data) else { return [] }
         return arr
+    }
+
+    private var visibleSubtasks: [Subtask] {
+        let subs = parsedSubtasks
+        if hideCompletedSubtasks {
+            return subs.filter { !$0.completed }
+        }
+        return subs
     }
 
     private var priorityLevel: TaskPriority {
@@ -63,10 +77,14 @@ struct TaskCardView: View {
         Button(action: { onTap?() }) {
             HStack(alignment: .top, spacing: 12) {
                 // Completion button
-                Button(action: { onToggleComplete?() }) {
+                Button(action: {
+                    PlatformServices.impactLight()
+                    onToggleComplete?()
+                }) {
                     Image(systemName: task.completed ? "checkmark.circle.fill" : "circle")
                         .font(.title3)
-                        .foregroundStyle(task.completed ? .green : .secondary)
+                        .foregroundStyle(task.completed ? accentColor : .secondary)
+                        .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.plain)
 
@@ -85,46 +103,67 @@ struct TaskCardView: View {
                             .lineLimit(3)
                     }
 
-                    // Meta row: due date, streak, recurrence, subtask count
-                    HStack(spacing: 8) {
-                        if let due = formattedDueDate {
-                            Label(due, systemImage: "calendar")
-                                .font(.caption)
-                                .foregroundStyle(isOverdue ? .red : .secondary)
-                        }
-
-                        if hasRecurrence {
-                            Image(systemName: "repeat")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        if let s = streak, s > 0, hasRecurrence {
-                            HStack(spacing: 2) {
-                                Image(systemName: "flame.fill")
-                                    .foregroundStyle(.orange)
-                                Text("\(s)")
-                            }
+                    // Note preview (1 line, matches PWA card rendering)
+                    if let note = task.note, !note.isEmpty, !task.completed {
+                        Text(note)
                             .font(.caption)
-                        }
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
 
-                        if let summary = subtaskSummary {
-                            Label(summary, systemImage: "checklist")
+                    if let metaLabel, !metaLabel.isEmpty {
+                        Text(metaLabel)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    // Meta row: due date, streak, recurrence, subtask count
+                    let hasMeta = formattedDueDate != nil || hasRecurrence || subtaskSummary != nil
+                    if hasMeta {
+                        HStack(spacing: 8) {
+                            if let due = formattedDueDate {
+                                Label(due, systemImage: "calendar")
+                                    .font(.caption)
+                                    .foregroundStyle(isOverdue ? .red : .secondary)
+                            }
+
+                            if hasRecurrence {
+                                Image(systemName: "repeat")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            if let s = streak, s > 0, hasRecurrence {
+                                HStack(spacing: 2) {
+                                    Image(systemName: "flame.fill")
+                                        .foregroundStyle(.orange)
+                                    Text("\(s)")
+                                }
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                            }
+
+                            if let summary = subtaskSummary {
+                                Label(summary, systemImage: "checklist")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
 
                     // Inline subtasks (collapsed to first 3)
-                    let subs = parsedSubtasks
+                    let subs = visibleSubtasks
                     if !subs.isEmpty && !task.completed {
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 3) {
                             ForEach(subs.prefix(3)) { sub in
                                 HStack(spacing: 6) {
-                                    Button(action: { onToggleSubtask?(sub.id) }) {
+                                    Button(action: {
+                                        PlatformServices.impactLight()
+                                        onToggleSubtask?(sub.id)
+                                    }) {
                                         Image(systemName: sub.completed ? "checkmark.square.fill" : "square")
                                             .font(.caption)
-                                            .foregroundStyle(sub.completed ? .green : .secondary)
+                                            .foregroundStyle(sub.completed ? accentColor : .secondary)
                                     }
                                     .buttonStyle(.plain)
 
@@ -135,10 +174,11 @@ struct TaskCardView: View {
                                         .lineLimit(1)
                                 }
                             }
-                            if subs.count > 3 {
-                                Text("+\(subs.count - 3) more")
+                            if parsedSubtasks.count > 3 {
+                                let remaining = parsedSubtasks.count - 3
+                                Text("+\(remaining) more")
                                     .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.tertiary)
                             }
                         }
                         .padding(.top, 2)
@@ -147,20 +187,15 @@ struct TaskCardView: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, 8)
-            .padding(.horizontal, 12)
-            .background(Color(.systemBackground))
+            .padding(.vertical, 10)
+            .padding(.horizontal, 14)
+            .background(ThemeColors.surfaceBase)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
     private var priorityColor: Color {
-        switch priorityLevel {
-        case .none: return .clear
-        case .low: return .blue
-        case .medium: return .orange
-        case .high: return .red
-        }
+        ThemeColors.priorityColor(priority)
     }
 }

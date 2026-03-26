@@ -5,6 +5,7 @@ public struct BoardTaskItem: Equatable, Identifiable {
     public let title: String
     public let completed: Bool
     public let dueISO: String?
+    public let createdAt: Int?
     public let columnId: String?
     // Rich metadata for card display & editing
     public var note: String?
@@ -25,6 +26,7 @@ public struct BoardTaskItem: Equatable, Identifiable {
         title: String,
         completed: Bool,
         dueISO: String? = nil,
+        createdAt: Int? = nil,
         columnId: String? = nil,
         note: String? = nil,
         priority: Int? = nil,
@@ -43,6 +45,7 @@ public struct BoardTaskItem: Equatable, Identifiable {
         self.title = title
         self.completed = completed
         self.dueISO = dueISO
+        self.createdAt = createdAt
         self.columnId = columnId
         self.note = note
         self.priority = priority
@@ -65,6 +68,7 @@ public struct BoardTaskItem: Equatable, Identifiable {
             title: task.title,
             completed: task.completed,
             dueISO: task.dueISO,
+            createdAt: task.createdAt,
             columnId: task.column,
             note: task.note,
             priority: task.priority,
@@ -88,11 +92,31 @@ public enum BoardDetailState: Equatable {
     case error(String)
 }
 
+public struct WeekBoardDay: Equatable, Identifiable {
+    public let weekday: Int
+    public let label: String
+    public let date: Date
+    public let isToday: Bool
+    public let tasks: [BoardTaskItem]
+
+    public var id: Int { weekday }
+
+    public init(weekday: Int, label: String, date: Date, isToday: Bool, tasks: [BoardTaskItem]) {
+        self.weekday = weekday
+        self.label = label
+        self.date = date
+        self.isToday = isToday
+        self.tasks = tasks
+    }
+}
+
 @MainActor
 public final class BoardDetailViewModel: ObservableObject {
     @Published public private(set) var state: BoardDetailState = .empty
     @Published public private(set) var selectedBoardId: String?
     @Published public private(set) var visibleTasks: [BoardTaskItem] = []
+    @Published public var sortMode: TaskSortMode = .manual
+    @Published public var sortAscending: Bool = true
 
     private var tasksByBoard: [String: [BoardTaskItem]] = [:]
 
@@ -106,14 +130,14 @@ public final class BoardDetailViewModel: ObservableObject {
             return
         }
         let tasks = tasksByBoard[id] ?? []
-        visibleTasks = tasks
+        visibleTasks = sortTasks(tasks)
         state = tasks.isEmpty ? .empty : .ready
     }
 
     public func setTasks(for boardId: String, tasks: [BoardTaskItem]) {
         tasksByBoard[boardId] = tasks
         guard boardId == selectedBoardId else { return }
-        visibleTasks = tasks
+        visibleTasks = sortTasks(tasks)
         state = tasks.isEmpty ? .empty : .ready
     }
 
@@ -141,8 +165,173 @@ public final class BoardDetailViewModel: ObservableObject {
         visibleTasks.filter { !$0.completed && $0.dueISO != nil }
     }
 
+    public func weekBoardDays(
+        weekStart: Int,
+        includeCompleted: Bool,
+        referenceDate: Date = Date()
+    ) -> [WeekBoardDay] {
+        let normalizedWeekStart = Self.normalizedWeekStart(weekStart)
+        let orderedWeekdays = (0..<7).map { (normalizedWeekStart + $0) % 7 }
+        let todayWeekday = Self.localWeekday(for: referenceDate)
+        var tasksByWeekday = Dictionary(uniqueKeysWithValues: orderedWeekdays.map { ($0, [BoardTaskItem]()) })
+
+        for task in visibleTasks {
+            if !includeCompleted && task.completed {
+                continue
+            }
+
+            guard task.dueDateEnabled != false,
+                  let weekday = Self.weekday(from: task.dueISO, timeZoneId: task.dueTimeZone) else {
+                continue
+            }
+
+            tasksByWeekday[weekday, default: []].append(task)
+        }
+
+        return orderedWeekdays.map { weekday in
+            let date = Self.dateForWeekday(weekday, base: referenceDate, weekStart: normalizedWeekStart)
+            return WeekBoardDay(
+                weekday: weekday,
+                label: Self.shortWeekdayLabel(for: weekday),
+                date: date,
+                isToday: weekday == todayWeekday,
+                tasks: tasksByWeekday[weekday] ?? []
+            )
+        }
+    }
+
+    public static func isoForWeekday(
+        _ target: Int,
+        base: Date = Date(),
+        weekStart: Int = 0
+    ) -> String {
+        let normalizedTarget = ((target % 7) + 7) % 7
+        let normalizedWeekStart = normalizedWeekStart(weekStart)
+        let anchor = startOfWeekLocal(base, weekStart: normalizedWeekStart)
+        let anchorWeekday = localWeekday(for: anchor)
+        let offset = ((normalizedTarget - anchorWeekday) % 7 + 7) % 7
+        let date = Calendar.current.date(byAdding: .day, value: offset, to: anchor) ?? anchor
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: Calendar.current.startOfDay(for: date))
+    }
+
     public var emptyMessage: String {
         "No tasks yet for this board."
+    }
+
+    // MARK: - Sorting
+
+    /// Apply sort mode and direction, updating visible tasks.
+    public func applySort(mode: TaskSortMode, ascending: Bool) {
+        sortMode = mode
+        sortAscending = ascending
+        resortVisibleTasks()
+    }
+
+    private func resortVisibleTasks() {
+        guard let id = selectedBoardId, let tasks = tasksByBoard[id] else { return }
+        visibleTasks = sortTasks(tasks)
+    }
+
+    private func sortTasks(_ tasks: [BoardTaskItem]) -> [BoardTaskItem] {
+        guard sortMode != .manual else { return tasks }
+
+        let sorted = tasks.sorted { a, b in
+            let result: Bool
+            switch sortMode {
+            case .manual:
+                return false
+            case .dueDate:
+                result = compareDueDates(a.dueISO, b.dueISO)
+            case .priority:
+                let pA = a.priority ?? 0
+                let pB = b.priority ?? 0
+                result = pA > pB  // Higher priority first by default
+            case .createdAt:
+                result = (a.order ?? 0) > (b.order ?? 0)
+            case .alphabetical:
+                result = a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+            }
+            return sortAscending ? result : !result
+        }
+        return sorted
+    }
+
+    private func compareDueDates(_ a: String?, _ b: String?) -> Bool {
+        let dateA = parseISO(a)
+        let dateB = parseISO(b)
+        switch (dateA, dateB) {
+        case (.some(let da), .some(let db)): return da < db
+        case (.some, .none): return true   // items with dates before items without
+        case (.none, .some): return false
+        case (.none, .none): return false
+        }
+    }
+
+    private func parseISO(_ iso: String?) -> Date? {
+        guard let iso, !iso.isEmpty else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+    }
+
+    private static func shortWeekdayLabel(for weekday: Int) -> String {
+        let labels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        return labels[((weekday % 7) + 7) % 7]
+    }
+
+    private static func normalizedWeekStart(_ weekStart: Int) -> Int {
+        let normalized = ((weekStart % 7) + 7) % 7
+        switch normalized {
+        case 1, 6:
+            return normalized
+        default:
+            return 0
+        }
+    }
+
+    private static func startOfWeekLocal(_ date: Date, weekStart: Int) -> Date {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: date)
+        let current = localWeekday(for: startOfDay)
+        var diff = current - weekStart
+        if diff < 0 {
+            diff += 7
+        }
+        return calendar.date(byAdding: .day, value: -diff, to: startOfDay) ?? startOfDay
+    }
+
+    private static func dateForWeekday(_ weekday: Int, base: Date, weekStart: Int) -> Date {
+        let anchor = startOfWeekLocal(base, weekStart: weekStart)
+        let anchorWeekday = localWeekday(for: anchor)
+        let offset = ((weekday - anchorWeekday) % 7 + 7) % 7
+        return Calendar.current.date(byAdding: .day, value: offset, to: anchor) ?? anchor
+    }
+
+    private static func localWeekday(for date: Date) -> Int {
+        Calendar.current.component(.weekday, from: date) - 1
+    }
+
+    private static func weekday(from iso: String?, timeZoneId: String?) -> Int? {
+        guard let iso,
+              !iso.isEmpty,
+              let date = parseISOStatic(iso) else {
+            return nil
+        }
+
+        var calendar = Calendar.current
+        if let timeZoneId,
+           let timeZone = TimeZone(identifier: timeZoneId) {
+            calendar.timeZone = timeZone
+        }
+        return calendar.component(.weekday, from: date) - 1
+    }
+
+    private static func parseISOStatic(_ iso: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
     }
 
     // MARK: - CRUD operations
@@ -156,7 +345,7 @@ public final class BoardDetailViewModel: ObservableObject {
         let old = tasks[idx]
         tasks[idx] = BoardTaskItem(
             id: old.id, title: old.title, completed: !old.completed,
-            dueISO: old.dueISO, columnId: old.columnId,
+            dueISO: old.dueISO, createdAt: old.createdAt, columnId: old.columnId,
             note: old.note, priority: old.priority,
             dueDateEnabled: old.dueDateEnabled, dueTimeEnabled: old.dueTimeEnabled,
             dueTimeZone: old.dueTimeZone, subtasksJSON: old.subtasksJSON,
@@ -169,14 +358,26 @@ public final class BoardDetailViewModel: ObservableObject {
         return true
     }
 
-    /// Add a new task to the currently selected board.
+    /// Add a new task to the top of the currently selected board.
     @discardableResult
     public func addTask(_ item: BoardTaskItem) -> Bool {
         guard let boardId = selectedBoardId else { return false }
         var tasks = tasksByBoard[boardId] ?? []
         tasks.insert(item, at: 0)
         tasksByBoard[boardId] = tasks
-        visibleTasks = tasks
+        visibleTasks = sortTasks(tasks)
+        state = .ready
+        return true
+    }
+
+    /// Add a new task to the bottom of the currently selected board.
+    @discardableResult
+    public func addTaskAtEnd(_ item: BoardTaskItem) -> Bool {
+        guard let boardId = selectedBoardId else { return false }
+        var tasks = tasksByBoard[boardId] ?? []
+        tasks.append(item)
+        tasksByBoard[boardId] = tasks
+        visibleTasks = sortTasks(tasks)
         state = .ready
         return true
     }
