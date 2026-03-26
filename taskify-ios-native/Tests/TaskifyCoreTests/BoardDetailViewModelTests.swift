@@ -76,6 +76,17 @@ struct BoardDetailViewModelTests {
         #expect(vm.upcomingTasks().map(\.id) == ["t1"])
     }
 
+    @Test("task column id is preserved")
+    func taskColumnPreserved() {
+        let vm = BoardDetailViewModel()
+        vm.setSelectedBoard(id: "b1")
+        vm.setTasks(for: "b1", tasks: [
+            BoardTaskItem(id: "t1", title: "Lane item", completed: false, columnId: "doing"),
+        ])
+
+        #expect(vm.visibleTasks.first?.columnId == "doing")
+    }
+
     @Test("fixtures produce deterministic states")
     func fixtures() {
         #expect(BoardDetailFixture.empty(boardId: "b1").state == .empty)

@@ -5,12 +5,14 @@ public struct BoardTaskItem: Equatable, Identifiable {
     public let title: String
     public let completed: Bool
     public let dueISO: String?
+    public let columnId: String?
 
-    public init(id: String, title: String, completed: Bool, dueISO: String? = nil) {
+    public init(id: String, title: String, completed: Bool, dueISO: String? = nil, columnId: String? = nil) {
         self.id = id
         self.title = title
         self.completed = completed
         self.dueISO = dueISO
+        self.columnId = columnId
     }
 }
 

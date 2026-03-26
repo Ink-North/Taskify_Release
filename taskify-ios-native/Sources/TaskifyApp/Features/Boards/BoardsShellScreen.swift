@@ -7,6 +7,7 @@ struct BoardsShellScreen: View {
     @StateObject private var boardDetailVM = BoardDetailViewModel()
     @StateObject private var boardModeVM = BoardModeViewModel()
     @StateObject private var headerVM = BoardHeaderControlsViewModel(completedTabEnabled: true, canShareBoard: true)
+    @StateObject private var listColumnsVM = ListColumnsViewModel()
 
     @State private var showShareSheet = false
     @State private var showFilterSortSheet = false
@@ -88,7 +89,7 @@ struct BoardsShellScreen: View {
                     }
                     .pickerStyle(.segmented)
 
-                    BoardModePane(modeVM: boardModeVM, detailVM: boardDetailVM)
+                    BoardModePane(modeVM: boardModeVM, detailVM: boardDetailVM, listColumnsVM: listColumnsVM)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
@@ -99,6 +100,7 @@ struct BoardsShellScreen: View {
                 boardListVM.setBoards(shellVM.profile.boards)
                 boardDetailVM.setSelectedBoard(id: boardListVM.selectedBoardId)
                 seedBoardTasksIfNeeded()
+                syncListColumnsState()
                 seedBoardModeState()
                 headerVM.bind(mode: boardModeVM.mode)
                 headerVM.setActionHandlers(
@@ -106,6 +108,7 @@ struct BoardsShellScreen: View {
                     onShareBoard: { showShareSheet = true },
                     onClearCompleted: {
                         lastClearCompletedCount = boardDetailVM.clearCompletedForSelectedBoard()
+                        syncListColumnsState()
                         seedBoardModeState()
                     }
                 )
@@ -113,6 +116,7 @@ struct BoardsShellScreen: View {
             .onChange(of: boardListVM.selectedBoardId) { _, newValue in
                 boardDetailVM.setSelectedBoard(id: newValue)
                 seedBoardTasksIfNeeded()
+                syncListColumnsState()
                 seedBoardModeState()
             }
             .onChange(of: boardModeVM.mode) { _, newValue in
@@ -153,10 +157,34 @@ struct BoardsShellScreen: View {
     private func seedBoardTasksIfNeeded() {
         guard let boardId = boardListVM.selectedBoardId, boardDetailVM.visibleTasks.isEmpty else { return }
         boardDetailVM.setTasks(for: boardId, tasks: [
-            .init(id: "seed-1", title: "Draft roadmap", completed: false, dueISO: "2026-03-27T09:00:00Z"),
-            .init(id: "seed-2", title: "Review PR", completed: true, dueISO: "2026-03-24T14:00:00Z"),
-            .init(id: "seed-3", title: "Prepare release notes", completed: false),
+            .init(id: "seed-1", title: "Draft roadmap", completed: false, dueISO: "2026-03-27T09:00:00Z", columnId: "todo"),
+            .init(id: "seed-2", title: "Review PR", completed: true, dueISO: "2026-03-24T14:00:00Z", columnId: "doing"),
+            .init(id: "seed-3", title: "Prepare release notes", completed: false, columnId: "todo"),
         ])
+    }
+
+    private func syncListColumnsState() {
+        guard let selected = boardListVM.visibleBoards.first(where: { $0.id == boardListVM.selectedBoardId }) else { return }
+        let definition = ListBoardDefinition(
+            id: selected.id,
+            name: selected.name,
+            kind: .lists,
+            columns: [
+                .init(id: "todo", name: "To do"),
+                .init(id: "doing", name: "Doing"),
+                .init(id: "done", name: "Done"),
+            ]
+        )
+        listColumnsVM.configure(currentBoard: definition, boards: [definition])
+        listColumnsVM.setTasks(boardDetailVM.visibleTasks.map {
+            .init(
+                id: $0.id,
+                boardId: definition.id,
+                columnId: $0.columnId ?? "todo",
+                title: $0.title,
+                completed: $0.completed
+            )
+        })
     }
 
     private func seedBoardModeState() {
@@ -169,6 +197,7 @@ struct BoardsShellScreen: View {
 struct BoardModePane: View {
     @ObservedObject var modeVM: BoardModeViewModel
     @ObservedObject var detailVM: BoardDetailViewModel
+    @ObservedObject var listColumnsVM: ListColumnsViewModel
 
     var body: some View {
         Group {
@@ -195,7 +224,7 @@ struct BoardModePane: View {
             case .ready:
                 switch modeVM.mode {
                 case .board:
-                    BoardDetailPane(viewModel: detailVM)
+                    BoardColumnsPane(columnsVM: listColumnsVM)
                 case .boardUpcoming:
                     List(detailVM.upcomingTasks()) { task in
                         HStack(spacing: 10) {
@@ -218,6 +247,44 @@ struct BoardModePane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct BoardColumnsPane: View {
+    @ObservedObject var columnsVM: ListColumnsViewModel
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(columnsVM.listColumns) { column in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(column.name)
+                            .font(.subheadline.bold())
+                        Divider()
+                        let items = columnsVM.itemsByColumn[column.id] ?? []
+                        if items.isEmpty {
+                            Text("No tasks")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(items) { task in
+                                HStack(spacing: 8) {
+                                    Image(systemName: task.completed ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(task.completed ? .green : .secondary)
+                                    Text(task.title)
+                                        .font(.footnote)
+                                }
+                            }
+                        }
+                    }
+                    .padding(10)
+                    .frame(width: 220, alignment: .topLeading)
+                    .background(Color.secondary.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
+            .padding(.vertical, 4)
+        }
     }
 }
 
