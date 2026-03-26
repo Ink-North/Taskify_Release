@@ -8,6 +8,16 @@ import AppKit
 #endif
 
 enum PlatformServices {
+    static func readPasteboardString() -> String? {
+        #if canImport(UIKit)
+        return UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines)
+        #elseif canImport(AppKit)
+        return NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        #else
+        return nil
+        #endif
+    }
+
     static func copyToPasteboard(_ text: String) {
         #if canImport(UIKit)
         UIPasteboard.general.string = text

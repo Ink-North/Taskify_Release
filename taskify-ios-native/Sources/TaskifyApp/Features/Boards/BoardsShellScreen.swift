@@ -314,7 +314,7 @@ struct BoardsShellScreen: View {
     }
 
     private var allowsInlineTaskEntry: Bool {
-        selectedBoardKind == "lists"
+        selectedBoardKind == "lists" || selectedBoardKind == "compound"
     }
 
     private var allowsListCreation: Bool {
@@ -371,11 +371,14 @@ struct BoardsShellScreen: View {
     private func createQuickTask(
         title: String,
         columnId: String?,
+        boardIdOverride: String? = nil,
         dueISO: String? = nil,
         dueDateEnabled: Bool? = nil
     ) async {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let boardId = boardListVM.selectedBoardId else { return }
+        guard !trimmed.isEmpty else { return }
+        let targetBoardId = boardIdOverride ?? boardListVM.selectedBoardId
+        guard let boardId = targetBoardId else { return }
 
         PlatformServices.impactLight()
 
@@ -422,6 +425,12 @@ struct BoardsShellScreen: View {
                     columnId: nil,
                     dueISO: dueISO,
                     dueDateEnabled: true
+                )
+            } else if selectedBoardKind == "compound", let source = listColumnsVM.source(for: columnId) {
+                await createQuickTask(
+                    title: title,
+                    columnId: source.columnId,
+                    boardIdOverride: source.boardId
                 )
             } else {
                 await createQuickTask(title: title, columnId: columnId)

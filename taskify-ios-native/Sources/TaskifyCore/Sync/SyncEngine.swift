@@ -178,7 +178,7 @@ public final class BoardSyncManager: ObservableObject {
     public func syncCalendarEvents(board: TaskifyBoard) async {
         let bTag = boardTagHash(board.id)
         let filter: [String: Any] = [
-            "kinds": [30310, 30311],
+            "kinds": [30310],
             "#b": [bTag],
             "limit": 500,
         ]
@@ -201,35 +201,59 @@ public final class BoardSyncManager: ObservableObject {
 
         for (eventId, event) in latestById {
             guard let payloadRaw = try? decryptCalendarPayload(event.content, boardId: boardId),
-                  let payload = payloadRaw as? [String: Any],
-                  let status = event.tagValue("status")
+                  let payload = payloadRaw as? [String: Any]
             else { continue }
+
+            let deleted = boolField(payload["deleted"]) == true
 
             let descriptor = FetchDescriptor<TaskifyCalendarEvent>(
                 predicate: #Predicate<TaskifyCalendarEvent> { e in e.id == eventId }
             )
             if let existing = try? modelContext.fetch(descriptor).first {
                 if event.created_at >= existing.createdAt {
-                    existing.title = payload["title"] as? String ?? existing.title
-                    existing.kind = payload["kind"] as? String ?? existing.kind
-                    existing.startDate = payload["startDate"] as? String
-                    existing.endDate = payload["endDate"] as? String
-                    existing.startISO = payload["startISO"] as? String
-                    existing.endISO = payload["endISO"] as? String
-                    existing.startTzid = payload["startTzid"] as? String
-                    existing.endTzid = payload["endTzid"] as? String
-                    existing.eventDescription = payload["description"] as? String
-                    existing.deleted = status == "deleted"
+                    if let title = stringField(payload["title"]), !title.isEmpty {
+                        existing.title = title
+                    }
+                    existing.summary = stringField(payload["summary"])
+                    existing.kind = stringField(payload["kind"]) ?? existing.kind
+                    existing.startDate = stringField(payload["startDate"])
+                    existing.endDate = stringField(payload["endDate"])
+                    existing.startISO = stringField(payload["startISO"])
+                    existing.endISO = stringField(payload["endISO"])
+                    existing.startTzid = stringField(payload["startTzid"])
+                    existing.endTzid = stringField(payload["endTzid"])
+                    existing.eventDescription = stringField(payload["description"])
+                    existing.columnId = event.tagValue("col")?.isEmpty == false ? event.tagValue("col") : nil
+                    existing.order = event.tagValue("order").flatMap(Int.init)
+                    existing.deleted = deleted
                     existing.createdAt = event.created_at
+                    updateJSONField(payload, key: "documents") { existing.documentsJSON = $0 }
+                    updateJSONField(payload, key: "locations") { existing.locationsJSON = $0 }
+                    updateJSONField(payload, key: "references") { existing.referencesJSON = $0 }
                 }
-            } else {
-                let calEvent = TaskifyCalendarEvent(id: eventId, boardId: boardId, title: payload["title"] as? String ?? "", kind: payload["kind"] as? String ?? "date", createdAt: event.created_at)
+            } else if !deleted {
+                let calEvent = TaskifyCalendarEvent(
+                    id: eventId,
+                    boardId: boardId,
+                    title: stringField(payload["title"]) ?? "",
+                    kind: stringField(payload["kind"]) ?? "date",
+                    createdAt: event.created_at
+                )
                 calEvent.boardName = board.name
-                calEvent.startDate = payload["startDate"] as? String
-                calEvent.endDate = payload["endDate"] as? String
-                calEvent.startISO = payload["startISO"] as? String
-                calEvent.endISO = payload["endISO"] as? String
-                calEvent.deleted = status == "deleted"
+                calEvent.summary = stringField(payload["summary"])
+                calEvent.startDate = stringField(payload["startDate"])
+                calEvent.endDate = stringField(payload["endDate"])
+                calEvent.startISO = stringField(payload["startISO"])
+                calEvent.endISO = stringField(payload["endISO"])
+                calEvent.startTzid = stringField(payload["startTzid"])
+                calEvent.endTzid = stringField(payload["endTzid"])
+                calEvent.eventDescription = stringField(payload["description"])
+                calEvent.columnId = event.tagValue("col")?.isEmpty == false ? event.tagValue("col") : nil
+                calEvent.order = event.tagValue("order").flatMap(Int.init)
+                calEvent.deleted = false
+                updateJSONField(payload, key: "documents") { calEvent.documentsJSON = $0 }
+                updateJSONField(payload, key: "locations") { calEvent.locationsJSON = $0 }
+                updateJSONField(payload, key: "references") { calEvent.referencesJSON = $0 }
                 modelContext.insert(calEvent)
             }
         }
@@ -252,38 +276,75 @@ public final class BoardSyncManager: ObservableObject {
         )
         let event = try unsigned.sign(privateKeyBytes: privateKeyBytes)
         await relayPool.publish(event: event)
+        if status == "deleted" {
+            let aTag = "30301:\(pubkeyHex):\(task.id)"
+            let deletion = try UnsignedNostrEvent(
+                pubkey: pubkeyHex,
+                kind: TaskifyEventKind.deletion.rawValue,
+                tags: [["a", aTag]],
+                content: "Task deleted"
+            ).sign(privateKeyBytes: privateKeyBytes)
+            await relayPool.publish(event: deletion)
+        }
     }
 
     // MARK: - Helpers
 
     private func applyPayload(_ payload: [String: Any], status: String, to task: TaskifyTask, eventCreatedAt: Int, colTag: String?) {
-        task.title = payload["title"] as? String ?? task.title
-        task.note = payload["note"] as? String
-        task.dueISO = payload["dueISO"] as? String ?? ""
-        task.dueDateEnabled = payload["dueDateEnabled"] as? Bool
-        task.dueTimeEnabled = payload["dueTimeEnabled"] as? Bool
-        task.dueTimeZone = payload["dueTimeZone"] as? String
-        task.priority = payload["priority"] as? Int
+        if let title = payload["title"] as? String, !title.isEmpty {
+            task.title = title
+        }
+        if payload.keys.contains("note") {
+            task.note = stringField(payload["note"])
+        }
+        if payload.keys.contains("dueISO") {
+            task.dueISO = stringField(payload["dueISO"]) ?? ""
+        }
+        if payload.keys.contains("dueDateEnabled") {
+            task.dueDateEnabled = boolField(payload["dueDateEnabled"])
+        }
+        if payload.keys.contains("dueTimeEnabled") {
+            task.dueTimeEnabled = boolField(payload["dueTimeEnabled"])
+        }
+        if payload.keys.contains("dueTimeZone") {
+            task.dueTimeZone = stringField(payload["dueTimeZone"])
+        }
+        if payload.keys.contains("priority") {
+            task.priority = intField(payload["priority"])
+        }
         task.completed = status == "done"
-        task.completedAt = payload["completedAt"] as? String
-        task.completedBy = payload["completedBy"] as? String
+        if payload.keys.contains("completedAt") {
+            task.completedAt = stringField(payload["completedAt"])
+        }
+        if payload.keys.contains("completedBy") {
+            task.completedBy = normalizedPublicKeyField(payload["completedBy"])
+        }
         task.deleted = status == "deleted"
         task.column = colTag?.isEmpty == false ? colTag : nil
         task.createdAt = eventCreatedAt
-        task.lastEditedBy = payload["lastEditedBy"] as? String
-        task.inboxItem = payload["inboxItem"] as? Bool
-        task.hiddenUntilISO = payload["hiddenUntilISO"] as? String
-        task.streak = payload["streak"] as? Int
-        task.longestStreak = payload["longestStreak"] as? Int
-        if let rec = payload["recurrence"], !(rec is NSNull) {
-            task.recurrenceJSON = (try? String(data: JSONSerialization.data(withJSONObject: rec), encoding: .utf8)) ?? nil
+        if payload.keys.contains("createdBy") {
+            task.createdBy = normalizedPublicKeyField(payload["createdBy"])
         }
-        if let subs = payload["subtasks"], !(subs is NSNull) {
-            task.subtasksJSON = (try? String(data: JSONSerialization.data(withJSONObject: subs), encoding: .utf8)) ?? nil
+        if payload.keys.contains("lastEditedBy") {
+            task.lastEditedBy = normalizedPublicKeyField(payload["lastEditedBy"]) ?? task.createdBy
         }
-        if let assignees = payload["assignees"], !(assignees is NSNull) {
-            task.assigneesJSON = (try? String(data: JSONSerialization.data(withJSONObject: assignees), encoding: .utf8)) ?? nil
+        if payload.keys.contains("hiddenUntilISO") {
+            task.hiddenUntilISO = stringField(payload["hiddenUntilISO"])
         }
+        if payload.keys.contains("streak") {
+            task.streak = intField(payload["streak"])
+        }
+        if payload.keys.contains("longestStreak") {
+            task.longestStreak = intField(payload["longestStreak"])
+        }
+        if payload.keys.contains("seriesId") {
+            task.seriesId = stringField(payload["seriesId"])
+        }
+        updateJSONField(payload, key: "recurrence") { task.recurrenceJSON = $0 }
+        updateJSONField(payload, key: "subtasks") { task.subtasksJSON = $0 }
+        updateJSONField(payload, key: "assignees") { task.assigneesJSON = $0 }
+        updateJSONField(payload, key: "documents") { task.documentsJSON = $0 }
+        updateJSONField(payload, key: "images") { task.imagesJSON = $0 }
     }
 
     private func makeTask(id: String, boardId: String, boardName: String?, payload: [String: Any], status: String, eventCreatedAt: Int, colTag: String?) -> TaskifyTask {
@@ -296,20 +357,26 @@ public final class BoardSyncManager: ObservableObject {
     private func buildTaskPayload(_ task: TaskifyTask) -> [String: Any] {
         [
             "title": task.title,
+            "priority": nullable(task.priority),
             "note": task.note ?? "",
             "dueISO": task.dueISO ?? "",
-            "priority": task.priority as Any,
-            "completedAt": task.completedAt as Any,
-            "completedBy": task.completedBy as Any,
-            "dueDateEnabled": task.dueDateEnabled as Any,
-            "dueTimeEnabled": task.dueTimeEnabled as Any,
-            "dueTimeZone": task.dueTimeZone as Any,
-            "hiddenUntilISO": task.hiddenUntilISO as Any,
-            "inboxItem": task.inboxItem as Any,
+            "completedAt": nullable(task.completedAt),
+            "completedBy": nullable(task.completedBy),
             "recurrence": jsonField(task.recurrenceJSON),
+            "hiddenUntilISO": nullable(task.hiddenUntilISO),
+            "createdBy": nullable(task.createdBy),
+            "lastEditedBy": nullable(task.lastEditedBy),
+            "createdAt": task.createdAt > 0 ? task.createdAt * 1000 : NSNull(),
+            "streak": nullable(task.streak),
+            "longestStreak": nullable(task.longestStreak),
+            "seriesId": nullable(task.seriesId),
+            "dueDateEnabled": nullable(task.dueDateEnabled),
+            "dueTimeEnabled": nullable(task.dueTimeEnabled),
+            "dueTimeZone": nullable(task.dueTimeZone),
             "subtasks": jsonField(task.subtasksJSON),
             "assignees": jsonField(task.assigneesJSON),
             "documents": jsonField(task.documentsJSON),
+            "images": jsonField(task.imagesJSON),
         ]
     }
 
@@ -317,5 +384,50 @@ public final class BoardSyncManager: ObservableObject {
         guard let s = jsonStr, let data = s.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) else { return NSNull() }
         return obj
+    }
+
+    private func nullable(_ value: Any?) -> Any {
+        value ?? NSNull()
+    }
+
+    private func stringField(_ value: Any?) -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        return value as? String
+    }
+
+    private func boolField(_ value: Any?) -> Bool? {
+        guard let value, !(value is NSNull) else { return nil }
+        return value as? Bool
+    }
+
+    private func intField(_ value: Any?) -> Int? {
+        guard let value, !(value is NSNull) else { return nil }
+        if let int = value as? Int {
+            return int
+        }
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        return nil
+    }
+
+    private func normalizedPublicKeyField(_ value: Any?) -> String? {
+        guard let raw = stringField(value) else { return nil }
+        return try? NostrIdentityService.normalizePublicKeyInput(raw)
+    }
+
+    private func updateJSONField(_ payload: [String: Any], key: String, setter: (String?) -> Void) {
+        guard payload.keys.contains(key) else { return }
+        guard let raw = payload[key], !(raw is NSNull) else {
+            setter(nil)
+            return
+        }
+        guard JSONSerialization.isValidJSONObject(raw),
+              let data = try? JSONSerialization.data(withJSONObject: raw),
+              let string = String(data: data, encoding: .utf8) else {
+            setter(nil)
+            return
+        }
+        setter(string)
     }
 }

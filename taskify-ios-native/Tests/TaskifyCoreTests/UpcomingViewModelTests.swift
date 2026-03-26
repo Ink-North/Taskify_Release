@@ -113,4 +113,117 @@ struct UpcomingViewModelTests {
 
         #expect(vm.locationLabel(for: task) == "Work • Todo")
     }
+
+    @Test("calendar events expand into day groups alongside tasks")
+    func calendarEventsExpandAcrossDays() {
+        let vm = UpcomingViewModel()
+        vm.setBoards([
+            .init(id: "b1", name: "Work", kind: "lists", columns: [.init(id: "todo", name: "Todo")]),
+        ])
+        vm.setTasks([
+            .init(
+                id: "t1",
+                title: "Ship build",
+                completed: false,
+                dueISO: "2026-03-26T18:00:00Z",
+                createdAt: 10,
+                columnId: "todo",
+                dueDateEnabled: true,
+                boardId: "b1",
+                boardName: "Work"
+            ),
+        ])
+        vm.setEvents([
+            .init(
+                id: "e1",
+                boardId: "b1",
+                boardName: "Work",
+                title: "Retreat",
+                kind: "date",
+                startDate: "2026-03-26",
+                endDate: "2026-03-28",
+                columnId: "todo"
+            ),
+        ])
+
+        #expect(vm.itemCount == 2)
+        #expect(vm.groups.map(\.dateKey) == ["2026-03-26", "2026-03-27", "2026-03-28"])
+        #expect(vm.groups.first?.tasks.map(\.id) == ["t1"])
+        #expect(vm.groups.first?.events.map(\.id) == ["e1"])
+        #expect(vm.events(for: "2026-03-27").map(\.id) == ["e1"])
+    }
+
+    @Test("event search matches description and locations")
+    func eventSearchMatchesDescriptionAndLocations() {
+        let vm = UpcomingViewModel()
+        vm.setBoards([
+            .init(id: "b1", name: "Work", kind: "lists", columns: []),
+        ])
+        vm.setEvents([
+            .init(
+                id: "e1",
+                boardId: "b1",
+                boardName: "Work",
+                title: "Weekly sync",
+                kind: "time",
+                startISO: "2026-03-26T15:00:00Z",
+                description: "Budget review with finance",
+                locations: ["HQ North"]
+            ),
+            .init(
+                id: "e2",
+                boardId: "b1",
+                boardName: "Work",
+                title: "Design critique",
+                kind: "time",
+                startISO: "2026-03-26T18:00:00Z",
+                description: "Homepage polish",
+                locations: ["Studio"]
+            ),
+        ])
+
+        vm.searchText = "finance"
+
+        #expect(vm.filteredEvents.map(\.id) == ["e1"])
+
+        vm.searchText = "studio"
+
+        #expect(vm.filteredEvents.map(\.id) == ["e2"])
+    }
+
+    @Test("all-day events sort ahead of timed events on the same day")
+    func allDayEventsSortAheadOfTimedEvents() {
+        let vm = UpcomingViewModel()
+        vm.setBoards([
+            .init(id: "b1", name: "Work", kind: "lists", columns: []),
+        ])
+        vm.setEvents([
+            .init(
+                id: "e1",
+                boardId: "b1",
+                boardName: "Work",
+                title: "All day planning",
+                kind: "date",
+                startDate: "2026-03-26"
+            ),
+            .init(
+                id: "e2",
+                boardId: "b1",
+                boardName: "Work",
+                title: "Morning review",
+                kind: "time",
+                startISO: "2026-03-26T14:00:00Z"
+            ),
+            .init(
+                id: "e3",
+                boardId: "b1",
+                boardName: "Work",
+                title: "Afternoon review",
+                kind: "time",
+                startISO: "2026-03-26T18:00:00Z"
+            ),
+        ])
+
+        #expect(vm.groups.first?.events.map(\.id) == ["e1", "e2", "e3"])
+    }
 }

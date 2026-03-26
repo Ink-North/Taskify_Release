@@ -2,6 +2,11 @@ import CoreImage.CIFilterBuiltins
 import SwiftUI
 import TaskifyCore
 
+#if os(iOS) && canImport(UIKit) && canImport(VisionKit)
+import UIKit
+import VisionKit
+#endif
+
 struct ContactsShellScreen: View {
     let profile: TaskifyProfile
 
@@ -12,7 +17,7 @@ struct ContactsShellScreen: View {
     @State private var searchText = ""
     @State private var showAddSheet = false
     @State private var showProfileSheet = false
-    @State private var activeContact: TaskifyContactRecord?
+    @State private var activeDetail: ContactPresentation?
     @State private var editingContact: TaskifyContactRecord?
     @State private var didInitialLoad = false
 
@@ -116,6 +121,8 @@ struct ContactsShellScreen: View {
                     initialMetadata: dataController.myProfileMetadata,
                     profileName: profile.name,
                     npub: profile.npub,
+                    shareValue: dataController.myContactShareValue(),
+                    shareExportValue: dataController.myContactShareEnvelope() ?? dataController.myContactShareValue(),
                     onSave: { metadata in
                         let state = await dataController.publishMyProfileMetadata(metadata)
                         refreshLocalState()
@@ -127,7 +134,7 @@ struct ContactsShellScreen: View {
                 ContactEditorSheet(
                     title: "Edit Contact",
                     initialDraft: draft(from: contact),
-                    publicFollows: [],
+                    publicFollows: viewModel.importableFollows(),
                     onLookup: { value in
                         try await dataController.lookupContact(reference: value)
                     },
@@ -138,16 +145,30 @@ struct ContactsShellScreen: View {
                     }
                 )
             }
-            .sheet(item: $activeContact) { contact in
+            .sheet(item: $activeDetail) { item in
                 ContactDetailSheet(
-                    contact: contact,
-                    fields: viewModel.fields(for: contact),
-                    shareValue: dataController.contactShareValue(contactId: contact.id),
-                    onEdit: { editingContact = contact },
-                    onDelete: {
-                        _ = await dataController.deleteContact(id: contact.id)
+                    contact: item.contact,
+                    subtitle: contactSubtitle(item.contact) ?? (item.isProfile ? "My Card" : "No details added"),
+                    fields: viewModel.fields(for: item.contact),
+                    shareDisplayValue: item.isProfile
+                        ? dataController.myContactShareValue()
+                        : dataController.contactShareValue(contactId: item.contact.id),
+                    shareExportValue: item.isProfile
+                        ? (dataController.myContactShareEnvelope() ?? dataController.myContactShareValue())
+                        : (dataController.contactShareEnvelope(contactId: item.contact.id)
+                            ?? dataController.contactShareValue(contactId: item.contact.id)),
+                    editLabel: item.isProfile ? "Edit Profile" : "Edit",
+                    onEdit: {
+                        if item.isProfile {
+                            showProfileSheet = true
+                        } else {
+                            editingContact = item.contact
+                        }
+                    },
+                    onDelete: item.isProfile ? nil : {
+                        _ = await dataController.deleteContact(id: item.contact.id)
                         refreshLocalState()
-                        activeContact = nil
+                        activeDetail = nil
                     }
                 )
                 .presentationDetents([.medium, .large])
@@ -159,7 +180,7 @@ struct ContactsShellScreen: View {
         List {
             Section {
                 Button {
-                    showProfileSheet = true
+                    activeDetail = ContactPresentation(contact: myCard, isProfile: true)
                 } label: {
                     ContactRowView(
                         contact: myCard,
@@ -181,7 +202,7 @@ struct ContactsShellScreen: View {
                 } else {
                     ForEach(filteredContacts) { contact in
                         Button {
-                            activeContact = contact
+                            activeDetail = ContactPresentation(contact: contact, isProfile: false)
                         } label: {
                             ContactRowView(
                                 contact: contact,
@@ -235,6 +256,15 @@ struct ContactsShellScreen: View {
             relays: contact.relays,
             source: contact.source
         )
+    }
+}
+
+private struct ContactPresentation: Identifiable {
+    let contact: TaskifyContactRecord
+    let isProfile: Bool
+
+    var id: String {
+        isProfile ? "profile" : contact.id
     }
 }
 
@@ -307,10 +337,13 @@ private struct ContactAvatarView: View {
 
 private struct ContactDetailSheet: View {
     let contact: TaskifyContactRecord
+    let subtitle: String
     let fields: [ContactField]
-    let shareValue: String?
+    let shareDisplayValue: String?
+    let shareExportValue: String?
+    let editLabel: String
     let onEdit: () -> Void
-    let onDelete: () async -> Void
+    let onDelete: (() async -> Void)?
 
     @Environment(\.dismiss) private var dismiss
 
@@ -319,8 +352,8 @@ private struct ContactDetailSheet: View {
             ScrollView {
                 VStack(spacing: 20) {
                     VStack(spacing: 16) {
-                        if let shareValue, !shareValue.isEmpty {
-                            TaskifyQRCodeView(value: shareValue)
+                        if let shareDisplayValue, !shareDisplayValue.isEmpty {
+                            TaskifyQRCodeView(value: shareDisplayValue)
                                 .frame(width: 220, height: 220)
                                 .padding(16)
                                 .background(ThemeColors.surfaceRaised)
@@ -329,24 +362,50 @@ private struct ContactDetailSheet: View {
 
                         ContactAvatarView(contact: contact, accent: ThemeColors.accentBlue, size: 88)
 
-                        VStack(spacing: 6) {
+                        VStack(spacing: 8) {
                             Text(contactPrimaryName(contact))
                                 .font(.title2.weight(.semibold))
                                 .multilineTextAlignment(.center)
-                            if !formatContactUsername(contact.username).isEmpty {
-                                Text(formatContactUsername(contact.username))
+                            if !subtitle.isEmpty {
+                                Text(subtitle)
                                     .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            if let sourceLabel {
+                                Label(sourceLabel, systemImage: "person.crop.circle.badge.checkmark")
+                                    .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                         }
                     }
 
-                    if let shareValue, !shareValue.isEmpty {
-                        ShareLink(item: shareValue) {
-                            Label("Share Contact", systemImage: "square.and.arrow.up")
-                                .frame(maxWidth: .infinity)
+                    if let shareExportValue, !shareExportValue.isEmpty {
+                        HStack(spacing: 12) {
+                            ShareLink(item: shareExportValue) {
+                                Label("Share Contact", systemImage: "square.and.arrow.up")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Button {
+                                PlatformServices.copyToPasteboard(shareExportValue)
+                                PlatformServices.notificationSuccess()
+                            } label: {
+                                Label("Copy", systemImage: "doc.on.doc")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.borderedProminent)
+                    }
+
+                    if let updatedLabel {
+                        HStack(spacing: 6) {
+                            Image(systemName: "clock")
+                            Text(updatedLabel)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
 
                     VStack(spacing: 12) {
@@ -357,6 +416,7 @@ private struct ContactDetailSheet: View {
                                     .foregroundStyle(.secondary)
                                 Button {
                                     PlatformServices.copyToPasteboard(field.value)
+                                    PlatformServices.notificationSuccess()
                                 } label: {
                                     Text(field.value)
                                         .font(field.multiline ? .body : .body.monospaced())
@@ -372,27 +432,36 @@ private struct ContactDetailSheet: View {
                         }
                     }
 
-                    HStack(spacing: 12) {
-                        Button("Edit") {
+                    if let onDelete {
+                        HStack(spacing: 12) {
+                            Button(editLabel) {
+                                dismiss()
+                                onEdit()
+                            }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+
+                            Button("Delete", role: .destructive) {
+                                Task {
+                                    await onDelete()
+                                    dismiss()
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                        }
+                    } else {
+                        Button(editLabel) {
                             dismiss()
                             onEdit()
                         }
-                        .buttonStyle(.bordered)
-                        .frame(maxWidth: .infinity)
-
-                        Button("Delete", role: .destructive) {
-                            Task {
-                                await onDelete()
-                                dismiss()
-                            }
-                        }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.borderedProminent)
                         .frame(maxWidth: .infinity)
                     }
                 }
                 .padding(20)
             }
-            .navigationTitle("Contact")
+            .navigationTitle(contact.source == .profile ? "My Card" : "Contact")
             .platformInlineTitle()
             .toolbar {
                 ToolbarItem(placement: PlatformToolbarPlacement.trailing) {
@@ -400,6 +469,27 @@ private struct ContactDetailSheet: View {
                 }
             }
         }
+    }
+
+    private var sourceLabel: String? {
+        switch contact.source {
+        case .manual:
+            return "Manual contact"
+        case .profile:
+            return "Profile card"
+        case .scan:
+            return "Scanned contact"
+        case .sync:
+            return "Synced over Nostr"
+        case nil:
+            return nil
+        }
+    }
+
+    private var updatedLabel: String? {
+        guard contact.updatedAt > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: TimeInterval(contact.updatedAt) / 1000)
+        return "Updated \(date.formatted(date: .abbreviated, time: .shortened))"
     }
 }
 
@@ -417,6 +507,8 @@ private struct ContactEditorSheet: View {
     @State private var saveError: String?
     @State private var lookupBusy = false
     @State private var saveBusy = false
+    @State private var showScanner = false
+    @State private var showFollowPicker = false
 
     init(
         title: String,
@@ -439,52 +531,52 @@ private struct ContactEditorSheet: View {
                 Section("Import") {
                     TextField("npub1… or name@example.com", text: $lookupValue)
                         .platformNoAutoCaps()
-                    Button {
-                        Task {
-                            lookupBusy = true
-                            defer { lookupBusy = false }
-                            do {
-                                draft = try await onLookup(lookupValue)
-                                saveError = nil
-                            } catch {
-                                saveError = error.localizedDescription
+
+                    HStack(spacing: 12) {
+                        Button {
+                            Task { await importReference(lookupValue, allowPasteboardFallback: true) }
+                        } label: {
+                            if lookupBusy {
+                                ProgressView()
+                                    .frame(maxWidth: .infinity)
+                            } else {
+                                Label(lookupValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Paste" : "Import", systemImage: lookupValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "doc.on.clipboard" : "arrow.down.circle")
+                                    .frame(maxWidth: .infinity)
                             }
                         }
-                    } label: {
-                        if lookupBusy {
-                            ProgressView()
-                        } else {
-                            Label("Import Contact", systemImage: "arrow.down.circle")
+                        .buttonStyle(.borderedProminent)
+                        .disabled(lookupBusy)
+
+                        Button {
+                            Task { await importFromPasteboard() }
+                        } label: {
+                            Label("Paste", systemImage: "doc.on.clipboard")
+                                .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.bordered)
+                        .disabled(lookupBusy)
                     }
 
+                    #if os(iOS)
+                    Button {
+                        showScanner = true
+                    } label: {
+                        Label("Scan QR", systemImage: "qrcode.viewfinder")
+                    }
+                    .disabled(lookupBusy)
+                    #endif
+
                     if !publicFollows.isEmpty {
-                        ForEach(publicFollows.prefix(6)) { follow in
-                            Button {
-                                Task {
-                                    lookupBusy = true
-                                    defer { lookupBusy = false }
-                                    do {
-                                        draft = try await onLookup(formatContactNpub(follow.pubkey))
-                                        saveError = nil
-                                    } catch {
-                                        saveError = error.localizedDescription
-                                    }
-                                }
-                            } label: {
-                                let formattedUsername = formatContactUsername(follow.username)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(
-                                        follow.petname
-                                            ?? follow.nip05
-                                            ?? (formattedUsername.isEmpty ? formatContactNpub(follow.pubkey) : formattedUsername)
-                                    )
-                                    Text(follow.nip05 ?? formatContactNpub(follow.pubkey))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
+                        Button {
+                            showFollowPicker = true
+                        } label: {
+                            Label("Pick from Follows", systemImage: "person.2.fill")
                         }
+                        .disabled(lookupBusy)
+                    } else {
+                        Text("Sync contacts to load your public follows.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -525,6 +617,23 @@ private struct ContactEditorSheet: View {
             }
             .navigationTitle(title)
             .platformInlineTitle()
+            .sheet(isPresented: $showFollowPicker) {
+                PublicFollowPickerSheet(
+                    follows: publicFollows,
+                    onSelect: { follow in
+                        Task {
+                            showFollowPicker = false
+                            await importReference(formatContactNpub(follow.pubkey), allowPasteboardFallback: false)
+                        }
+                    }
+                )
+            }
+            .sheet(isPresented: $showScanner) {
+                ContactScannerSheet { scannedValue in
+                    lookupValue = scannedValue
+                    Task { await importReference(scannedValue, allowPasteboardFallback: false, preferredSource: .scan) }
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: PlatformToolbarPlacement.leading) {
                     Button("Cancel") { dismiss() }
@@ -553,12 +662,300 @@ private struct ContactEditorSheet: View {
             }
         }
     }
+
+    private func importFromPasteboard() async {
+        guard let pasted = PlatformServices.readPasteboardString(), !pasted.isEmpty else {
+            saveError = "Clipboard is empty."
+            return
+        }
+        lookupValue = pasted
+        await importReference(pasted, allowPasteboardFallback: false)
+    }
+
+    private func importReference(
+        _ value: String,
+        allowPasteboardFallback: Bool,
+        preferredSource: TaskifyContactSource? = nil
+    ) async {
+        var reference = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if reference.isEmpty, allowPasteboardFallback {
+            reference = PlatformServices.readPasteboardString() ?? ""
+            if !reference.isEmpty {
+                lookupValue = reference
+            }
+        }
+        guard !reference.isEmpty else {
+            saveError = "Paste a contact share, `npub`, or NIP-05 first."
+            return
+        }
+
+        lookupBusy = true
+        defer { lookupBusy = false }
+
+        do {
+            let imported = try await onLookup(reference)
+            draft = mergedDraft(with: imported, preferredSource: preferredSource)
+            saveError = nil
+        } catch {
+            saveError = error.localizedDescription
+        }
+    }
+
+    private func mergedDraft(
+        with imported: TaskifyContactDraft,
+        preferredSource: TaskifyContactSource? = nil
+    ) -> TaskifyContactDraft {
+        TaskifyContactDraft(
+            id: draft.id ?? imported.id,
+            kind: imported.kind,
+            name: imported.name.isEmpty ? draft.name : imported.name,
+            address: imported.address.isEmpty ? draft.address : imported.address,
+            paymentRequest: imported.paymentRequest.isEmpty ? draft.paymentRequest : imported.paymentRequest,
+            npub: imported.npub.isEmpty ? draft.npub : imported.npub,
+            username: imported.username.isEmpty ? draft.username : imported.username,
+            displayName: imported.displayName.isEmpty ? draft.displayName : imported.displayName,
+            nip05: imported.nip05.isEmpty ? draft.nip05 : imported.nip05,
+            about: imported.about.isEmpty ? draft.about : imported.about,
+            picture: imported.picture.isEmpty ? draft.picture : imported.picture,
+            relays: imported.relays.isEmpty ? draft.relays : imported.relays,
+            source: preferredSource ?? imported.source ?? draft.source
+        )
+    }
 }
+
+private struct PublicFollowPickerSheet: View {
+    let follows: [TaskifyPublicFollowRecord]
+    let onSelect: (TaskifyPublicFollowRecord) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+
+    private var filteredFollows: [TaskifyPublicFollowRecord] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return follows }
+        return follows.filter { follow in
+            [
+                follow.petname ?? "",
+                follow.nip05 ?? "",
+                follow.username ?? "",
+                follow.pubkey,
+                formatContactNpub(follow.pubkey),
+            ]
+            .joined(separator: "\n")
+            .lowercased()
+            .contains(query)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if filteredFollows.isEmpty {
+                    ContentUnavailableView(
+                        "No Follows Found",
+                        systemImage: "person.crop.circle.badge.questionmark",
+                        description: Text("Sync your contacts first, or search for a different follow.")
+                    )
+                    .padding(.vertical, 20)
+                } else {
+                    ForEach(filteredFollows) { follow in
+                        Button {
+                            dismiss()
+                            onSelect(follow)
+                        } label: {
+                            HStack(spacing: 14) {
+                                ZStack {
+                                    Circle()
+                                        .fill(ThemeColors.accentBlue.opacity(0.14))
+                                        .frame(width: 42, height: 42)
+                                    Text(contactInitials(followPrimaryTitle(follow)))
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(ThemeColors.accentBlue)
+                                }
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(followPrimaryTitle(follow))
+                                        .font(.headline)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Text(followSecondaryTitle(follow))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .searchable(text: $searchText, prompt: "Search follows")
+            .navigationTitle("Import from Follows")
+            .platformInlineTitle()
+            .toolbar {
+                ToolbarItem(placement: PlatformToolbarPlacement.leading) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func followPrimaryTitle(_ follow: TaskifyPublicFollowRecord) -> String {
+        let petname = (follow.petname ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let nip05 = (follow.nip05 ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let username = formatContactUsername(follow.username)
+        if !petname.isEmpty { return petname }
+        if !nip05.isEmpty { return nip05 }
+        return username.isEmpty ? formatContactNpub(follow.pubkey) : username
+    }
+
+    private func followSecondaryTitle(_ follow: TaskifyPublicFollowRecord) -> String {
+        let nip05 = (follow.nip05 ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let username = formatContactUsername(follow.username)
+        return nip05.isEmpty ? (username.isEmpty ? formatContactNpub(follow.pubkey) : username) : nip05
+    }
+}
+
+private struct ContactScannerSheet: View {
+    let onScannedValue: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var scannerError: String?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if scannerAvailable {
+                    scannerView
+                } else {
+                    ContentUnavailableView(
+                        "Scanner Unavailable",
+                        systemImage: "qrcode.viewfinder",
+                        description: Text("Use Paste instead, or try scanning on a physical iPhone or iPad.")
+                    )
+                }
+            }
+            .navigationTitle("Scan QR")
+            .platformInlineTitle()
+            .toolbar {
+                ToolbarItem(placement: PlatformToolbarPlacement.leading) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if let scannerError, !scannerError.isEmpty {
+                    Text(scannerError)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var scannerView: some View {
+        #if os(iOS) && canImport(UIKit) && canImport(VisionKit)
+        ContactScannerRepresentable { result in
+            switch result {
+            case .success(let value):
+                dismiss()
+                onScannedValue(value)
+            case .failure(let error):
+                scannerError = error.localizedDescription
+            }
+        }
+        .ignoresSafeArea(edges: .bottom)
+        #else
+        EmptyView()
+        #endif
+    }
+
+    private var scannerAvailable: Bool {
+        #if os(iOS) && canImport(UIKit) && canImport(VisionKit)
+        DataScannerViewController.isSupported && DataScannerViewController.isAvailable
+        #else
+        false
+        #endif
+    }
+}
+
+#if os(iOS) && canImport(UIKit) && canImport(VisionKit)
+private struct ContactScannerRepresentable: UIViewControllerRepresentable {
+    let onResult: (Result<String, Error>) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onResult: onResult)
+    }
+
+    func makeUIViewController(context: Context) -> DataScannerViewController {
+        let controller = DataScannerViewController(
+            recognizedDataTypes: [.barcode(symbologies: [.qr, .aztec, .dataMatrix, .pdf417, .code128])],
+            qualityLevel: .balanced,
+            recognizesMultipleItems: false,
+            isHighFrameRateTrackingEnabled: true,
+            isHighlightingEnabled: true
+        )
+        controller.delegate = context.coordinator
+        do {
+            try controller.startScanning()
+        } catch {
+            DispatchQueue.main.async {
+                onResult(.failure(error))
+            }
+        }
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: DataScannerViewController, context: Context) {}
+
+    static func dismantleUIViewController(_ uiViewController: DataScannerViewController, coordinator: Coordinator) {
+        uiViewController.stopScanning()
+    }
+
+    final class Coordinator: NSObject, DataScannerViewControllerDelegate {
+        private var hasResolved = false
+        private let onResult: (Result<String, Error>) -> Void
+
+        init(onResult: @escaping (Result<String, Error>) -> Void) {
+            self.onResult = onResult
+        }
+
+        func dataScanner(
+            _ dataScanner: DataScannerViewController,
+            didAdd addedItems: [RecognizedItem],
+            allItems: [RecognizedItem]
+        ) {
+            guard !hasResolved else { return }
+            for item in addedItems {
+                if case .barcode(let barcode) = item,
+                   let payload = barcode.payloadStringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !payload.isEmpty {
+                    hasResolved = true
+                    onResult(.success(payload))
+                    return
+                }
+            }
+        }
+
+        func dataScanner(
+            _ dataScanner: DataScannerViewController,
+            becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable
+        ) {
+            guard !hasResolved else { return }
+            onResult(.failure(error))
+        }
+    }
+}
+#endif
 
 private struct ProfileMetadataEditorSheet: View {
     let initialMetadata: TaskifyProfileMetadata
     let profileName: String
     let npub: String
+    let shareValue: String?
+    let shareExportValue: String?
     let onSave: (TaskifyProfileMetadata) async -> Bool
 
     @Environment(\.dismiss) private var dismiss
@@ -571,11 +968,15 @@ private struct ProfileMetadataEditorSheet: View {
         initialMetadata: TaskifyProfileMetadata,
         profileName: String,
         npub: String,
+        shareValue: String?,
+        shareExportValue: String?,
         onSave: @escaping (TaskifyProfileMetadata) async -> Bool
     ) {
         self.initialMetadata = initialMetadata
         self.profileName = profileName
         self.npub = npub
+        self.shareValue = shareValue
+        self.shareExportValue = shareExportValue
         self.onSave = onSave
         _metadata = State(initialValue: initialMetadata)
     }
@@ -597,14 +998,43 @@ private struct ProfileMetadataEditorSheet: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(metadata.displayName.isEmpty ? profileName : metadata.displayName)
                                 .font(.headline)
-                            Text(npub)
+                            Text(formatContactNpub(npub))
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
                     }
-                    ShareLink(item: npub) {
-                        Label("Share npub", systemImage: "square.and.arrow.up")
+
+                    if let shareValue, !shareValue.isEmpty {
+                        TaskifyQRCodeView(value: shareValue)
+                            .frame(height: 220)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+
+                    HStack(spacing: 12) {
+                        if let shareExportValue, !shareExportValue.isEmpty {
+                            ShareLink(item: shareExportValue) {
+                                Label("Share Card", systemImage: "square.and.arrow.up")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Button {
+                                PlatformServices.copyToPasteboard(shareExportValue)
+                                PlatformServices.notificationSuccess()
+                            } label: {
+                                Label("Copy", systemImage: "doc.on.doc")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                        } else {
+                            ShareLink(item: formatContactNpub(npub)) {
+                                Label("Share npub", systemImage: "square.and.arrow.up")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
                     }
                 }
 

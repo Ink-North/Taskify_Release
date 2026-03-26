@@ -24,6 +24,7 @@ public enum ThemeColors {
         switch choice {
         case .blue: return accentBlue
         case .green: return accentGreen
+        case .background: return accentBlue
         }
     }
 

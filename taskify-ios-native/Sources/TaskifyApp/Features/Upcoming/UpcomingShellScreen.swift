@@ -24,6 +24,7 @@ struct UpcomingShellScreen: View {
     @StateObject private var viewModel = UpcomingViewModel()
 
     @State private var editingTask: BoardTaskItem? = nil
+    @State private var selectedEvent: UpcomingCalendarEventItem? = nil
     @State private var showCreateTask = false
     @State private var showSortSheet = false
     @State private var showFilterSheet = false
@@ -43,6 +44,14 @@ struct UpcomingShellScreen: View {
 
     private var selectedDayTasks: [BoardTaskItem] {
         viewModel.tasks(for: listDateKey)
+    }
+
+    private var selectedDayEvents: [UpcomingCalendarEventItem] {
+        viewModel.events(for: listDateKey)
+    }
+
+    private var selectedDayItemCount: Int {
+        selectedDayTasks.count + selectedDayEvents.count
     }
 
     private var filteredIsEmpty: Bool {
@@ -74,7 +83,7 @@ struct UpcomingShellScreen: View {
             }
             .background(ThemeColors.surfaceGrouped.ignoresSafeArea())
             .navigationTitle("Upcoming")
-            .searchable(text: $viewModel.searchText, prompt: "Search title or notes")
+            .searchable(text: $viewModel.searchText, prompt: "Search title, notes, or event details")
             .toolbar {
                 ToolbarItemGroup(placement: PlatformToolbarPlacement.trailing) {
                     Button {
@@ -101,7 +110,16 @@ struct UpcomingShellScreen: View {
                 }
             }
             .onAppear { loadUpcoming() }
+            .task {
+                await refreshUpcoming()
+            }
             .onChange(of: dataController.boardDefinitionsVersion) { _, _ in
+                loadUpcoming()
+                Task {
+                    await refreshUpcoming()
+                }
+            }
+            .onChange(of: dataController.calendarEventsVersion) { _, _ in
                 loadUpcoming()
             }
             .onChange(of: viewStyle) { _, nextStyle in
@@ -116,6 +134,14 @@ struct UpcomingShellScreen: View {
                     loadUpcoming()
                     editingTask = nil
                 })
+            }
+            .sheet(item: $selectedEvent) { event in
+                UpcomingEventDetailSheet(
+                    event: event,
+                    timeLabel: viewModel.eventTimeLabel(for: event, showDate: true),
+                    locationLabel: viewModel.locationLabel(for: event)
+                )
+                .presentationDetents([.medium, .large])
             }
             .sheet(isPresented: $showCreateTask) {
                 UpcomingTaskCreateWrapper(
@@ -229,7 +255,7 @@ struct UpcomingShellScreen: View {
                                     HStack(alignment: .center, spacing: 8) {
                                         Text(group.label)
                                             .font(.headline)
-                                        Text("\(group.tasks.count)")
+                                        Text("\(group.tasks.count + group.events.count)")
                                             .font(.caption.bold())
                                             .foregroundStyle(.secondary)
                                             .padding(.horizontal, 8)
@@ -239,6 +265,9 @@ struct UpcomingShellScreen: View {
                                     }
 
                                     VStack(spacing: 10) {
+                                        ForEach(group.events) { event in
+                                            upcomingEventCard(for: event)
+                                        }
                                         ForEach(group.tasks) { task in
                                             upcomingTaskCard(for: task)
                                         }
@@ -250,7 +279,7 @@ struct UpcomingShellScreen: View {
                         .padding(16)
                     }
                     .refreshable {
-                        loadUpcoming()
+                        await refreshUpcoming()
                     }
                     .onAppear {
                         scrollDetailsIfNeeded(using: proxy)
@@ -287,8 +316,8 @@ struct UpcomingShellScreen: View {
                         Text(selectedDateLabel)
                             .font(.headline)
                         Spacer()
-                        if !selectedDayTasks.isEmpty {
-                            Text("\(selectedDayTasks.count)")
+                        if selectedDayItemCount > 0 {
+                            Text("\(selectedDayItemCount)")
                                 .font(.caption.bold())
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 8)
@@ -298,7 +327,7 @@ struct UpcomingShellScreen: View {
                         }
                     }
 
-                    if selectedDayTasks.isEmpty {
+                    if selectedDayItemCount == 0 {
                         emptyInlineState(
                             filteredIsEmpty
                                 ? "No upcoming items."
@@ -306,6 +335,9 @@ struct UpcomingShellScreen: View {
                         )
                     } else {
                         VStack(spacing: 10) {
+                            ForEach(selectedDayEvents) { event in
+                                upcomingEventCard(for: event)
+                            }
                             ForEach(selectedDayTasks) { task in
                                 upcomingTaskCard(for: task)
                             }
@@ -323,7 +355,7 @@ struct UpcomingShellScreen: View {
             .padding(16)
         }
         .refreshable {
-            loadUpcoming()
+            await refreshUpcoming()
         }
     }
 
@@ -372,6 +404,59 @@ struct UpcomingShellScreen: View {
         }
     }
 
+    @ViewBuilder
+    private func upcomingEventCard(for event: UpcomingCalendarEventItem) -> some View {
+        Button {
+            selectedEvent = event
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "calendar")
+                    .font(.title3)
+                    .foregroundStyle(ThemeColors.accentBlue)
+                    .frame(width: 24, height: 24)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(event.title.isEmpty ? "Untitled" : event.title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(3)
+
+                    let timeLabel = viewModel.eventTimeLabel(for: event)
+                    if !timeLabel.isEmpty {
+                        Text(timeLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(viewModel.locationLabel(for: event))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    if let description = event.description,
+                       !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(description)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 12)
+            .padding(.horizontal, 14)
+            .background(ThemeColors.surfaceBase)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
+    }
+
     private func emptyState(message: String) -> some View {
         VStack(spacing: 14) {
             Image(systemName: "calendar.badge.checkmark")
@@ -397,12 +482,12 @@ struct UpcomingShellScreen: View {
 
     private var emptyMessage: String {
         if !viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "No tasks match your search."
+            return "No items match your search."
         }
         if viewModel.selectedFilterIDs != nil {
-            return "No tasks match the current filters."
+            return "No items match the current filters."
         }
-        return "Tasks with due dates will appear here."
+        return "Tasks and events with dates will appear here."
     }
 
     private func loadUpcoming() {
@@ -410,14 +495,24 @@ struct UpcomingShellScreen: View {
         let boardIDs = currentProfile.boards.map(\.id)
         let boards = dataController.upcomingBoardDefinitions(boardIds: boardIDs)
         let tasks = dataController.fetchUpcomingTasks(boardIds: boardIDs)
+        let events = dataController.fetchUpcomingCalendarEvents(boardIds: boardIDs)
 
         upcomingBoards = boards
         viewModel.setBoards(boards)
         viewModel.setTasks(tasks)
+        viewModel.setEvents(events)
 
         if viewStyle == .details {
             pendingDetailScrollDateKey = viewModel.resolvedDateKey(preferred: listDateKey)
         }
+    }
+
+    private func refreshUpcoming() async {
+        loadUpcoming()
+        let currentProfile = dataController.currentProfile ?? profile
+        let boardIDs = currentProfile.boards.map(\.id)
+        await dataController.refreshUpcomingCalendarEvents(boardIds: boardIDs)
+        loadUpcoming()
     }
 
     private func jumpToToday() {
@@ -597,6 +692,81 @@ private struct UpcomingCalendarCard: View {
     }
 }
 
+private struct UpcomingEventDetailSheet: View {
+    let event: UpcomingCalendarEventItem
+    let timeLabel: String
+    let locationLabel: String
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(event.title.isEmpty ? "Untitled" : event.title)
+                            .font(.title3.weight(.semibold))
+                        if !timeLabel.isEmpty {
+                            Label(timeLabel, systemImage: "clock")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(locationLabel)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let summary = event.summary,
+                       !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        detailSection(title: "Summary", value: summary)
+                    }
+
+                    if let description = event.description,
+                       !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        detailSection(title: "Notes", value: description)
+                    }
+
+                    if !event.locations.isEmpty {
+                        detailSection(title: "Locations", value: event.locations.joined(separator: "\n"))
+                    }
+
+                    if !event.references.isEmpty {
+                        detailSection(title: "References", value: event.references.joined(separator: "\n"))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
+            }
+            .navigationTitle("Event")
+            .toolbar {
+                ToolbarItem(placement: PlatformToolbarPlacement.trailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func detailSection(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            Text(value)
+                .font(.body)
+                .foregroundStyle(.primary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(ThemeColors.surfaceBase)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
+    }
+}
+
 private struct UpcomingSortSheet: View {
     let sortMode: TaskSortMode
     let sortAscending: Bool
@@ -617,7 +787,7 @@ private struct UpcomingSortSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Sort Tasks By") {
+                Section("Sort By") {
                     ForEach(sortOptions, id: \.0) { option, label in
                         Button {
                             onSelectSortMode(option)

@@ -63,6 +63,14 @@ public actor RelayPool {
         return statuses
     }
 
+    public func relayDidConnect(url: String) async {
+        guard let connection = connections[url] else { return }
+        for state in subscriptions.values {
+            let req = buildREQ(id: state.key, filters: state.filters)
+            await connection.send(req)
+        }
+    }
+
     // MARK: Subscribe
 
     /// Opens a subscription on all connected relays and returns a managed handle.

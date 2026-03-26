@@ -28,6 +28,67 @@ public struct UpcomingBoardDefinition: Identifiable, Equatable {
     }
 }
 
+public struct UpcomingCalendarEventItem: Identifiable, Equatable {
+    public let id: String
+    public let boardId: String
+    public let boardName: String?
+    public let title: String
+    public let kind: String
+    public let startDate: String?
+    public let endDate: String?
+    public let startISO: String?
+    public let endISO: String?
+    public let startTzid: String?
+    public let endTzid: String?
+    public let columnId: String?
+    public let summary: String?
+    public let description: String?
+    public let locations: [String]
+    public let references: [String]
+    public let order: Int?
+    public let createdAt: Int?
+
+    public init(
+        id: String,
+        boardId: String,
+        boardName: String? = nil,
+        title: String,
+        kind: String,
+        startDate: String? = nil,
+        endDate: String? = nil,
+        startISO: String? = nil,
+        endISO: String? = nil,
+        startTzid: String? = nil,
+        endTzid: String? = nil,
+        columnId: String? = nil,
+        summary: String? = nil,
+        description: String? = nil,
+        locations: [String] = [],
+        references: [String] = [],
+        order: Int? = nil,
+        createdAt: Int? = nil
+    ) {
+        self.id = id
+        self.boardId = boardId
+        self.boardName = boardName
+        self.title = title
+        self.kind = kind
+        self.startDate = startDate
+        self.endDate = endDate
+        self.startISO = startISO
+        self.endISO = endISO
+        self.startTzid = startTzid
+        self.endTzid = endTzid
+        self.columnId = columnId
+        self.summary = summary
+        self.description = description
+        self.locations = locations
+        self.references = references
+        self.order = order
+        self.createdAt = createdAt
+    }
+}
+
 public struct UpcomingFilterOption: Identifiable, Equatable {
     public let id: String
     public let label: String
@@ -69,14 +130,22 @@ public struct UpcomingDateGroup: Identifiable, Equatable {
     public let label: String
     public let date: Date?
     public let tasks: [BoardTaskItem]
+    public let events: [UpcomingCalendarEventItem]
 
     public var id: String { dateKey }
 
-    public init(dateKey: String, label: String, date: Date?, tasks: [BoardTaskItem]) {
+    public init(
+        dateKey: String,
+        label: String,
+        date: Date?,
+        tasks: [BoardTaskItem],
+        events: [UpcomingCalendarEventItem] = []
+    ) {
         self.dateKey = dateKey
         self.label = label
         self.date = date
         self.tasks = tasks
+        self.events = events
     }
 }
 
@@ -85,7 +154,9 @@ public final class UpcomingViewModel: ObservableObject {
     @Published public private(set) var groups: [UpcomingDateGroup] = []
     @Published public private(set) var filterGroups: [UpcomingFilterGroup] = []
     @Published public private(set) var dayTaskMap: [String: [BoardTaskItem]] = [:]
+    @Published public private(set) var dayEventMap: [String: [UpcomingCalendarEventItem]] = [:]
     @Published public private(set) var filteredTasks: [BoardTaskItem] = []
+    @Published public private(set) var filteredEvents: [UpcomingCalendarEventItem] = []
     @Published public private(set) var selectedFilterIDs: Set<String>? = nil
     @Published public private(set) var sortMode: TaskSortMode = .dueDate
     @Published public private(set) var sortAscending: Bool = true
@@ -97,6 +168,7 @@ public final class UpcomingViewModel: ObservableObject {
     }
 
     private var allTasks: [BoardTaskItem] = []
+    private var allEvents: [UpcomingCalendarEventItem] = []
     private var boardDefinitions: [UpcomingBoardDefinition] = []
     private var boardDefinitionsById: [String: UpcomingBoardDefinition] = [:]
 
@@ -104,6 +176,11 @@ public final class UpcomingViewModel: ObservableObject {
 
     public func setTasks(_ tasks: [BoardTaskItem]) {
         allTasks = tasks
+        recompute()
+    }
+
+    public func setEvents(_ events: [UpcomingCalendarEventItem]) {
+        allEvents = events
         recompute()
     }
 
@@ -187,6 +264,10 @@ public final class UpcomingViewModel: ObservableObject {
         dayTaskMap[dateKey] ?? []
     }
 
+    public func events(for dateKey: String) -> [UpcomingCalendarEventItem] {
+        dayEventMap[dateKey] ?? []
+    }
+
     public func resolvedDateKey(preferred: String) -> String? {
         guard !groups.isEmpty else { return nil }
         if groups.contains(where: { $0.dateKey == preferred }) {
@@ -201,8 +282,9 @@ public final class UpcomingViewModel: ObservableObject {
     public func dayNumbersWithItems(inMonth anchor: Date) -> Set<Int> {
         let calendar = Calendar.current
         let monthComponents = calendar.dateComponents([.year, .month], from: anchor)
+        let dayKeys = Set(dayTaskMap.keys).union(dayEventMap.keys)
 
-        return Set(dayTaskMap.keys.compactMap { key in
+        return Set(dayKeys.compactMap { key in
             guard let parsed = Self.parseDateKey(key) else { return nil }
             guard parsed.year == monthComponents.year, parsed.month == monthComponents.month else { return nil }
             return parsed.day
@@ -210,27 +292,59 @@ public final class UpcomingViewModel: ObservableObject {
     }
 
     public func listName(for task: BoardTaskItem) -> String? {
-        guard let boardId = task.boardId,
-              let columnId = task.columnId,
-              let board = boardDefinitionsById[boardId],
-              board.kind == "lists"
-        else {
-            return nil
-        }
-        return board.columns.first(where: { $0.id == columnId })?.name
+        locationListName(boardId: task.boardId, columnId: task.columnId)
+    }
+
+    public func listName(for event: UpcomingCalendarEventItem) -> String? {
+        locationListName(boardId: event.boardId, columnId: event.columnId)
     }
 
     public func locationLabel(for task: BoardTaskItem) -> String {
-        let boardName = task.boardName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedBoardName = (boardName?.isEmpty == false ? boardName : nil)
-            ?? task.boardId.flatMap { boardDefinitionsById[$0]?.name }
-            ?? "Board"
+        locationLabel(
+            boardId: task.boardId,
+            boardName: task.boardName,
+            columnId: task.columnId
+        )
+    }
 
-        if let listName = listName(for: task), !listName.isEmpty {
-            return "\(resolvedBoardName) • \(listName)"
+    public func locationLabel(for event: UpcomingCalendarEventItem) -> String {
+        let base = locationLabel(
+            boardId: event.boardId,
+            boardName: event.boardName,
+            columnId: event.columnId
+        )
+        guard let location = event.locations.first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+            return base
+        }
+        return "\(base) • \(location.trimmingCharacters(in: .whitespacesAndNewlines))"
+    }
+
+    public func eventTimeLabel(for event: UpcomingCalendarEventItem, showDate: Bool = false) -> String {
+        if event.kind == "date" {
+            guard let startKey = normalizedDateKey(event.startDate) else { return "" }
+            let endKey = normalizedDateKey(event.endDate)
+            let validEnd = (endKey != nil && endKey! >= startKey) ? endKey! : startKey
+            let isMultiDay = validEnd != startKey
+            let startLabel = Self.shortDateLabel(startKey)
+            let endLabel = Self.shortDateLabel(validEnd)
+            if !showDate {
+                return isMultiDay ? "All-day • \(startLabel) – \(endLabel)" : ""
+            }
+            return isMultiDay ? "All-day • \(startLabel) – \(endLabel)" : startLabel
         }
 
-        return resolvedBoardName
+        guard let startISO = event.startISO,
+              let startLabel = Self.timeLabel(fromISO: startISO, timeZoneId: event.startTzid) else {
+            return ""
+        }
+
+        let endLabel = event.endISO.flatMap { Self.timeLabel(fromISO: $0, timeZoneId: event.endTzid ?? event.startTzid) } ?? ""
+        let core = endLabel.isEmpty ? startLabel : "\(startLabel) – \(endLabel)"
+        guard showDate else { return core }
+
+        let dateKey = eventDateKeys(for: event).first ?? ""
+        if dateKey.isEmpty { return core }
+        return "\(core) • \(Self.shortDateLabel(dateKey))"
     }
 
     public static func defaultAscending(for mode: TaskSortMode) -> Bool {
@@ -277,33 +391,51 @@ public final class UpcomingViewModel: ObservableObject {
     }
 
     private func recompute() {
-        let filtered = applyFilters(to: allTasks)
-        filteredTasks = filtered
-        itemCount = filtered.count
+        let filteredTasks = applyTaskFilters(to: allTasks)
+        let filteredEvents = applyEventFilters(to: allEvents)
 
-        var grouped: [String: [BoardTaskItem]] = [:]
-        filtered.forEach { task in
+        self.filteredTasks = filteredTasks
+        self.filteredEvents = filteredEvents
+        itemCount = filteredTasks.count + filteredEvents.count
+
+        var groupedTasks: [String: [BoardTaskItem]] = [:]
+        filteredTasks.forEach { task in
             guard let dateKey = dueDateKey(for: task) else { return }
-            grouped[dateKey, default: []].append(task)
+            groupedTasks[dateKey, default: []].append(task)
         }
 
-        for key in grouped.keys {
-            grouped[key] = sortTasks(grouped[key] ?? [])
+        var groupedEvents: [String: [UpcomingCalendarEventItem]] = [:]
+        filteredEvents.forEach { event in
+            eventDateKeys(for: event).forEach { dateKey in
+                groupedEvents[dateKey, default: []].append(event)
+            }
         }
 
-        dayTaskMap = grouped
-        groups = grouped.keys.sorted().map { key in
+        for key in groupedTasks.keys {
+            groupedTasks[key] = sortTasks(groupedTasks[key] ?? [])
+        }
+        for key in groupedEvents.keys {
+            groupedEvents[key] = sortEvents(groupedEvents[key] ?? [])
+        }
+
+        dayTaskMap = groupedTasks
+        dayEventMap = groupedEvents
+
+        let orderedKeys = Set(groupedTasks.keys).union(groupedEvents.keys).sorted()
+        groups = orderedKeys.map { key in
             UpcomingDateGroup(
                 dateKey: key,
                 label: Self.formatUpcomingDayLabel(key),
                 date: Self.dateFromKey(key),
-                tasks: grouped[key] ?? []
+                tasks: groupedTasks[key] ?? [],
+                events: groupedEvents[key] ?? []
             )
         }
+
         filterLabel = buildFilterLabel()
     }
 
-    private func applyFilters(to tasks: [BoardTaskItem]) -> [BoardTaskItem] {
+    private func applyTaskFilters(to tasks: [BoardTaskItem]) -> [BoardTaskItem] {
         var filtered = tasks.filter { task in
             guard !task.completed else { return false }
             guard task.dueDateEnabled != false else { return false }
@@ -316,30 +448,16 @@ public final class UpcomingViewModel: ObservableObject {
             } else {
                 let selection = selectedBoardAndListSelections(selectedFilterIDs)
                 filtered = filtered.filter { task in
-                    guard let boardId = task.boardId else { return false }
-                    let board = boardDefinitionsById[boardId]
-                    let listSet = selection.selectedLists[boardId]
-
-                    if selection.selectedBoards.contains(boardId) {
-                        if board?.kind == "lists" {
-                            guard let columnId = task.columnId else { return false }
-                            guard let listSet else { return true }
-                            guard !listSet.isEmpty else { return false }
-                            return listSet.contains(columnId)
-                        }
-                        return true
-                    }
-
-                    if let listSet, let columnId = task.columnId, listSet.contains(columnId) {
-                        return true
-                    }
-
-                    return false
+                    matchesSelection(
+                        boardId: task.boardId,
+                        columnId: task.columnId,
+                        selection: selection
+                    )
                 }
             }
         }
 
-        let searchTerm = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let searchTerm = normalizedSearchTerm
         guard !searchTerm.isEmpty else { return filtered }
 
         return filtered.filter { task in
@@ -348,22 +466,64 @@ public final class UpcomingViewModel: ObservableObject {
         }
     }
 
-    private func sortTasks(_ tasks: [BoardTaskItem]) -> [BoardTaskItem] {
-        tasks.sorted { lhs, rhs in
-            compare(lhs, rhs) < 0
+    private func applyEventFilters(to events: [UpcomingCalendarEventItem]) -> [UpcomingCalendarEventItem] {
+        var filtered = events.filter { !eventDateKeys(for: $0).isEmpty }
+
+        if !allFilterOptions.isEmpty, let selectedFilterIDs {
+            if selectedFilterIDs.isEmpty {
+                filtered = []
+            } else {
+                let selection = selectedBoardAndListSelections(selectedFilterIDs)
+                filtered = filtered.filter { event in
+                    matchesSelection(
+                        boardId: event.boardId,
+                        columnId: event.columnId,
+                        selection: selection
+                    )
+                }
+            }
+        }
+
+        let searchTerm = normalizedSearchTerm
+        guard !searchTerm.isEmpty else { return filtered }
+
+        return filtered.filter { event in
+            let title = event.title.lowercased()
+            let summary = event.summary?.lowercased() ?? ""
+            let description = event.description?.lowercased() ?? ""
+            let locations = event.locations.joined(separator: " ").lowercased()
+            let references = event.references.joined(separator: " ").lowercased()
+
+            return title.contains(searchTerm)
+                || summary.contains(searchTerm)
+                || description.contains(searchTerm)
+                || locations.contains(searchTerm)
+                || references.contains(searchTerm)
         }
     }
 
-    private func compare(_ lhs: BoardTaskItem, _ rhs: BoardTaskItem) -> Int {
+    private func sortTasks(_ tasks: [BoardTaskItem]) -> [BoardTaskItem] {
+        tasks.sorted { lhs, rhs in
+            compareTasks(lhs, rhs) < 0
+        }
+    }
+
+    private func sortEvents(_ events: [UpcomingCalendarEventItem]) -> [UpcomingCalendarEventItem] {
+        events.sorted { lhs, rhs in
+            compareEvents(lhs, rhs) < 0
+        }
+    }
+
+    private func compareTasks(_ lhs: BoardTaskItem, _ rhs: BoardTaskItem) -> Int {
         if boardGrouping == .grouped {
-            let boardDiff = boardOrder(for: lhs) - boardOrder(for: rhs)
+            let boardDiff = boardOrder(forBoardId: lhs.boardId) - boardOrder(forBoardId: rhs.boardId)
             if boardDiff != 0 { return boardDiff }
         }
 
         if sortMode == .manual {
             let orderDiff = (lhs.order ?? 0) - (rhs.order ?? 0)
             if orderDiff != 0 { return orderDiff }
-            return compareFallback(lhs, rhs)
+            return compareTaskFallback(lhs, rhs)
         }
 
         let primary: Int
@@ -371,7 +531,7 @@ public final class UpcomingViewModel: ObservableObject {
         case .manual:
             primary = 0
         case .dueDate:
-            primary = compareDue(lhs, rhs, ascending: sortAscending)
+            primary = compareTaskDue(lhs, rhs, ascending: sortAscending)
         case .priority:
             primary = compareNumber(lhs.priority ?? 0, rhs.priority ?? 0, ascending: sortAscending)
         case .createdAt:
@@ -381,14 +541,42 @@ public final class UpcomingViewModel: ObservableObject {
         }
 
         if primary != 0 { return primary }
-        return compareFallback(lhs, rhs)
+        return compareTaskFallback(lhs, rhs)
     }
 
-    private func compareFallback(_ lhs: BoardTaskItem, _ rhs: BoardTaskItem) -> Int {
+    private func compareEvents(_ lhs: UpcomingCalendarEventItem, _ rhs: UpcomingCalendarEventItem) -> Int {
+        if boardGrouping == .grouped {
+            let boardDiff = boardOrder(forBoardId: lhs.boardId) - boardOrder(forBoardId: rhs.boardId)
+            if boardDiff != 0 { return boardDiff }
+        }
+
+        if sortMode == .manual {
+            let orderDiff = (lhs.order ?? 0) - (rhs.order ?? 0)
+            if orderDiff != 0 { return orderDiff }
+            return compareEventFallback(lhs, rhs)
+        }
+
+        let primary: Int
+        switch sortMode {
+        case .manual:
+            primary = 0
+        case .dueDate:
+            primary = compareUpcomingEventTime(lhs, rhs, ascending: sortAscending)
+        case .alphabetical:
+            primary = compareText(lhs.title, rhs.title, ascending: sortAscending)
+        case .priority, .createdAt:
+            primary = 0
+        }
+
+        if primary != 0 { return primary }
+        return compareEventFallback(lhs, rhs)
+    }
+
+    private func compareTaskFallback(_ lhs: BoardTaskItem, _ rhs: BoardTaskItem) -> Int {
         let timeDiff = compareUpcomingTime(lhs, rhs, ascending: Self.defaultAscending(for: .dueDate))
         if timeDiff != 0 { return timeDiff }
 
-        let boardDiff = boardOrder(for: lhs) - boardOrder(for: rhs)
+        let boardDiff = boardOrder(forBoardId: lhs.boardId) - boardOrder(forBoardId: rhs.boardId)
         if boardDiff != 0 { return boardDiff }
 
         let orderDiff = (lhs.order ?? 0) - (rhs.order ?? 0)
@@ -397,10 +585,26 @@ public final class UpcomingViewModel: ObservableObject {
         let titleDiff = compareText(lhs.title, rhs.title, ascending: Self.defaultAscending(for: .alphabetical))
         if titleDiff != 0 { return titleDiff }
 
-        return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending ? -1 : 1
+        return compareText(lhs.id, rhs.id, ascending: true)
     }
 
-    private func compareDue(_ lhs: BoardTaskItem, _ rhs: BoardTaskItem, ascending: Bool) -> Int {
+    private func compareEventFallback(_ lhs: UpcomingCalendarEventItem, _ rhs: UpcomingCalendarEventItem) -> Int {
+        let timeDiff = compareUpcomingEventTime(lhs, rhs, ascending: Self.defaultAscending(for: .dueDate))
+        if timeDiff != 0 { return timeDiff }
+
+        let boardDiff = boardOrder(forBoardId: lhs.boardId) - boardOrder(forBoardId: rhs.boardId)
+        if boardDiff != 0 { return boardDiff }
+
+        let orderDiff = (lhs.order ?? 0) - (rhs.order ?? 0)
+        if orderDiff != 0 { return orderDiff }
+
+        let titleDiff = compareText(lhs.title, rhs.title, ascending: Self.defaultAscending(for: .alphabetical))
+        if titleDiff != 0 { return titleDiff }
+
+        return compareText(lhs.id, rhs.id, ascending: true)
+    }
+
+    private func compareTaskDue(_ lhs: BoardTaskItem, _ rhs: BoardTaskItem, ascending: Bool) -> Int {
         let lhsDateKey = dueDateKey(for: lhs)
         let rhsDateKey = dueDateKey(for: rhs)
 
@@ -441,6 +645,19 @@ public final class UpcomingViewModel: ObservableObject {
         return 0
     }
 
+    private func compareUpcomingEventTime(
+        _ lhs: UpcomingCalendarEventItem,
+        _ rhs: UpcomingCalendarEventItem,
+        ascending: Bool
+    ) -> Int {
+        let lhsTime = eventTimeValue(for: lhs)
+        let rhsTime = eventTimeValue(for: rhs)
+        if lhsTime != rhsTime {
+            return compareNumber(lhsTime, rhsTime, ascending: ascending)
+        }
+        return 0
+    }
+
     private func compareNumber(_ lhs: Int, _ rhs: Int, ascending: Bool) -> Int {
         let diff = lhs - rhs
         return ascending ? diff : -diff
@@ -460,45 +677,119 @@ public final class UpcomingViewModel: ObservableObject {
 
     private func dueDateKey(for task: BoardTaskItem) -> String? {
         guard task.dueDateEnabled != false,
-              let dueISO = task.dueISO,
-              let date = Self.parseISO(dueISO)
-        else {
+              let dueISO = task.dueISO else {
             return nil
         }
-
-        let components = Calendar.current.dateComponents([.year, .month, .day], from: date)
-        guard let year = components.year, let month = components.month, let day = components.day else {
-            return nil
-        }
-
-        return String(format: "%04d-%02d-%02d", year, month, day)
+        return Self.dateKey(fromISO: dueISO)
     }
 
     private func dueTimestamp(for task: BoardTaskItem) -> Int? {
-        guard let dueISO = task.dueISO, let date = Self.parseISO(dueISO) else { return nil }
+        guard let dueISO = task.dueISO,
+              let date = Self.parseISO(dueISO) else {
+            return nil
+        }
         return Int(date.timeIntervalSince1970)
     }
 
     private func taskTimeValue(for task: BoardTaskItem) -> Int? {
         guard task.dueTimeEnabled == true,
-              let dueISO = task.dueISO,
-              let date = Self.parseISO(dueISO)
-        else {
+              let dueISO = task.dueISO else {
             return nil
         }
-
-        let components = Calendar.current.dateComponents([.hour, .minute], from: date)
-        guard let hour = components.hour, let minute = components.minute else { return nil }
-        return hour * 60 + minute
+        return Self.timeValue(fromISO: dueISO)
     }
 
-    private func boardOrder(for task: BoardTaskItem) -> Int {
-        guard let boardId = task.boardId,
-              let index = boardDefinitions.firstIndex(where: { $0.id == boardId })
-        else {
+    private func eventTimeValue(for event: UpcomingCalendarEventItem) -> Int {
+        if event.kind == "date" { return -1 }
+        guard let startISO = event.startISO else { return 0 }
+        return Self.timeValue(fromISO: startISO, timeZoneId: event.startTzid) ?? 0
+    }
+
+    private func eventDateKeys(for event: UpcomingCalendarEventItem) -> [String] {
+        if event.kind == "date" {
+            guard let startKey = normalizedDateKey(event.startDate) else { return [] }
+            let endKey = normalizedDateKey(event.endDate)
+            let validEnd = (endKey != nil && endKey! >= startKey) ? endKey! : startKey
+
+            var keys: [String] = []
+            var current = startKey
+            var guardCount = 0
+            while guardCount < 366 {
+                keys.append(current)
+                if current == validEnd { break }
+                guard let next = Self.addDays(to: current, count: 1) else { break }
+                current = next
+                guardCount += 1
+            }
+            return keys
+        }
+
+        guard let startISO = event.startISO,
+              let dateKey = Self.dateKey(fromISO: startISO, timeZoneId: event.startTzid) else {
+            return []
+        }
+        return [dateKey]
+    }
+
+    private func locationListName(boardId: String?, columnId: String?) -> String? {
+        guard let boardId,
+              let columnId,
+              let board = boardDefinitionsById[boardId],
+              board.kind == "lists" else {
+            return nil
+        }
+        return board.columns.first(where: { $0.id == columnId })?.name
+    }
+
+    private func locationLabel(boardId: String?, boardName: String?, columnId: String?) -> String {
+        let trimmedBoardName = boardName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedBoardName = (trimmedBoardName?.isEmpty == false ? trimmedBoardName : nil)
+            ?? boardId.flatMap { boardDefinitionsById[$0]?.name }
+            ?? "Board"
+
+        if let listName = locationListName(boardId: boardId, columnId: columnId), !listName.isEmpty {
+            return "\(resolvedBoardName) • \(listName)"
+        }
+
+        return resolvedBoardName
+    }
+
+    private func matchesSelection(
+        boardId: String?,
+        columnId: String?,
+        selection: (selectedBoards: Set<String>, selectedLists: [String: Set<String>])
+    ) -> Bool {
+        guard let boardId else { return false }
+        let board = boardDefinitionsById[boardId]
+        let listSet = selection.selectedLists[boardId]
+
+        if selection.selectedBoards.contains(boardId) {
+            if board?.kind == "lists" {
+                guard let columnId else { return false }
+                guard let listSet else { return true }
+                guard !listSet.isEmpty else { return false }
+                return listSet.contains(columnId)
+            }
+            return true
+        }
+
+        if let listSet, let columnId, listSet.contains(columnId) {
+            return true
+        }
+
+        return false
+    }
+
+    private func boardOrder(forBoardId boardId: String?) -> Int {
+        guard let boardId,
+              let index = boardDefinitions.firstIndex(where: { $0.id == boardId }) else {
             return boardDefinitions.count + 1
         }
         return index
+    }
+
+    private var normalizedSearchTerm: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private func normalizedFilterSelection(_ ids: Set<String>?) -> Set<String>? {
@@ -529,7 +820,9 @@ public final class UpcomingViewModel: ObservableObject {
         return next
     }
 
-    private func selectedBoardAndListSelections(_ selectedIDs: Set<String>) -> (selectedBoards: Set<String>, selectedLists: [String: Set<String>]) {
+    private func selectedBoardAndListSelections(
+        _ selectedIDs: Set<String>
+    ) -> (selectedBoards: Set<String>, selectedLists: [String: Set<String>]) {
         let optionMap = Dictionary(uniqueKeysWithValues: allFilterOptions.map { ($0.id, $0) })
 
         var boards = Set<String>()
@@ -557,6 +850,14 @@ public final class UpcomingViewModel: ObservableObject {
         return "\(selectedFilterIDs.count) selected"
     }
 
+    private func normalizedDateKey(_ value: String?) -> String? {
+        guard let value,
+              Self.parseDateKey(value) != nil else {
+            return nil
+        }
+        return value
+    }
+
     private static func parseISO(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -568,8 +869,7 @@ public final class UpcomingViewModel: ObservableObject {
         guard parts.count == 3,
               let year = Int(parts[0]),
               let month = Int(parts[1]),
-              let day = Int(parts[2])
-        else {
+              let day = Int(parts[2]) else {
             return nil
         }
 
@@ -585,11 +885,76 @@ public final class UpcomingViewModel: ObservableObject {
         return Calendar.current.date(from: components)
     }
 
+    private static func addDays(to dateKey: String, count: Int) -> String? {
+        guard let components = parseDateKey(dateKey) else { return nil }
+        let calendar = Calendar(identifier: .gregorian)
+        guard let date = calendar.date(from: components),
+              let shifted = calendar.date(byAdding: .day, value: count, to: date) else {
+            return nil
+        }
+        let shiftedParts = calendar.dateComponents([.year, .month, .day], from: shifted)
+        guard let year = shiftedParts.year,
+              let month = shiftedParts.month,
+              let day = shiftedParts.day else {
+            return nil
+        }
+        return String(format: "%04d-%02d-%02d", year, month, day)
+    }
+
+    private static func calendar(for timeZoneId: String? = nil) -> Calendar {
+        var calendar = Calendar.current
+        if let timeZoneId,
+           let timeZone = TimeZone(identifier: timeZoneId) {
+            calendar.timeZone = timeZone
+        }
+        return calendar
+    }
+
+    private static func dateKey(fromISO iso: String, timeZoneId: String? = nil) -> String? {
+        guard let date = parseISO(iso) else { return nil }
+        let calendar = calendar(for: timeZoneId)
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        guard let year = components.year,
+              let month = components.month,
+              let day = components.day else {
+            return nil
+        }
+        return String(format: "%04d-%02d-%02d", year, month, day)
+    }
+
+    private static func timeValue(fromISO iso: String, timeZoneId: String? = nil) -> Int? {
+        guard let date = parseISO(iso) else { return nil }
+        let calendar = calendar(for: timeZoneId)
+        let components = calendar.dateComponents([.hour, .minute], from: date)
+        guard let hour = components.hour,
+              let minute = components.minute else {
+            return nil
+        }
+        return hour * 60 + minute
+    }
+
+    private static func timeLabel(fromISO iso: String, timeZoneId: String? = nil) -> String? {
+        guard let date = parseISO(iso) else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        if let timeZoneId,
+           let timeZone = TimeZone(identifier: timeZoneId) {
+            formatter.timeZone = timeZone
+        }
+        return formatter.string(from: date)
+    }
+
+    private static func shortDateLabel(_ dateKey: String) -> String {
+        guard let date = dateFromKey(dateKey) else { return dateKey }
+        return monthDayFormatter.string(from: date)
+    }
+
     private static func formatUpcomingDayLabel(_ dateKey: String) -> String {
         guard let date = dateFromKey(dateKey) else { return dateKey }
         let weekday = weekdayFormatter.string(from: date)
         let monthDay = monthDayFormatter.string(from: date)
-        return "\(weekday), \(monthDay)"
+        return "\(weekday) — \(monthDay)"
     }
 
     private static func boardOptionID(for boardId: String) -> String {

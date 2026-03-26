@@ -1,5 +1,8 @@
 import SwiftUI
 import TaskifyCore
+#if canImport(UserNotifications)
+import UserNotifications
+#endif
 
 private let settingsWeekdayLabels = [
     "Sunday",
@@ -30,6 +33,13 @@ struct SettingsShellScreen: View {
     @State private var visibleBoardsExpanded = true
     @State private var hiddenBoardsExpanded = false
     @State private var archivedBoardsExpanded = false
+    @State private var fileStorageServerDraft = ""
+    @State private var fileStorageStatus: String?
+    @State private var fileStorageStatusIsError = false
+    @State private var pushStatusMessage: String?
+    @State private var pushStatusIsError = false
+    @State private var notificationPermission: NotificationPermissionState = .notDetermined
+    @State private var pushBusy = false
 
     var body: some View {
         NavigationStack {
@@ -37,6 +47,8 @@ struct SettingsShellScreen: View {
                 profileSection
                 viewSection
                 launchBoardsSection
+                bibleSection
+                pushSection
                 nostrSection
                 boardsSection
                 backupSection
@@ -46,7 +58,12 @@ struct SettingsShellScreen: View {
             .navigationTitle("Settings")
             .platformInlineTitle()
             .task {
+                fileStorageServerDraft = settingsManager.settings.fileStorageServer
                 await dataController.refreshRelayStatus()
+                await refreshNotificationPermissionStatus()
+            }
+            .onChange(of: settingsManager.settings.fileStorageServer) { _, newValue in
+                fileStorageServerDraft = newValue
             }
             .confirmationDialog("Sign Out", isPresented: $showSignOutConfirm) {
                 Button("Sign Out", role: .destructive) {
@@ -170,7 +187,7 @@ struct SettingsShellScreen: View {
             }
 
             Picker("Accent Color", selection: $settingsManager.settings.accent) {
-                ForEach(AccentChoice.allCases) { choice in
+                ForEach(accentChoices) { choice in
                     HStack {
                         Circle()
                             .fill(ThemeColors.accent(for: choice))
@@ -239,6 +256,122 @@ struct SettingsShellScreen: View {
         }
     }
 
+    // MARK: - Bible Section
+
+    private var bibleSection: some View {
+        Section {
+            Toggle(isOn: $settingsManager.settings.bibleTrackerEnabled) {
+                Label("Bible Tracker", systemImage: "book.closed")
+            }
+
+            Toggle(isOn: scriptureMemoryBinding) {
+                Label("Scripture Memory", systemImage: "bookmark")
+            }
+
+            if settingsManager.settings.scriptureMemoryEnabled {
+                Picker("Review Board", selection: scriptureMemoryBoardSelection) {
+                    Text("Select a board…").tag("")
+                    ForEach(scriptureMemoryBoards) { board in
+                        Text(board.name).tag(board.id)
+                    }
+                }
+
+                Picker("Review Frequency", selection: $settingsManager.settings.scriptureMemoryFrequency) {
+                    ForEach(ScriptureMemoryFrequency.allCases) { frequency in
+                        Text(frequency.label).tag(frequency)
+                    }
+                }
+
+                Picker("Sort Scriptures By", selection: $settingsManager.settings.scriptureMemorySort) {
+                    ForEach(ScriptureMemorySort.allCases) { sort in
+                        Text(sort.label).tag(sort)
+                    }
+                }
+
+                Text(settingsManager.settings.scriptureMemoryFrequency.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if scriptureMemoryBoards.isEmpty {
+                    Text("Create a visible board to receive scripture memory review tasks.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Toggle(isOn: $settingsManager.settings.fastingRemindersEnabled) {
+                Label("Fasting Reminders", systemImage: "calendar.badge.plus")
+            }
+
+            if settingsManager.settings.fastingRemindersEnabled {
+                Picker("Schedule Mode", selection: $settingsManager.settings.fastingRemindersMode) {
+                    ForEach(FastingRemindersMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+
+                Stepper(
+                    value: fastingRemindersPerMonthBinding,
+                    in: 1...fastingRemindersUpperBound
+                ) {
+                    let label = settingsManager.settings.fastingRemindersMode == .random ? "Days Per Month" : "Times Per Month"
+                    LabeledContent(label) {
+                        Text("\(settingsManager.settings.fastingRemindersPerMonth)")
+                            .font(.subheadline.monospacedDigit())
+                    }
+                }
+
+                if settingsManager.settings.fastingRemindersMode == .weekday {
+                    Picker("Day of Week", selection: $settingsManager.settings.fastingRemindersWeekday) {
+                        ForEach(Array(settingsWeekdayLabels.enumerated()), id: \.offset) { index, label in
+                            Text(label).tag(index)
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Bible")
+        } footer: {
+            Text("These preferences mirror the PWA contract now. Native scripture-memory task generation and fasting reminder automation are still pending.")
+        }
+    }
+
+    // MARK: - Push Section
+
+    private var pushSection: some View {
+        Section {
+            LabeledContent("Permission") {
+                Text(notificationPermission.label)
+                    .foregroundStyle(notificationPermission == .granted ? .green : .secondary)
+            }
+
+            if notificationPermission == .granted {
+                Toggle(isOn: pushEnabledBinding) {
+                    Label("Push Notifications", systemImage: "bell.badge")
+                }
+            } else {
+                Button(action: {
+                    Task {
+                        await requestNotificationPermission()
+                    }
+                }) {
+                    Label(pushBusy ? "Requesting Permission…" : "Allow Notifications", systemImage: "bell.badge")
+                }
+                .disabled(pushBusy)
+            }
+
+            if let pushStatusMessage, !pushStatusMessage.isEmpty {
+                Text(pushStatusMessage)
+                    .font(.footnote)
+                    .foregroundStyle(pushStatusIsError ? .red : .secondary)
+            }
+        } header: {
+            Text("Push Notifications")
+        } footer: {
+            Text("OS notification permission is wired now and stored in the same settings payload shape as the PWA. Device registration and reminder delivery transport are still pending in the native app.")
+        }
+    }
+
     // MARK: - Nostr Section
 
     private var nostrSection: some View {
@@ -291,10 +424,42 @@ struct SettingsShellScreen: View {
             }) {
                 Label("Refresh Relay Status", systemImage: "arrow.clockwise")
             }
+
+            LabeledContent("File Storage Server") {
+                Text(settingsManager.settings.fileStorageServer)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("https://nostr.build", text: $fileStorageServerDraft)
+                    .platformNoAutoCaps()
+                    .platformURLKeyboard()
+                    .onSubmit(saveFileStorageServer)
+
+                HStack {
+                    Button("Save File Server", action: saveFileStorageServer)
+                        .disabled(fileStorageServerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button("Reset") {
+                        settingsManager.settings.fileStorageServer = UserSettings.defaultFileStorageServer
+                        fileStorageServerDraft = UserSettings.defaultFileStorageServer
+                        fileStorageStatus = "File-storage preference reset."
+                        fileStorageStatusIsError = false
+                    }
+                }
+
+                if let fileStorageStatus, !fileStorageStatus.isEmpty {
+                    Text(fileStorageStatus)
+                        .font(.footnote)
+                        .foregroundStyle(fileStorageStatusIsError ? .red : .secondary)
+                }
+            }
         } header: {
             Text("Nostr")
         } footer: {
-            Text("Relay URLs drive Taskify sharing, board publishing, and sync. The native app uses the same relay list and board relay-hint contract as the PWA/runtime.")
+            Text("Relay URLs drive Taskify sharing, board publishing, and sync. The native app uses the same relay list and board relay-hint contract as the PWA/runtime. File-storage server preference is persisted now for future NIP-96 parity.")
         }
     }
 
@@ -496,6 +661,67 @@ struct SettingsShellScreen: View {
         boardSummaries.filter(\.archived)
     }
 
+    private var accentChoices: [AccentChoice] {
+        settingsManager.settings.accent == .background
+            ? AccentChoice.allCases
+            : AccentChoice.allCases.filter { $0 != .background }
+    }
+
+    private var scriptureMemoryBoards: [ProfileBoardSummary] {
+        visibleBoards
+    }
+
+    private var fastingRemindersUpperBound: Int {
+        settingsManager.settings.fastingRemindersMode == .random ? 31 : 5
+    }
+
+    private var scriptureMemoryBinding: Binding<Bool> {
+        Binding(
+            get: { settingsManager.settings.scriptureMemoryEnabled },
+            set: { newValue in
+                settingsManager.settings.bibleTrackerEnabled = settingsManager.settings.bibleTrackerEnabled || newValue
+                settingsManager.settings.scriptureMemoryEnabled = newValue
+                guard newValue else { return }
+                if settingsManager.settings.scriptureMemoryBoardId == nil {
+                    settingsManager.settings.scriptureMemoryBoardId = scriptureMemoryBoards.first?.id
+                }
+            }
+        )
+    }
+
+    private var scriptureMemoryBoardSelection: Binding<String> {
+        Binding(
+            get: { settingsManager.settings.scriptureMemoryBoardId ?? "" },
+            set: { newValue in
+                settingsManager.settings.scriptureMemoryBoardId = newValue.isEmpty ? nil : newValue
+            }
+        )
+    }
+
+    private var fastingRemindersPerMonthBinding: Binding<Int> {
+        Binding(
+            get: { settingsManager.settings.fastingRemindersPerMonth },
+            set: { newValue in
+                settingsManager.settings.fastingRemindersPerMonth = min(fastingRemindersUpperBound, max(1, newValue))
+            }
+        )
+    }
+
+    private var pushEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { settingsManager.settings.pushNotifications.enabled },
+            set: { newValue in
+                var next = settingsManager.settings.pushNotifications
+                next.enabled = newValue
+                next.platform = .ios
+                next.permission = notificationPermission
+                settingsManager.settings.pushNotifications = next
+                pushStatusMessage = newValue ? "Push preference saved for this device." : nil
+                pushStatusIsError = false
+            }
+        )
+    }
+
     private func initials(from name: String) -> String {
         let words = name.split(separator: " ").prefix(2)
         let value = words.map { String($0.prefix(1)).uppercased() }.joined()
@@ -511,6 +737,66 @@ struct SettingsShellScreen: View {
         guard !editingRelays.contains(url) else { return }
         editingRelays.append(url)
         newRelayURL = ""
+    }
+
+    private func saveFileStorageServer() {
+        let trimmed = fileStorageServerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            fileStorageStatus = "Enter a valid file-storage server URL."
+            fileStorageStatusIsError = true
+            return
+        }
+        guard let normalized = UserSettings.normalizeFileStorageServer(trimmed) else {
+            fileStorageStatus = "Enter a valid file-storage server URL."
+            fileStorageStatusIsError = true
+            return
+        }
+        settingsManager.settings.fileStorageServer = normalized
+        fileStorageServerDraft = normalized
+        fileStorageStatus = "File-storage preference saved."
+        fileStorageStatusIsError = false
+    }
+
+    @MainActor
+    private func refreshNotificationPermissionStatus() async {
+        #if canImport(UserNotifications)
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        let permission = NotificationPermissionState(settings.authorizationStatus)
+        notificationPermission = permission
+        var next = settingsManager.settings.pushNotifications
+        next.platform = .ios
+        next.permission = permission
+        if permission != .granted {
+            next.enabled = false
+        }
+        settingsManager.settings.pushNotifications = next
+        #else
+        notificationPermission = .notDetermined
+        #endif
+    }
+
+    @MainActor
+    private func requestNotificationPermission() async {
+        #if canImport(UserNotifications)
+        pushBusy = true
+        defer { pushBusy = false }
+
+        do {
+            let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
+            await refreshNotificationPermissionStatus()
+            pushStatusMessage = granted
+                ? "Notifications are allowed on this device."
+                : "Permission was not granted. You can enable notifications later in system settings."
+            pushStatusIsError = !granted
+        } catch {
+            pushStatusMessage = error.localizedDescription
+            pushStatusIsError = true
+        }
+        #else
+        pushStatusMessage = "Notification permissions are unavailable on this platform build."
+        pushStatusIsError = true
+        #endif
     }
 
     private func startBoardBinding(for weekday: Int) -> Binding<String> {
@@ -636,3 +922,20 @@ struct SettingsShellScreen: View {
         }
     }
 }
+
+#if canImport(UserNotifications)
+private extension NotificationPermissionState {
+    init(_ status: UNAuthorizationStatus) {
+        switch status {
+        case .authorized, .provisional, .ephemeral:
+            self = .granted
+        case .denied:
+            self = .denied
+        case .notDetermined:
+            self = .notDetermined
+        @unknown default:
+            self = .notDetermined
+        }
+    }
+}
+#endif

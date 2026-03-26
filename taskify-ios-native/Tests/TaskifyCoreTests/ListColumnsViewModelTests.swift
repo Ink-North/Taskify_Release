@@ -53,6 +53,28 @@ struct ListColumnsViewModelTests {
         #expect(vm.indexSections.first?.entries.map(\.label) == ["Todo"])
     }
 
+    @Test("compound board exposes source mapping for inline task routing")
+    func compoundSourceLookup() {
+        let child = ListBoardDefinition(
+            id: "child-1",
+            name: "Bugs",
+            kind: .lists,
+            columns: [.init(id: "todo", name: "Todo")]
+        )
+        let compound = ListBoardDefinition(
+            id: "cmp",
+            name: "All",
+            kind: .compound,
+            columns: [],
+            children: ["child-1"]
+        )
+        let vm = ListColumnsViewModel()
+
+        vm.configure(currentBoard: compound, boards: [compound, child])
+
+        #expect(vm.source(for: "child-1:todo") == ListColumnSource(boardId: "child-1", columnId: "todo", boardName: "Bugs"))
+    }
+
     @Test("compound index sections can hide child board headers")
     func compoundIndexSectionsHideHeaders() {
         let child = ListBoardDefinition(

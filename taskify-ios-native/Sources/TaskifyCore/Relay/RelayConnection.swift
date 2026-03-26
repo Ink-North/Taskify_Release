@@ -11,6 +11,7 @@ public actor RelayConnection {
     private var reconnectDelay: TimeInterval = 1.0
     private var shouldReconnect = true
     private var isConnected = false
+    private var pendingMessages: [String] = []
 
     public init(url: String, pool: RelayPool) {
         self.url = url
@@ -34,8 +35,17 @@ public actor RelayConnection {
     // MARK: Send
 
     public func send(_ text: String) async {
-        guard let task = webSocketTask, isConnected else { return }
-        try? await task.send(.string(text))
+        guard let task = webSocketTask, isConnected else {
+            pendingMessages.append(text)
+            return
+        }
+
+        do {
+            try await task.send(.string(text))
+        } catch {
+            pendingMessages.append(text)
+            await handleDisconnect()
+        }
     }
 
     public func connected() -> Bool { isConnected }
@@ -51,6 +61,10 @@ public actor RelayConnection {
         isConnected = true
         reconnectDelay = 1.0
         startReceiving(task: task)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.finishOpenWebSocket()
+        }
     }
 
     private func startReceiving(task: URLSessionWebSocketTask) {
@@ -79,8 +93,33 @@ public actor RelayConnection {
         }
     }
 
+    private func flushPendingMessages() async {
+        guard let task = webSocketTask, isConnected, !pendingMessages.isEmpty else { return }
+        let queued = pendingMessages
+        pendingMessages.removeAll()
+
+        for message in queued {
+            do {
+                try await task.send(.string(message))
+            } catch {
+                pendingMessages.insert(message, at: 0)
+                await handleDisconnect()
+                return
+            }
+        }
+    }
+
+    private func finishOpenWebSocket() async {
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        await flushPendingMessages()
+        if let pool {
+            await pool.relayDidConnect(url: url)
+        }
+    }
+
     private func handleDisconnect() async {
         isConnected = false
+        webSocketTask = nil
         guard shouldReconnect else { return }
         try? await Task.sleep(nanoseconds: UInt64(reconnectDelay * 1_000_000_000))
         reconnectDelay = min(reconnectDelay * 2, 30.0) // exponential backoff, max 30s

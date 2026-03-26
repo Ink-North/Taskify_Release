@@ -66,6 +66,7 @@ public final class TaskifyCalendarEvent {
     public var boardId: String
     public var boardName: String?
     public var title: String
+    public var summary: String?
     public var kind: String             // "date" or "time"
     public var startDate: String?
     public var endDate: String?
@@ -75,6 +76,7 @@ public final class TaskifyCalendarEvent {
     public var endTzid: String?
     public var eventDescription: String?
     public var columnId: String?
+    public var order: Int?
     public var deleted: Bool
     public var createdAt: Int
     public var updatedAt: String?
@@ -82,6 +84,8 @@ public final class TaskifyCalendarEvent {
     public var recurrenceJSON: String?
     public var participantsJSON: String?
     public var documentsJSON: String?
+    public var locationsJSON: String?
+    public var referencesJSON: String?
 
     public init(id: String, boardId: String, title: String, kind: String = "date", createdAt: Int = Int(Date().timeIntervalSince1970)) {
         self.id = id

@@ -168,6 +168,10 @@ public final class ListColumnsViewModel: ObservableObject {
         itemsByColumn = next
     }
 
+    public func source(for displayColumnId: String) -> ListColumnSource? {
+        listColumnSources[displayColumnId]
+    }
+
     @discardableResult
     public func addList(name: String) -> String? {
         guard currentBoard?.kind == .lists else { return nil }
