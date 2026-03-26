@@ -5,7 +5,7 @@ import Testing
 @Suite("BoardColumnDerivation")
 struct BoardColumnDerivationTests {
 
-    @Test("derives unique sorted columns from task column ids")
+    @Test("derives unique columns preserving first-seen order")
     func derivesColumnsFromTasks() {
         let tasks: [BoardTaskItem] = [
             .init(id: "1", title: "A", completed: false, columnId: "inbox"),
@@ -14,8 +14,19 @@ struct BoardColumnDerivationTests {
         ]
 
         let cols = BoardColumnDerivation.deriveColumns(from: tasks)
-        #expect(cols.map(\.id) == ["doing", "inbox"])
-        #expect(cols.first?.name == "Doing")
+        #expect(cols.map(\.id) == ["inbox", "doing"])
+        #expect(cols.first?.name == "Inbox")
+    }
+
+    @Test("preferred order is honored before task-derived order")
+    func preferredOrder() {
+        let tasks: [BoardTaskItem] = [
+            .init(id: "1", title: "A", completed: false, columnId: "doing"),
+            .init(id: "2", title: "B", completed: false, columnId: "backlog"),
+        ]
+
+        let cols = BoardColumnDerivation.deriveColumns(from: tasks, preferredOrder: ["todo", "doing"])
+        #expect(cols.map(\.id) == ["todo", "doing", "backlog"])
     }
 
     @Test("falls back to defaults when no task columns")
