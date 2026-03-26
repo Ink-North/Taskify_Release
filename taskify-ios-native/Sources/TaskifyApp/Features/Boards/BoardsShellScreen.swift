@@ -165,11 +165,19 @@ struct BoardsShellScreen: View {
 
     private func syncListColumnsState() {
         guard let selected = boardListVM.visibleBoards.first(where: { $0.id == boardListVM.selectedBoardId }) else { return }
+        let preferredColumns = selected.columns ?? []
+        let preferredOrder = preferredColumns.map(\.id)
+        let derived = BoardColumnDerivation.deriveColumns(from: boardDetailVM.visibleTasks, preferredOrder: preferredOrder)
+
+        var namesById: [String: String] = [:]
+        for col in preferredColumns { namesById[col.id] = col.name }
+        let finalColumns = derived.map { BoardColumn(id: $0.id, name: namesById[$0.id] ?? $0.name) }
+
         let definition = ListBoardDefinition(
             id: selected.id,
             name: selected.name,
             kind: .lists,
-            columns: BoardColumnDerivation.deriveColumns(from: boardDetailVM.visibleTasks)
+            columns: finalColumns
         )
         listColumnsVM.configure(currentBoard: definition, boards: [definition])
         listColumnsVM.setTasks(boardDetailVM.visibleTasks.map {

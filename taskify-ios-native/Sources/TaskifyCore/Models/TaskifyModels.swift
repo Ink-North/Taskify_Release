@@ -146,9 +146,14 @@ public struct TaskifyProfile: Codable, Equatable {
 public struct ProfileBoardEntry: Codable, Equatable {
     public var id: String
     public var name: String
-    public init(id: String, name: String) {
+    public var kind: String?
+    public var columns: [BoardColumn]?
+
+    public init(id: String, name: String, kind: String? = nil, columns: [BoardColumn]? = nil) {
         self.id = id
         self.name = name
+        self.kind = kind
+        self.columns = columns
     }
 }
 
@@ -181,7 +186,7 @@ public struct TaskAssignee: Codable {
 
 // MARK: - Column
 
-public struct BoardColumn: Codable, Identifiable {
+public struct BoardColumn: Codable, Identifiable, Equatable {
     public var id: String
     public var name: String
 
