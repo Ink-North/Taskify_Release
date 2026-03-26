@@ -416,8 +416,26 @@ extension TaskifyWebWrapperView {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            #if os(iOS)
+            if let url = navigationAction.request.url, shouldOpenExternallyForOAuth(url: url) {
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                decisionHandler(.cancel)
+                return
+            }
+            #endif
             decisionHandler(.allow)
         }
+
+        #if os(iOS)
+        private func shouldOpenExternallyForOAuth(url: URL) -> Bool {
+            guard let host = url.host?.lowercased() else { return false }
+            let path = url.path.lowercased()
+            if host == "accounts.google.com" && path.contains("/oauth") { return true }
+            if host == "accounts.google.com" && path.contains("/o/oauth2") { return true }
+            if host == "oauth2.googleapis.com" { return true }
+            return false
+        }
+        #endif
 
         @available(iOS 15.0, *)
         func webView(
