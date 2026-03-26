@@ -24,4 +24,9 @@ final class AppAuthViewModel: ObservableObject {
         manager.bootstrap()
         state = manager.state
     }
+
+    func signOut() {
+        manager.signOut()
+        state = manager.state
+    }
 }

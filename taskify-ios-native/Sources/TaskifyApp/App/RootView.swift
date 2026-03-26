@@ -1,13 +1,19 @@
 import SwiftUI
+import SwiftData
 import TaskifyCore
 
 struct RootView: View {
     @EnvironmentObject private var authVM: AppAuthViewModel
+    @EnvironmentObject private var dataController: DataController
+    @Environment(\.modelContext) private var modelContext
 
     var body: some View {
         switch authVM.state {
         case .signedIn(let profile):
             NativeAppShellView(profile: profile)
+                .task {
+                    await dataController.bootstrap(profile: profile, modelContext: modelContext)
+                }
         case .importing:
             ProgressView("Signing in…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -22,6 +28,7 @@ struct RootView: View {
 
 struct NativeAppShellView: View {
     @StateObject private var shellVM: AppShellViewModel
+    @EnvironmentObject private var dataController: DataController
 
     init(profile: TaskifyProfile) {
         _shellVM = StateObject(wrappedValue: AppShellViewModel(profile: profile))
@@ -36,11 +43,11 @@ struct NativeAppShellView: View {
                 .tabItem { Label("Boards", systemImage: "square.grid.2x2") }
                 .tag(AppShellViewModel.Tab.boards)
 
-            UpcomingShellScreen()
+            UpcomingShellScreen(profile: shellVM.profile)
                 .tabItem { Label("Upcoming", systemImage: "calendar") }
                 .tag(AppShellViewModel.Tab.upcoming)
 
-            SettingsShellScreen(profileName: shellVM.profile.name)
+            SettingsShellScreen(profile: shellVM.profile)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(AppShellViewModel.Tab.settings)
         }
