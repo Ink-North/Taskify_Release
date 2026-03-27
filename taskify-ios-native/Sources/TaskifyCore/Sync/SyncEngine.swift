@@ -74,9 +74,8 @@ public final class BoardSyncManager: ObservableObject {
             ]
 
             // Absolute 25s timeout — mirrors App.tsx absoluteTimeoutSecs
-            let absoluteDeadline = Date().addingTimeInterval(absoluteTimeoutSecs)
 
-            let subKey = await relayPool.subscribe(
+            let _ = await relayPool.subscribe(
                 filters: [filter],
                 onEvent: { [weak self] event, relayUrl in
                     guard let self else { return }

@@ -8,12 +8,28 @@
 /// - Event batch flush on EOSE before firing onEose (mirrors SubscriptionManager EOSE drain)
 /// - CursorStore: per-filter since cursor advanced on every received event
 /// - EventCache: deduplication ring buffer (mirrors EventCache.ts)
+///
+/// Primal-informed additions (patterns only, no GPL code):
+/// - `atLeastOneConnected()` — mirrors Primal RelayPool.atLeastOneConnected @Published
+/// - `connectionSummary()` — structured label for UI (e.g. "2/4 relays")
+/// - Conforms to RelayPoolProtocol so RelayConnection can be mock-tested
 
 import Foundation
 
+// MARK: - ConnectionSummary
+
+/// Structured relay connection state for UI consumption.
+/// Mirrors Primal's `numOfConnected` / `atLeastOneConnected` @Published pattern.
+public struct ConnectionSummary: Sendable, Equatable {
+    public let connected: Int
+    public let total: Int
+    public var label: String { "\(connected)/\(total) relays" }
+    public var hasAny: Bool { connected > 0 }
+}
+
 // MARK: - RelayPool
 
-public actor RelayPool {
+public actor RelayPool: RelayPoolProtocol {
 
     // MARK: Dependencies injected at init
 
@@ -60,7 +76,31 @@ public actor RelayPool {
         for (url, conn) in connections {
             statuses.append((url: url, connected: await conn.connected()))
         }
+        // Include configured relays that haven't connected yet (no RelayConnection created yet)
+        for url in relayURLs where connections[url] == nil {
+            statuses.append((url: url, connected: false))
+        }
         return statuses
+    }
+
+    /// Returns true if at least one relay is currently connected.
+    /// Mirrors Primal's `atLeastOneConnected` @Published property.
+    public func atLeastOneConnected() async -> Bool {
+        for (_, conn) in connections {
+            if await conn.connected() { return true }
+        }
+        return false
+    }
+
+    /// Returns a structured summary of relay connection state for UI.
+    /// e.g. `ConnectionSummary(connected: 2, total: 4)` → "2/4 relays"
+    public func connectionSummary() async -> ConnectionSummary {
+        let total = relayURLs.count
+        var connected = 0
+        for (_, conn) in connections {
+            if await conn.connected() { connected += 1 }
+        }
+        return ConnectionSummary(connected: connected, total: total)
     }
 
     public func relayDidConnect(url: String) async {
@@ -210,8 +250,13 @@ public actor RelayPool {
 
     // MARK: Internal dispatch (called from RelayConnection)
 
-    nonisolated func dispatch(message: RelayMessage, from relayUrl: String) {
+    public nonisolated func dispatch(message: RelayMessage, from relayUrl: String) {
         Task { await _dispatch(message: message, relayUrl: relayUrl) }
+    }
+
+    /// Async variant for test-only use — awaits actor isolation before dispatching.
+    public func dispatchAsync(message: RelayMessage, from relayUrl: String) {
+        _dispatch(message: message, relayUrl: relayUrl)
     }
 
     private func _dispatch(message: RelayMessage, relayUrl: String) {
