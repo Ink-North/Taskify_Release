@@ -665,7 +665,15 @@ public final class DataController: ObservableObject {
     private func rebuildRelayPool() async {
         let relayURLs = allRelayURLs()
         await relayPool?.disconnect()
-        let pool = RelayPool(relayURLs: relayURLs)
+        relayConnected = 0
+        let pool = RelayPool(
+            relayURLs: relayURLs,
+            onConnectionSummaryChange: { [weak self] summary in
+                Task { @MainActor [weak self] in
+                    self?.relayConnected = summary.connected
+                }
+            }
+        )
         relayPool = pool
         await pool.connect()
         relayConnected = await pool.connectedCount()

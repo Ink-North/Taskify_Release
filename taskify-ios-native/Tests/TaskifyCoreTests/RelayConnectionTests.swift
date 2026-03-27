@@ -10,6 +10,7 @@ import Testing
 final class MockRelayPool: RelayPoolProtocol, @unchecked Sendable {
     var dispatchedMessages: [(RelayMessage, String)] = []
     var connectedUrls: [String] = []
+    var disconnectedUrls: [String] = []
 
     nonisolated func dispatch(message: RelayMessage, from relayUrl: String) {
         dispatchedMessages.append((message, relayUrl))
@@ -17,6 +18,10 @@ final class MockRelayPool: RelayPoolProtocol, @unchecked Sendable {
 
     func relayDidConnect(url: String) async {
         connectedUrls.append(url)
+    }
+
+    func relayDidDisconnect(url: String) async {
+        disconnectedUrls.append(url)
     }
 }
 
@@ -63,6 +68,18 @@ struct RelayConnectionTests {
     func backoffCapsAt30() async {
         // Verify the constant is set correctly
         #expect(RelayConnection.maxReconnectDelaySecs == 30.0)
+    }
+
+    @Test("TLS trust errors do not auto reconnect")
+    func tlsTrustErrorsDoNotReconnect() {
+        let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorSecureConnectionFailed)
+        #expect(RelayConnection.shouldAutoReconnect(after: error) == false)
+    }
+
+    @Test("transient network errors still auto reconnect")
+    func transientErrorsStillReconnect() {
+        let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost)
+        #expect(RelayConnection.shouldAutoReconnect(after: error) == true)
     }
 }
 

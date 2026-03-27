@@ -16,6 +16,40 @@ import Foundation
 public protocol RelayPoolProtocol: AnyObject {
     nonisolated func dispatch(message: RelayMessage, from relayUrl: String)
     func relayDidConnect(url: String) async
+    func relayDidDisconnect(url: String) async
+}
+
+private final class RelayConnectionDelegateProxy: NSObject, URLSessionWebSocketDelegate {
+    var owner: RelayConnection?
+
+    init(owner: RelayConnection) {
+        self.owner = owner
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        guard let owner else { return }
+        Task { await owner.webSocketDidOpen(task: webSocketTask) }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+        reason: Data?
+    ) {
+        guard let owner else { return }
+        Task { await owner.webSocketDidClose(task: webSocketTask, closeCode: closeCode, reason: reason) }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        guard let owner, let error, let webSocketTask = task as? URLSessionWebSocketTask else { return }
+        let nsError = error as NSError
+        Task { await owner.webSocketDidComplete(task: webSocketTask, error: nsError) }
+    }
 }
 
 // MARK: - RelayConnection
@@ -31,6 +65,8 @@ public actor RelayConnection {
 
     public let url: String
     private weak var pool: (any RelayPoolProtocol)?
+    private var session: URLSession?
+    private var delegateProxy: RelayConnectionDelegateProxy?
     private var webSocketTask: URLSessionWebSocketTask?
     private var reconnectDelay: TimeInterval = 1.0
     private var shouldReconnect = true
@@ -50,13 +86,9 @@ public actor RelayConnection {
         await openWebSocket()
     }
 
-    public func disconnect() async {
+    public func disconnect(notifyPool: Bool = true) async {
         shouldReconnect = false
-        pingTask?.cancel()
-        pingTask = nil
-        webSocketTask?.cancel(with: .normalClosure, reason: nil)
-        webSocketTask = nil
-        isConnected = false
+        await teardownCurrentConnection(closeCode: .normalClosure, notifyPool: notifyPool)
     }
 
     // MARK: Send
@@ -71,7 +103,7 @@ public actor RelayConnection {
             try await task.send(.string(text))
         } catch {
             pendingMessages.append(text)
-            await handleDisconnect()
+            await handleDisconnect(triggering: task, error: error as NSError)
         }
     }
 
@@ -86,18 +118,14 @@ public actor RelayConnection {
 
     private func openWebSocket() async {
         guard let wsURL = URL(string: url) else { return }
-        let session = URLSession(configuration: .default)
+        let delegateProxy = RelayConnectionDelegateProxy(owner: self)
+        let session = URLSession(configuration: .default, delegate: delegateProxy, delegateQueue: nil)
         let task = session.webSocketTask(with: wsURL)
+        self.delegateProxy = delegateProxy
+        self.session = session
         webSocketTask = task
         task.resume()
-        isConnected = true
-        reconnectDelay = 1.0
         startReceiving(task: task)
-        startPingLoop(task: task)
-        Task { [weak self] in
-            guard let self else { return }
-            await self.finishOpenWebSocket()
-        }
     }
 
     private func startReceiving(task: URLSessionWebSocketTask) {
@@ -105,6 +133,7 @@ public actor RelayConnection {
             while true {
                 do {
                     let message = try await task.receive()
+                    await markConnectedIfNeeded(task: task)
                     switch message {
                     case .string(let text):
                         if let parsed = RelayMessage.parse(text) {
@@ -119,7 +148,7 @@ public actor RelayConnection {
                         break
                     }
                 } catch {
-                    await handleDisconnect()
+                    await handleDisconnect(triggering: task, error: error as NSError)
                     return
                 }
             }
@@ -147,45 +176,114 @@ public actor RelayConnection {
                 }
                 if pingError != nil {
                     // Ping failed — connection is silently dead
-                    await self.handleDisconnect()
+                    await self.handleDisconnect(triggering: task, error: pingError as NSError?)
                     return
                 }
             }
         }
     }
 
-    private func flushPendingMessages() async {
-        guard let task = webSocketTask, isConnected, !pendingMessages.isEmpty else { return }
+    private func flushPendingMessages(task: URLSessionWebSocketTask) async {
+        guard isConnected, !pendingMessages.isEmpty else { return }
         let queued = pendingMessages
         pendingMessages.removeAll()
 
-        for message in queued {
+        for (index, message) in queued.enumerated() {
+            guard let currentTask = webSocketTask, currentTask === task, isConnected else {
+                pendingMessages = Array(queued[index...]) + pendingMessages
+                return
+            }
             do {
                 try await task.send(.string(message))
             } catch {
-                pendingMessages.insert(message, at: 0)
-                await handleDisconnect()
+                pendingMessages = Array(queued[index...]) + pendingMessages
+                await handleDisconnect(triggering: task, error: error as NSError)
                 return
             }
         }
     }
 
-    private func finishOpenWebSocket() async {
-        try? await Task.sleep(nanoseconds: 150_000_000)
-        await flushPendingMessages()
+    private func markConnectedIfNeeded(task: URLSessionWebSocketTask) async {
+        guard let currentTask = webSocketTask, currentTask === task else { return }
+        guard !isConnected else { return }
+        isConnected = true
+        reconnectDelay = 1.0
+        startPingLoop(task: task)
+        await flushPendingMessages(task: task)
         if let pool {
             await pool.relayDidConnect(url: url)
         }
     }
 
-    private func handleDisconnect() async {
+    fileprivate func webSocketDidOpen(task: URLSessionWebSocketTask) async {
+        await markConnectedIfNeeded(task: task)
+    }
+
+    fileprivate func webSocketDidClose(
+        task: URLSessionWebSocketTask,
+        closeCode _: URLSessionWebSocketTask.CloseCode,
+        reason _: Data?
+    ) async {
+        await handleDisconnect(triggering: task, error: nil)
+    }
+
+    fileprivate func webSocketDidComplete(task: URLSessionWebSocketTask, error: NSError) async {
+        await handleDisconnect(triggering: task, error: error)
+    }
+
+    static func shouldAutoReconnect(after error: NSError?) -> Bool {
+        guard let error else { return true }
+        guard error.domain == NSURLErrorDomain else { return true }
+
+        switch error.code {
+        case NSURLErrorSecureConnectionFailed,
+             NSURLErrorServerCertificateHasBadDate,
+             NSURLErrorServerCertificateUntrusted,
+             NSURLErrorServerCertificateHasUnknownRoot,
+             NSURLErrorServerCertificateNotYetValid,
+             NSURLErrorClientCertificateRejected,
+             NSURLErrorClientCertificateRequired:
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func teardownCurrentConnection(
+        closeCode: URLSessionWebSocketTask.CloseCode,
+        notifyPool: Bool
+    ) async {
+        let wasConnected = isConnected
         pingTask?.cancel()
         pingTask = nil
-        isConnected = false
+        let task = webSocketTask
         webSocketTask = nil
-        guard shouldReconnect else { return }
-        try? await Task.sleep(nanoseconds: UInt64(reconnectDelay * 1_000_000_000))
+        let session = self.session
+        self.session = nil
+        delegateProxy?.owner = nil
+        delegateProxy = nil
+        isConnected = false
+
+        task?.cancel(with: closeCode, reason: nil)
+        session?.invalidateAndCancel()
+
+        if notifyPool, wasConnected, let pool {
+            await pool.relayDidDisconnect(url: url)
+        }
+    }
+
+    private func handleDisconnect(
+        triggering task: URLSessionWebSocketTask,
+        error: NSError?
+    ) async {
+        guard let currentTask = webSocketTask, currentTask === task else { return }
+        let shouldRetry = shouldReconnect && Self.shouldAutoReconnect(after: error)
+        await teardownCurrentConnection(closeCode: .goingAway, notifyPool: true)
+        guard shouldRetry else { return }
+        let delay = reconnectDelay
         reconnectDelay = min(reconnectDelay * 2, Self.maxReconnectDelaySecs)
+        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        guard shouldReconnect, webSocketTask == nil else { return }
         await openWebSocket()
     }
 }
