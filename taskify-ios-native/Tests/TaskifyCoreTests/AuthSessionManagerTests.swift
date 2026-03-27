@@ -124,16 +124,19 @@ struct AuthSessionManagerTests {
 
     @Test("sign out always returns signed out")
     func signOut() async throws {
+        var cleared = false
         let manager = AuthSessionManager(
             loadActiveProfile: {
                 TaskifyProfile(name: "Nathan", nsecHex: String(repeating: "a", count: 64), npub: "npub1x", relays: [], boards: [])
             },
             saveProfile: { _ in },
-            importIdentity: { _ in fatalError("not used") }
+            importIdentity: { _ in fatalError("not used") },
+            clearActiveProfile: { cleared = true }
         )
 
         await manager.bootstrap()
         await manager.signOut()
         #expect(await manager.state == .signedOut)
+        #expect(cleared == true)
     }
 }

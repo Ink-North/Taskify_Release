@@ -48,7 +48,17 @@ public final class SignInViewModel: ObservableObject {
     }
 
     public func applyExternalError(_ message: String?) {
-        guard let message, !message.isEmpty else { return }
+        guard let message, !message.isEmpty else {
+            errorMessage = nil
+            return
+        }
         errorMessage = message
+    }
+
+    public func reset(secretKeyInput: String = "", profileName: String = "") {
+        self.secretKeyInput = secretKeyInput
+        self.profileName = profileName
+        errorMessage = nil
+        isSubmitting = false
     }
 }

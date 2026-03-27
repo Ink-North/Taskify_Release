@@ -16,15 +16,18 @@ public final class AuthSessionManager {
     private let loadActiveProfileFn: () throws -> TaskifyProfile?
     private let saveProfileFn: (TaskifyProfile) throws -> Void
     private let importIdentityFn: (String) throws -> NostrIdentity
+    private let clearActiveProfileFn: () throws -> Void
 
     public init(
         loadActiveProfile: @escaping () throws -> TaskifyProfile?,
         saveProfile: @escaping (TaskifyProfile) throws -> Void,
-        importIdentity: @escaping (String) throws -> NostrIdentity
+        importIdentity: @escaping (String) throws -> NostrIdentity,
+        clearActiveProfile: @escaping () throws -> Void = {}
     ) {
         self.loadActiveProfileFn = loadActiveProfile
         self.saveProfileFn = saveProfile
         self.importIdentityFn = importIdentity
+        self.clearActiveProfileFn = clearActiveProfile
     }
 
     public func bootstrap() {
@@ -67,6 +70,11 @@ public final class AuthSessionManager {
     }
 
     public func signOut() {
-        state = .signedOut
+        do {
+            try clearActiveProfileFn()
+            state = .signedOut
+        } catch {
+            state = .error("Unable to sign out.")
+        }
     }
 }

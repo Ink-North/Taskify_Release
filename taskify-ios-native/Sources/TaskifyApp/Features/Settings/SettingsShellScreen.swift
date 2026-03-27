@@ -1,8 +1,6 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import TaskifyCore
-#if canImport(UserNotifications)
-import UserNotifications
-#endif
 
 private let settingsWeekdayLabels = [
     "Sunday",
@@ -13,6 +11,44 @@ private let settingsWeekdayLabels = [
     "Friday",
     "Saturday",
 ]
+
+private enum SettingsFontSizeOption: String, CaseIterable, Identifiable {
+    case system
+    case small
+    case large
+    case xLarge
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return "System"
+        case .small: return "Sm"
+        case .large: return "Lg"
+        case .xLarge: return "X-Lg"
+        }
+    }
+
+    var baseFontSize: Double? {
+        switch self {
+        case .system: return nil
+        case .small: return 14
+        case .large: return 20
+        case .xLarge: return 22
+        }
+    }
+
+    static func from(baseFontSize: Double?) -> SettingsFontSizeOption {
+        guard let baseFontSize else { return .system }
+        if baseFontSize < 17 {
+            return .small
+        }
+        if baseFontSize < 21 {
+            return .large
+        }
+        return .xLarge
+    }
+}
 
 struct SettingsShellScreen: View {
     let profile: TaskifyProfile
@@ -40,6 +76,10 @@ struct SettingsShellScreen: View {
     @State private var pushStatusIsError = false
     @State private var notificationPermission: NotificationPermissionState = .notDetermined
     @State private var pushBusy = false
+    @State private var showSettingsImporter = false
+    @State private var showSettingsExporter = false
+    @State private var settingsTransferStatus: String?
+    @State private var settingsTransferStatusIsError = false
 
     var body: some View {
         NavigationStack {
@@ -81,6 +121,21 @@ struct SettingsShellScreen: View {
             }
             .sheet(item: $managingBoard) { board in
                 manageBoardSheet(for: board)
+            }
+            .fileImporter(
+                isPresented: $showSettingsImporter,
+                allowedContentTypes: [.json],
+                allowsMultipleSelection: false
+            ) { result in
+                handleSettingsImport(result)
+            }
+            .fileExporter(
+                isPresented: $showSettingsExporter,
+                document: SettingsJSONDocument(settings: settingsManager.settings),
+                contentType: .json,
+                defaultFilename: "taskify-settings"
+            ) { result in
+                handleSettingsExport(result)
             }
         }
     }
@@ -190,12 +245,23 @@ struct SettingsShellScreen: View {
                 ForEach(accentChoices) { choice in
                     HStack {
                         Circle()
-                            .fill(ThemeColors.accent(for: choice))
+                            .fill(accentSwatchColor(for: choice))
                             .frame(width: 14, height: 14)
                         Text(choice.label)
                     }
                     .tag(choice)
                 }
+            }
+
+            Picker("Font Size", selection: fontSizeSelection) {
+                ForEach(SettingsFontSizeOption.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+
+            LabeledContent("Open App To") {
+                Text(settingsManager.settings.startupView.label)
+                    .foregroundStyle(.secondary)
             }
 
             Picker("Week Starts On", selection: $settingsManager.settings.weekStart) {
@@ -225,10 +291,63 @@ struct SettingsShellScreen: View {
             Toggle(isOn: $settingsManager.settings.showFullWeekRecurring) {
                 Label("Show Full Week Recurring", systemImage: "calendar.badge.clock")
             }
+
+            if let backgroundAppearance {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Imported Photo Background")
+                        .font(.subheadline.weight(.semibold))
+
+                    if let previewImage = PlatformServices.image(fromDataURL: backgroundAppearance.imageDataURL) {
+                        previewImage
+                            .resizable()
+                            .scaledToFill()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 140)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .strokeBorder(Color.secondary.opacity(0.18))
+                            )
+                    }
+
+                    if backgroundAppearance.accents.count > 1 {
+                        Picker("Photo Accent", selection: backgroundAccentSelection) {
+                            ForEach(Array(backgroundAppearance.accents.enumerated()), id: \.offset) { index, palette in
+                                HStack(spacing: 8) {
+                                    Circle()
+                                        .fill(accentColor(from: palette.fill))
+                                        .frame(width: 12, height: 12)
+                                    Text("Accent \(index + 1)")
+                                }
+                                .tag(index)
+                            }
+                        }
+                    }
+
+                    Picker("Background Clarity", selection: $settingsManager.settings.backgroundBlur) {
+                        ForEach(BackgroundBlurMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+
+                    Button(role: .destructive) {
+                        settingsManager.settings.clearBackgroundAppearance()
+                    } label: {
+                        Label("Clear Imported Background", systemImage: "trash")
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            if settingsManager.settings.startupView == .wallet {
+                Text("Wallet launch is preserved for PWA parity. Native iOS still opens the main app shell until the wallet tab ships.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         } header: {
             Text("View")
         } footer: {
-            Text("Theme, accent, new-task placement, completed-tab behavior, streak badges, and subtask visibility apply immediately. Week-based recurrence settings are stored for parity with the PWA.")
+            Text("Theme, accent, font size, new-task placement, completed-tab behavior, streak badges, and subtask visibility apply immediately. Imported PWA photo backgrounds round-trip here and now drive the native accent tint.")
         }
     }
 
@@ -519,10 +638,24 @@ struct SettingsShellScreen: View {
             Toggle(isOn: $settingsManager.settings.cloudBackupsEnabled) {
                 Label("Cloud Backup", systemImage: "cloud")
             }
+
+            Button(action: { showSettingsExporter = true }) {
+                Label("Export Settings JSON", systemImage: "square.and.arrow.up")
+            }
+
+            Button(action: { showSettingsImporter = true }) {
+                Label("Import Settings JSON", systemImage: "square.and.arrow.down")
+            }
+
+            if let settingsTransferStatus, !settingsTransferStatus.isEmpty {
+                Text(settingsTransferStatus)
+                    .font(.footnote)
+                    .foregroundStyle(settingsTransferStatusIsError ? .red : .secondary)
+            }
         } header: {
             Text("Backup & Sync")
         } footer: {
-            Text("These backup preferences are stored now for parity with the PWA settings contract. Native upload and restore transport are still pending, so these toggles do not yet move data off-device.")
+            Text("Nostr and cloud-backup toggles still mirror the PWA contract for upcoming transport work. Settings JSON import/export is live now for moving preferences, relays, and view state between native and PWA clients.")
         }
     }
 
@@ -661,10 +794,14 @@ struct SettingsShellScreen: View {
         boardSummaries.filter(\.archived)
     }
 
+    private var backgroundAppearance: BackgroundAppearance? {
+        settingsManager.settings.backgroundAppearance
+    }
+
     private var accentChoices: [AccentChoice] {
-        settingsManager.settings.accent == .background
-            ? AccentChoice.allCases
-            : AccentChoice.allCases.filter { $0 != .background }
+        backgroundAppearance == nil
+            ? AccentChoice.allCases.filter { $0 != .background }
+            : AccentChoice.allCases
     }
 
     private var scriptureMemoryBoards: [ProfileBoardSummary] {
@@ -722,10 +859,56 @@ struct SettingsShellScreen: View {
         )
     }
 
+    private var fontSizeSelection: Binding<SettingsFontSizeOption> {
+        Binding(
+            get: { SettingsFontSizeOption.from(baseFontSize: settingsManager.settings.baseFontSize) },
+            set: { option in
+                settingsManager.settings.baseFontSize = option.baseFontSize
+            }
+        )
+    }
+
+    private var backgroundAccentSelection: Binding<Int> {
+        Binding(
+            get: { backgroundAppearance?.resolvedAccentIndex ?? 0 },
+            set: { newValue in
+                settingsManager.settings.selectBackgroundAccent(index: newValue)
+            }
+        )
+    }
+
     private func initials(from name: String) -> String {
         let words = name.split(separator: " ").prefix(2)
         let value = words.map { String($0.prefix(1)).uppercased() }.joined()
         return value.isEmpty ? "T" : value
+    }
+
+    private func accentSwatchColor(for choice: AccentChoice) -> Color {
+        if choice == .background, let fill = settingsManager.settings.activeAccentFillHex {
+            return accentColor(from: fill)
+        }
+        return ThemeColors.accent(for: choice)
+    }
+
+    private func accentColor(from hex: String) -> Color {
+        var sanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sanitized.hasPrefix("#") {
+            sanitized.removeFirst()
+        }
+        if sanitized.count == 3 {
+            sanitized = sanitized.reduce(into: "") { partial, character in
+                partial.append(character)
+                partial.append(character)
+            }
+        }
+        guard sanitized.count == 6, let value = UInt64(sanitized, radix: 16) else {
+            return ThemeColors.accentBlue
+        }
+
+        let red = Double((value & 0xFF0000) >> 16) / 255
+        let green = Double((value & 0x00FF00) >> 8) / 255
+        let blue = Double(value & 0x0000FF) / 255
+        return Color(red: red, green: green, blue: blue)
     }
 
     private func addRelay() {
@@ -757,46 +940,69 @@ struct SettingsShellScreen: View {
         fileStorageStatusIsError = false
     }
 
+    private func handleSettingsImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let hasAccess = url.startAccessingSecurityScopedResource()
+            defer {
+                if hasAccess {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            do {
+                let data = try Data(contentsOf: url)
+                let imported = try JSONDecoder().decode(UserSettings.self, from: data).normalized()
+                settingsManager.settings = imported
+                fileStorageServerDraft = imported.fileStorageServer
+                settingsTransferStatus = "Imported settings from \(url.lastPathComponent)."
+                settingsTransferStatusIsError = false
+            } catch {
+                settingsTransferStatus = error.localizedDescription
+                settingsTransferStatusIsError = true
+            }
+        case .failure(let error):
+            settingsTransferStatus = error.localizedDescription
+            settingsTransferStatusIsError = true
+        }
+    }
+
+    private func handleSettingsExport(_ result: Result<URL, Error>) {
+        switch result {
+        case .success(let url):
+            settingsTransferStatus = "Exported settings to \(url.lastPathComponent)."
+            settingsTransferStatusIsError = false
+        case .failure(let error):
+            settingsTransferStatus = error.localizedDescription
+            settingsTransferStatusIsError = true
+        }
+    }
+
     @MainActor
     private func refreshNotificationPermissionStatus() async {
-        #if canImport(UserNotifications)
-        let center = UNUserNotificationCenter.current()
-        let settings = await center.notificationSettings()
-        let permission = NotificationPermissionState(settings.authorizationStatus)
-        notificationPermission = permission
-        var next = settingsManager.settings.pushNotifications
-        next.platform = .ios
-        next.permission = permission
-        if permission != .granted {
-            next.enabled = false
-        }
-        settingsManager.settings.pushNotifications = next
-        #else
-        notificationPermission = .notDetermined
-        #endif
+        notificationPermission = await NotificationPermissionCoordinator.refresh(settingsManager: settingsManager)
     }
 
     @MainActor
     private func requestNotificationPermission() async {
-        #if canImport(UserNotifications)
         pushBusy = true
         defer { pushBusy = false }
 
         do {
-            let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
-            await refreshNotificationPermissionStatus()
-            pushStatusMessage = granted
+            let permission = try await NotificationPermissionCoordinator.requestAuthorization(settingsManager: settingsManager)
+            notificationPermission = permission
+            pushStatusMessage = permission == .granted
                 ? "Notifications are allowed on this device."
                 : "Permission was not granted. You can enable notifications later in system settings."
-            pushStatusIsError = !granted
+            pushStatusIsError = permission != .granted
+        } catch let error as NotificationPermissionError {
+            pushStatusMessage = error.errorDescription
+            pushStatusIsError = true
         } catch {
             pushStatusMessage = error.localizedDescription
             pushStatusIsError = true
         }
-        #else
-        pushStatusMessage = "Notification permissions are unavailable on this platform build."
-        pushStatusIsError = true
-        #endif
     }
 
     private func startBoardBinding(for weekday: Int) -> Binding<String> {
@@ -922,20 +1128,3 @@ struct SettingsShellScreen: View {
         }
     }
 }
-
-#if canImport(UserNotifications)
-private extension NotificationPermissionState {
-    init(_ status: UNAuthorizationStatus) {
-        switch status {
-        case .authorized, .provisional, .ephemeral:
-            self = .granted
-        case .denied:
-            self = .denied
-        case .notDetermined:
-            self = .notDetermined
-        @unknown default:
-            self = .notDetermined
-        }
-    }
-}
-#endif

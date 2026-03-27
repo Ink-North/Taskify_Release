@@ -36,6 +36,10 @@ public enum KeychainStore {
         try profileStore.deleteProfile(name: name)
     }
 
+    public static func clearActiveProfile() throws {
+        try profileStore.clearActiveProfile()
+    }
+
     // MARK: - Low-level Keychain operations
 
     public static func set(_ data: Data, key: String) throws {

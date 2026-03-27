@@ -1,201 +1,95 @@
 import SwiftUI
-import Security
 import TaskifyCore
-
-private enum OnboardingPage {
-    case home
-    case signIn
-    case create
-    case restore
-    case notifications
-}
 
 struct SignInView: View {
     @EnvironmentObject private var authVM: AppAuthViewModel
     let errorMessage: String?
 
-    @State private var page: OnboardingPage = .home
-    @State private var createdSecret: String = ""
-    @State private var createMessage: String?
-    @State private var restoreInput: String = ""
-    @State private var pendingSecret: String = ""
-    @State private var pendingProfile: String = ""
-
     var body: some View {
         let signInVM = authVM.signInViewModel
 
-        VStack(spacing: 16) {
-            Text("Welcome to Taskify")
-                .font(.title2.bold())
+        ZStack {
+            LinearGradient(
+                colors: [
+                    ThemeColors.surfaceGrouped,
+                    ThemeColors.surfaceRaised,
+                    ThemeColors.surfaceBase,
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
 
-            switch page {
-            case .home:
-                VStack(spacing: 10) {
-                    Button("Sign in with nsec") { page = .signIn }
-                        .buttonStyle(.borderedProminent)
-                        .frame(maxWidth: .infinity)
-
-                    Button("Create new login") {
-                        createMessage = nil
-                        if createdSecret.isEmpty { createdSecret = generateSecretKeyHex() }
-                        page = .create
-                    }
-                    .buttonStyle(.bordered)
-                    .frame(maxWidth: .infinity)
-
-                    Button("Restore from backup") { page = .restore }
-                        .buttonStyle(.bordered)
-                        .frame(maxWidth: .infinity)
+            VStack(spacing: 20) {
+                VStack(spacing: 8) {
+                    Text("Sign in to Taskify")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                    Text("Use the same nsec private key as the Taskify PWA.")
+                        .font(.subheadline)
+                        .foregroundStyle(ThemeColors.textSecondary)
                 }
 
-            case .signIn:
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Sign in with nsec")
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Nostr Private Key")
                         .font(.headline)
 
-                    TextField("nsec1... or 64-character key", text: Binding(
-                        get: { signInVM.secretKeyInput },
-                        set: { signInVM.secretKeyInput = $0 }
-                    ))
-                    .textFieldStyle(.roundedBorder)
+                    TextField(
+                        "nsec1... or 64-character key",
+                        text: Binding(
+                            get: { signInVM.secretKeyInput },
+                            set: { signInVM.secretKeyInput = $0 }
+                        )
+                    )
+                    .textFieldStyle(.plain)
+                    .platformNoAutoCaps()
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(ThemeColors.surfaceRaised)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(ThemeColors.surfaceBorder.opacity(0.35), lineWidth: 1)
+                    )
 
-                    TextField("Profile name (optional)", text: Binding(
-                        get: { signInVM.profileName },
-                        set: { signInVM.profileName = $0 }
-                    ))
-                    .textFieldStyle(.roundedBorder)
+                    HStack(spacing: 12) {
+                        Button("Paste Key") {
+                            guard let value = PlatformServices.readPasteboardString() else { return }
+                            signInVM.secretKeyInput = value
+                        }
+                        .buttonStyle(.bordered)
 
-                    if let msg = signInVM.errorMessage, !msg.isEmpty {
-                        Text(msg)
+                        Button(signInVM.isSubmitting ? "Signing in..." : "Continue") {
+                            _ = signInVM.submit()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!signInVM.canSubmit)
+                    }
+
+                    if let message = signInVM.errorMessage, !message.isEmpty {
+                        Text(message)
                             .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
-
-                    HStack {
-                        Button("Back") { page = .home }
-                            .buttonStyle(.bordered)
-                        Button("Continue") {
-                            pendingSecret = signInVM.secretKeyInput
-                            pendingProfile = signInVM.profileName
-                            page = .notifications
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(signInVM.secretKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .foregroundStyle(ThemeColors.danger)
                     }
                 }
-
-            case .create:
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Create new login")
-                        .font(.headline)
-
-                    Text("This private key is your login. Save it in a password manager.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-
-                    TextEditor(text: $createdSecret)
-                        .frame(minHeight: 90)
-                        .font(.system(.footnote, design: .monospaced))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25)))
-
-                    HStack {
-                        Button("Copy") {
-                            PlatformServices.copyToPasteboard(createdSecret)
-                            createMessage = "Key copied"
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Use this key") {
-                            pendingSecret = createdSecret
-                            pendingProfile = signInVM.profileName
-                            page = .notifications
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(createdSecret.isEmpty)
-                    }
-
-                    if let createMessage {
-                        Text(createMessage)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Button("Back") { page = .home }
-                        .buttonStyle(.bordered)
-                }
-
-            case .restore:
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Restore from backup")
-                        .font(.headline)
-
-                    Text("Paste your nsec or 64-character key to restore this account.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-
-                    TextField("nsec1... or 64-character key", text: $restoreInput)
-                        .textFieldStyle(.roundedBorder)
-
-                    HStack {
-                        Button("Back") { page = .home }
-                            .buttonStyle(.bordered)
-                        Button("Continue") {
-                            pendingSecret = restoreInput
-                            pendingProfile = signInVM.profileName
-                            page = .notifications
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(restoreInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-
-            case .notifications:
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Enable reminder notifications?")
-                        .font(.headline)
-
-                    Text("Taskify only sends reminders you create. You can change this later in Settings.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-
-                    if let msg = signInVM.errorMessage, !msg.isEmpty {
-                        Text(msg)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
-
-                    HStack {
-                        Button("Not now") {
-                            submitPending(signInVM)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button(signInVM.isSubmitting ? "Enabling..." : "Enable notifications") {
-                            submitPending(signInVM)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(signInVM.isSubmitting)
-                    }
-                }
+                .padding(22)
+                .frame(maxWidth: 520)
+                .background(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .fill(ThemeColors.surfaceBase)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .stroke(ThemeColors.surfaceBorder.opacity(0.28), lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.08), radius: 24, y: 12)
             }
+            .padding(24)
         }
         .onAppear { signInVM.applyExternalError(errorMessage) }
-        .onChange(of: errorMessage) { _, newValue in signInVM.applyExternalError(newValue) }
-        .padding(24)
-        .frame(maxWidth: 520)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.opacity(0.02))
-    }
-
-    private func submitPending(_ signInVM: SignInViewModel) {
-        signInVM.secretKeyInput = pendingSecret
-        signInVM.profileName = pendingProfile
-        _ = signInVM.submit()
-    }
-
-    private func generateSecretKeyHex() -> String {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        return bytes.map { String(format: "%02x", $0) }.joined()
+        .onChange(of: errorMessage) { _, newValue in
+            signInVM.applyExternalError(newValue)
+        }
     }
 }

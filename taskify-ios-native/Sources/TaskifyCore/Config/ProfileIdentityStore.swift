@@ -58,4 +58,8 @@ public struct ProfileIdentityStore {
             try secureStore.delete(key: Keys.activeProfile)
         }
     }
+
+    public func clearActiveProfile() throws {
+        try secureStore.delete(key: Keys.activeProfile)
+    }
 }

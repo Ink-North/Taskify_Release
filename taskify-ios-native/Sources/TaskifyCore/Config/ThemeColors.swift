@@ -28,6 +28,16 @@ public enum ThemeColors {
         }
     }
 
+    /// Returns the resolved accent color for the active settings payload,
+    /// including imported photo-derived background accents from the PWA.
+    public static func accent(for settings: UserSettings) -> Color {
+        if let fill = settings.activeAccentFillHex,
+           let color = color(fromHex: fill) {
+            return color
+        }
+        return accent(for: settings.accent)
+    }
+
     // MARK: - Semantic colors (matching PWA CSS variables)
 
     /// Surface background — adapts to light/dark
@@ -137,5 +147,36 @@ public extension View {
     func appAccent(_ accent: AccentChoice) -> some View {
         environment(\.appAccent, accent)
             .tint(ThemeColors.accent(for: accent))
+    }
+
+    func appAccent(_ settings: UserSettings) -> some View {
+        environment(\.appAccent, settings.accent)
+            .tint(ThemeColors.accent(for: settings))
+    }
+}
+
+private extension ThemeColors {
+    static func color(fromHex value: String) -> Color? {
+        var hex = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !hex.isEmpty else { return nil }
+        if hex.hasPrefix("#") {
+            hex.removeFirst()
+        }
+
+        if hex.count == 3 {
+            hex = hex.reduce(into: "") { partial, character in
+                partial.append(character)
+                partial.append(character)
+            }
+        }
+
+        guard hex.count == 6, let intValue = UInt64(hex, radix: 16) else {
+            return nil
+        }
+
+        let red = Double((intValue & 0xFF0000) >> 16) / 255
+        let green = Double((intValue & 0x00FF00) >> 8) / 255
+        let blue = Double(intValue & 0x0000FF) / 255
+        return Color(red: red, green: green, blue: blue)
     }
 }

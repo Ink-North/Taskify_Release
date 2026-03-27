@@ -20,6 +20,7 @@ struct ContactsShellScreen: View {
     @State private var activeDetail: ContactPresentation?
     @State private var editingContact: TaskifyContactRecord?
     @State private var didInitialLoad = false
+    @State private var verificationTask: Task<Void, Never>?
 
     private var myCard: TaskifyContactRecord {
         let metadata = dataController.myProfileMetadata
@@ -48,6 +49,51 @@ struct ContactsShellScreen: View {
         viewModel.filteredContacts(searchText: searchText)
     }
 
+    private var contactsSyncEnabled: Bool {
+        settingsManager.settings.walletContactsSyncEnabled
+    }
+
+    private var syncStatusTitle: String {
+        switch dataController.contactSyncState.status {
+        case .loading:
+            return "Syncing contacts"
+        case .success:
+            return "Contacts synced"
+        case .error:
+            return "Sync needs attention"
+        case .idle:
+            return contactsSyncEnabled ? "Contacts ready to sync" : "Contacts stored locally"
+        }
+    }
+
+    private var syncStatusMessage: String {
+        if !contactsSyncEnabled {
+            return "Contacts stay on this device until contact sync is enabled. Nostr follows and private contacts will not publish."
+        }
+        if let message = dataController.contactSyncState.message,
+           !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return message
+        }
+        if let updatedAt = dataController.contactSyncState.updatedAt {
+            let date = Date(timeIntervalSince1970: TimeInterval(updatedAt) / 1000)
+            return "Last updated \(date.formatted(date: .abbreviated, time: .shortened))."
+        }
+        return "Pull private contacts and publish public follows over Nostr."
+    }
+
+    private var syncStatusIcon: String {
+        switch dataController.contactSyncState.status {
+        case .loading:
+            return "arrow.triangle.2.circlepath"
+        case .success:
+            return "checkmark.icloud"
+        case .error:
+            return "exclamationmark.icloud"
+        case .idle:
+            return contactsSyncEnabled ? "icloud" : "icloud.slash"
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -66,23 +112,6 @@ struct ContactsShellScreen: View {
             .toolbar {
                 ToolbarItem(placement: PlatformToolbarPlacement.trailing) {
                     Button {
-                        Task {
-                            _ = await dataController.syncContactsFromNostr()
-                            refreshLocalState()
-                        }
-                    } label: {
-                        if dataController.contactSyncState.status == .loading {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                        }
-                    }
-                    .accessibilityLabel("Sync contacts")
-                }
-
-                ToolbarItem(placement: PlatformToolbarPlacement.trailing) {
-                    Button {
                         showAddSheet = true
                     } label: {
                         Image(systemName: "plus")
@@ -95,12 +124,36 @@ struct ContactsShellScreen: View {
                 didInitialLoad = true
                 refreshLocalState()
                 _ = await dataController.loadMyProfileMetadata()
-                _ = await dataController.syncContactsFromNostr(silent: true)
+                if contactsSyncEnabled {
+                    _ = await dataController.syncContactsFromNostr(silent: true)
+                }
                 await dataController.refreshContactProfiles()
                 refreshLocalState()
+                queueNip05Verification()
             }
-            .onChange(of: dataController.contactsVersion) { _, _ in refreshLocalState() }
+            .onChange(of: dataController.contactsVersion) { _, _ in
+                refreshLocalState()
+                queueNip05Verification()
+            }
             .onChange(of: dataController.publicFollowsVersion) { _, _ in refreshLocalState() }
+            .onChange(of: dataController.contactNip05ChecksVersion) { _, _ in refreshLocalState() }
+            .onChange(of: dataController.myProfileMetadata) { _, _ in
+                refreshLocalState()
+                queueNip05Verification()
+            }
+            .onChange(of: settingsManager.settings.walletContactsSyncEnabled) { _, enabled in
+                refreshLocalState()
+                guard enabled else { return }
+                Task {
+                    _ = await dataController.syncContactsFromNostr(silent: true)
+                    refreshLocalState()
+                    queueNip05Verification()
+                }
+            }
+            .onDisappear {
+                verificationTask?.cancel()
+                verificationTask = nil
+            }
             .sheet(isPresented: $showAddSheet) {
                 ContactEditorSheet(
                     title: "New Contact",
@@ -110,8 +163,9 @@ struct ContactsShellScreen: View {
                         try await dataController.lookupContact(reference: value)
                     },
                     onSave: { draft in
-                        let saved = await dataController.saveContact(draft)
+                        let saved = await dataController.saveContact(draft, publish: contactsSyncEnabled)
                         refreshLocalState()
+                        queueNip05Verification()
                         return saved != nil
                     }
                 )
@@ -139,16 +193,18 @@ struct ContactsShellScreen: View {
                         try await dataController.lookupContact(reference: value)
                     },
                     onSave: { draft in
-                        let saved = await dataController.saveContact(draft)
+                        let saved = await dataController.saveContact(draft, publish: contactsSyncEnabled)
                         refreshLocalState()
+                        queueNip05Verification()
                         return saved != nil
                     }
                 )
             }
             .sheet(item: $activeDetail) { item in
+                let subtitle = viewModel.subtitle(for: item.contact, isProfile: item.isProfile)
                 ContactDetailSheet(
                     contact: item.contact,
-                    subtitle: contactSubtitle(item.contact) ?? (item.isProfile ? "My Card" : "No details added"),
+                    subtitle: subtitle,
                     fields: viewModel.fields(for: item.contact),
                     shareDisplayValue: item.isProfile
                         ? dataController.myContactShareValue()
@@ -165,8 +221,18 @@ struct ContactsShellScreen: View {
                             editingContact = item.contact
                         }
                     },
+                    canFollow: viewModel.canFollow(item.contact, isProfile: item.isProfile),
+                    isFollowed: viewModel.isFollowed(item.contact),
+                    onToggleFollow: item.isProfile ? nil : {
+                        _ = await dataController.setPublicFollow(
+                            contact: item.contact,
+                            followed: !viewModel.isFollowed(item.contact),
+                            publish: contactsSyncEnabled
+                        )
+                        refreshLocalState()
+                    },
                     onDelete: item.isProfile ? nil : {
-                        _ = await dataController.deleteContact(id: item.contact.id)
+                        _ = await dataController.deleteContact(id: item.contact.id, publish: contactsSyncEnabled)
                         refreshLocalState()
                         activeDetail = nil
                     }
@@ -179,25 +245,79 @@ struct ContactsShellScreen: View {
     private var listContent: some View {
         List {
             Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label(syncStatusTitle, systemImage: syncStatusIcon)
+                        .font(.headline)
+                    Text(syncStatusMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    if contactsSyncEnabled {
+                        HStack(spacing: 12) {
+                            Button {
+                                Task {
+                                    _ = await dataController.syncContactsFromNostr()
+                                    refreshLocalState()
+                                    queueNip05Verification()
+                                }
+                            } label: {
+                                if dataController.contactSyncState.status == .loading {
+                                    ProgressView()
+                                        .frame(maxWidth: .infinity)
+                                } else {
+                                    Label("Sync", systemImage: "arrow.triangle.2.circlepath")
+                                        .frame(maxWidth: .infinity)
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(dataController.contactSyncState.status == .loading)
+
+                            Button {
+                                Task {
+                                    _ = await dataController.publishContactsToNostr()
+                                    refreshLocalState()
+                                }
+                            } label: {
+                                Label("Publish", systemImage: "icloud.and.arrow.up")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(dataController.contactSyncState.status == .loading)
+                        }
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+
+            Section {
                 Button {
                     activeDetail = ContactPresentation(contact: myCard, isProfile: true)
                 } label: {
                     ContactRowView(
                         contact: myCard,
-                        subtitle: contactSubtitle(myCard) ?? "My Card",
+                        subtitle: viewModel.subtitle(for: myCard, isProfile: true)
+                            ?? ContactSubtitlePresentation(text: "My Card"),
                         accent: ThemeColors.accent(for: settingsManager.settings.accent)
                     )
                 }
                 .buttonStyle(.plain)
             } footer: {
-                if let message = dataController.contactSyncState.message, !message.isEmpty {
-                    Text(message)
-                }
+                Text("Your profile card shares your current `npub`, relay hints, and profile metadata.")
             }
 
             Section("Saved Contacts") {
                 if filteredContacts.isEmpty {
-                    ContentUnavailableView("No Contacts Yet", systemImage: "person.crop.circle.badge.plus", description: Text("Import an `npub`, paste a `nip05`, or add a custom contact."))
+                    ContentUnavailableView(
+                        searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No Contacts Yet" : "No Matches",
+                        systemImage: searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? "person.crop.circle.badge.plus"
+                            : "magnifyingglass",
+                        description: Text(
+                            searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? "Import an `npub`, paste a `nip05`, or add a custom contact."
+                                : "Try a different search term."
+                        )
+                    )
                         .padding(.vertical, 16)
                 } else {
                     ForEach(filteredContacts) { contact in
@@ -206,7 +326,8 @@ struct ContactsShellScreen: View {
                         } label: {
                             ContactRowView(
                                 contact: contact,
-                                subtitle: contactSubtitle(contact) ?? "No details added",
+                                subtitle: viewModel.subtitle(for: contact)
+                                    ?? ContactSubtitlePresentation(text: "No details added"),
                                 accent: ThemeColors.accent(for: settingsManager.settings.accent)
                             )
                         }
@@ -214,7 +335,7 @@ struct ContactsShellScreen: View {
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
                                 Task {
-                                    _ = await dataController.deleteContact(id: contact.id)
+                                    _ = await dataController.deleteContact(id: contact.id, publish: contactsSyncEnabled)
                                     refreshLocalState()
                                 }
                             } label: {
@@ -236,8 +357,51 @@ struct ContactsShellScreen: View {
     }
 
     private func refreshLocalState() {
-        viewModel.setContacts(dataController.fetchContacts())
+        let contacts = dataController.fetchContacts()
+        viewModel.setContacts(contacts)
         viewModel.setPublicFollows(dataController.fetchPublicFollows())
+        viewModel.setNip05Checks(dataController.loadNip05Checks())
+
+        if let activeDetail {
+            if activeDetail.isProfile {
+                self.activeDetail = ContactPresentation(contact: myCard, isProfile: true)
+            } else if let updated = contacts.first(where: { $0.id == activeDetail.contact.id }) {
+                self.activeDetail = ContactPresentation(contact: updated, isProfile: false)
+            } else {
+                self.activeDetail = nil
+            }
+        }
+
+        if let editingContact {
+            self.editingContact = contacts.first(where: { $0.id == editingContact.id })
+        }
+    }
+
+    private func queueNip05Verification() {
+        verificationTask?.cancel()
+        let profileCard = myCard
+        let contacts = viewModel.contacts
+        verificationTask = Task {
+            _ = await dataController.ensureNip05Verification(
+                contactId: profileCard.id,
+                nip05: profileCard.nip05,
+                npub: profileCard.npub,
+                contactUpdatedAt: profileCard.updatedAt
+            )
+            for contact in contacts {
+                guard !Task.isCancelled else { return }
+                _ = await dataController.ensureNip05Verification(
+                    contactId: contact.id,
+                    nip05: contact.nip05,
+                    npub: contact.npub,
+                    contactUpdatedAt: contact.updatedAt
+                )
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                refreshLocalState()
+            }
+        }
     }
 
     private func draft(from contact: TaskifyContactRecord) -> TaskifyContactDraft {
@@ -270,7 +434,7 @@ private struct ContactPresentation: Identifiable {
 
 private struct ContactRowView: View {
     let contact: TaskifyContactRecord
-    let subtitle: String
+    let subtitle: ContactSubtitlePresentation
     let accent: Color
 
     var body: some View {
@@ -282,10 +446,15 @@ private struct ContactRowView: View {
                     .font(.headline)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(subtitle.text)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if subtitle.verified {
+                        VerifiedNip05Badge()
+                    }
+                }
             }
 
             Spacer()
@@ -295,6 +464,15 @@ private struct ContactRowView: View {
                 .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 6)
+    }
+}
+
+private struct VerifiedNip05Badge: View {
+    var body: some View {
+        Image(systemName: "checkmark.seal.fill")
+            .font(.footnote)
+            .foregroundStyle(ThemeColors.accentBlue)
+            .accessibilityLabel("Verified NIP-05")
     }
 }
 
@@ -337,12 +515,15 @@ private struct ContactAvatarView: View {
 
 private struct ContactDetailSheet: View {
     let contact: TaskifyContactRecord
-    let subtitle: String
+    let subtitle: ContactSubtitlePresentation?
     let fields: [ContactField]
     let shareDisplayValue: String?
     let shareExportValue: String?
     let editLabel: String
     let onEdit: () -> Void
+    let canFollow: Bool
+    let isFollowed: Bool
+    let onToggleFollow: (() async -> Void)?
     let onDelete: (() async -> Void)?
 
     @Environment(\.dismiss) private var dismiss
@@ -366,11 +547,16 @@ private struct ContactDetailSheet: View {
                             Text(contactPrimaryName(contact))
                                 .font(.title2.weight(.semibold))
                                 .multilineTextAlignment(.center)
-                            if !subtitle.isEmpty {
-                                Text(subtitle)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.center)
+                            if let subtitle {
+                                HStack(spacing: 6) {
+                                    Text(subtitle.text)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                        .multilineTextAlignment(.center)
+                                    if subtitle.verified {
+                                        VerifiedNip05Badge()
+                                    }
+                                }
                             }
                             if let sourceLabel {
                                 Label(sourceLabel, systemImage: "person.crop.circle.badge.checkmark")
@@ -399,6 +585,21 @@ private struct ContactDetailSheet: View {
                         }
                     }
 
+                    if canFollow, let onToggleFollow {
+                        Button {
+                            Task { await onToggleFollow() }
+                        } label: {
+                            Label(
+                                isFollowed ? "Unfollow" : "Follow",
+                                systemImage: isFollowed
+                                    ? "person.crop.circle.badge.minus"
+                                    : "person.crop.circle.badge.plus"
+                            )
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
                     if let updatedLabel {
                         HStack(spacing: 6) {
                             Image(systemName: "clock")
@@ -418,14 +619,20 @@ private struct ContactDetailSheet: View {
                                     PlatformServices.copyToPasteboard(field.value)
                                     PlatformServices.notificationSuccess()
                                 } label: {
-                                    Text(field.value)
-                                        .font(field.multiline ? .body : .body.monospaced())
-                                        .foregroundStyle(.primary)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .multilineTextAlignment(.leading)
-                                        .padding(12)
-                                        .background(ThemeColors.surfaceRaised)
-                                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Text(field.value)
+                                            .font(field.multiline ? .body : .body.monospaced())
+                                            .foregroundStyle(.primary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .multilineTextAlignment(.leading)
+                                        if field.verified {
+                                            VerifiedNip05Badge()
+                                                .padding(.top, 2)
+                                        }
+                                    }
+                                    .padding(12)
+                                    .background(ThemeColors.surfaceRaised)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14))
                                 }
                                 .buttonStyle(.plain)
                             }

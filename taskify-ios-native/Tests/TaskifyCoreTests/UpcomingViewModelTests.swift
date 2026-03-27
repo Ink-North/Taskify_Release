@@ -226,4 +226,71 @@ struct UpcomingViewModelTests {
 
         #expect(vm.groups.first?.events.map(\.id) == ["e1", "e2", "e3"])
     }
+
+    @Test("restores and persists upcoming preferences using PWA-compatible semantics")
+    func restoresAndPersistsPreferences() {
+        let preferences = UpcomingPreferences(
+            selectedFilterIDs: ["board:b1:col:todo"],
+            sortMode: .alphabetical,
+            sortAscending: false,
+            boardGrouping: .grouped,
+            viewStyle: "list",
+            filterPresets: [
+                .init(id: "preset-1", name: "Todo", selection: ["board:b1:col:todo"]),
+            ]
+        )
+
+        let vm = UpcomingViewModel(preferences: preferences)
+        vm.setBoards([
+            .init(
+                id: "b1",
+                name: "Work",
+                kind: "lists",
+                columns: [
+                    .init(id: "todo", name: "Todo"),
+                    .init(id: "doing", name: "Doing"),
+                ]
+            ),
+        ])
+
+        #expect(vm.sortMode == .alphabetical)
+        #expect(vm.sortAscending == false)
+        #expect(vm.boardGrouping == .grouped)
+        #expect(vm.selectedFilterIDs == Optional(Set(["board:b1", "board:b1:col:todo"])))
+        #expect(vm.filterPresets.map(\.name) == ["Todo"])
+        #expect(vm.currentPreferences(viewStyle: "list").viewStyle == "list")
+        #expect(vm.currentPreferences(viewStyle: "list").selectedFilterIDs == ["board:b1", "board:b1:col:todo"])
+    }
+
+    @Test("saves applies and deletes filter presets")
+    func savesAppliesAndDeletesFilterPresets() {
+        let vm = UpcomingViewModel()
+        vm.setBoards([
+            .init(
+                id: "b1",
+                name: "Work",
+                kind: "lists",
+                columns: [
+                    .init(id: "todo", name: "Todo"),
+                    .init(id: "doing", name: "Doing"),
+                ]
+            ),
+        ])
+
+        vm.setSelectedFilterIDs(Set(["board:b1:col:todo"]))
+        vm.saveFilterPreset(named: "Todo only")
+
+        #expect(vm.filterPresets.count == 1)
+        guard let preset = vm.filterPresets.first else { return }
+        #expect(preset.selection == ["board:b1", "board:b1:col:todo"])
+
+        vm.clearAllFilters()
+        #expect(vm.selectedFilterIDs == Optional(Set<String>()))
+
+        vm.applyFilterPreset(preset)
+        #expect(vm.selectedFilterIDs == Optional(Set(["board:b1", "board:b1:col:todo"])))
+
+        vm.deleteFilterPreset(preset)
+        #expect(vm.filterPresets.isEmpty)
+    }
 }

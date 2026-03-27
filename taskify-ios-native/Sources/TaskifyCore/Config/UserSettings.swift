@@ -289,6 +289,113 @@ private enum JSONValue: Codable, Equatable {
         }
         return nil
     }
+
+    var arrayValue: [JSONValue]? {
+        if case .array(let value) = self {
+            return value
+        }
+        return nil
+    }
+}
+
+public struct AccentPalette: Codable, Equatable, Identifiable, Sendable {
+    public var fill: String
+    public var hover: String
+    public var active: String
+    public var soft: String
+    public var border: String
+    public var borderActive: String
+    public var ring: String
+    public var on: String
+    public var glow: String
+    public var shadow: String
+    public var shadowActive: String
+
+    public var id: String {
+        [fill, borderActive, ring].joined(separator: "|")
+    }
+
+    fileprivate init?(jsonObject: [String: JSONValue]) {
+        guard
+            let fill = jsonObject["fill"]?.stringValue,
+            let hover = jsonObject["hover"]?.stringValue,
+            let active = jsonObject["active"]?.stringValue,
+            let soft = jsonObject["soft"]?.stringValue,
+            let border = jsonObject["border"]?.stringValue,
+            let borderActive = jsonObject["borderActive"]?.stringValue,
+            let ring = jsonObject["ring"]?.stringValue,
+            let on = jsonObject["on"]?.stringValue,
+            let glow = jsonObject["glow"]?.stringValue,
+            let shadow = jsonObject["shadow"]?.stringValue,
+            let shadowActive = jsonObject["shadowActive"]?.stringValue
+        else {
+            return nil
+        }
+
+        self.fill = fill
+        self.hover = hover
+        self.active = active
+        self.soft = soft
+        self.border = border
+        self.borderActive = borderActive
+        self.ring = ring
+        self.on = on
+        self.glow = glow
+        self.shadow = shadow
+        self.shadowActive = shadowActive
+    }
+
+    fileprivate var jsonValue: JSONValue {
+        .object([
+            "fill": .string(fill),
+            "hover": .string(hover),
+            "active": .string(active),
+            "soft": .string(soft),
+            "border": .string(border),
+            "borderActive": .string(borderActive),
+            "ring": .string(ring),
+            "on": .string(on),
+            "glow": .string(glow),
+            "shadow": .string(shadow),
+            "shadowActive": .string(shadowActive),
+        ])
+    }
+}
+
+public struct BackgroundAppearance: Equatable, Sendable {
+    public var imageDataURL: String
+    public var selectedAccent: AccentPalette?
+    public var accents: [AccentPalette]
+    public var accentIndex: Int?
+
+    public init(
+        imageDataURL: String,
+        selectedAccent: AccentPalette? = nil,
+        accents: [AccentPalette] = [],
+        accentIndex: Int? = nil
+    ) {
+        self.imageDataURL = imageDataURL
+        self.selectedAccent = selectedAccent
+        self.accents = accents
+        self.accentIndex = accentIndex
+    }
+
+    public var resolvedAccent: AccentPalette? {
+        if let accentIndex, accents.indices.contains(accentIndex) {
+            return accents[accentIndex]
+        }
+        return selectedAccent ?? accents.first
+    }
+
+    public var resolvedAccentIndex: Int? {
+        if let accentIndex, accents.indices.contains(accentIndex) {
+            return accentIndex
+        }
+        if let selectedAccent, let index = accents.firstIndex(of: selectedAccent) {
+            return index
+        }
+        return accents.isEmpty ? nil : 0
+    }
 }
 
 // MARK: - UserSettings (matches PWA settingsTypes.ts for cross-compat fields)
@@ -646,6 +753,83 @@ public struct UserSettings: Codable, Equatable {
             return nil
         }
         return boardId
+    }
+
+    public var backgroundAppearance: BackgroundAppearance? {
+        guard let imageDataURL = rawExtras["backgroundImage"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !imageDataURL.isEmpty else {
+            return nil
+        }
+
+        let selectedAccent = rawExtras["backgroundAccent"]?.objectValue.flatMap(AccentPalette.init(jsonObject:))
+        let accents = rawExtras["backgroundAccents"]?.arrayValue?.compactMap { value in
+            value.objectValue.flatMap(AccentPalette.init(jsonObject:))
+        } ?? []
+        let accentIndex = rawExtras["backgroundAccentIndex"]?.intValue
+
+        return BackgroundAppearance(
+            imageDataURL: imageDataURL,
+            selectedAccent: selectedAccent,
+            accents: accents,
+            accentIndex: accentIndex
+        )
+    }
+
+    public var activeBackgroundAccent: AccentPalette? {
+        backgroundAppearance?.resolvedAccent
+    }
+
+    public var activeAccentFillHex: String? {
+        guard accent == .background else { return nil }
+        return activeBackgroundAccent?.fill
+    }
+
+    public mutating func setBackgroundAppearance(_ appearance: BackgroundAppearance?) {
+        guard let appearance else {
+            rawExtras.removeValue(forKey: "backgroundImage")
+            rawExtras.removeValue(forKey: "backgroundAccent")
+            rawExtras.removeValue(forKey: "backgroundAccents")
+            rawExtras.removeValue(forKey: "backgroundAccentIndex")
+            if accent == .background {
+                accent = .blue
+            }
+            self = normalized()
+            return
+        }
+
+        let imageDataURL = appearance.imageDataURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !imageDataURL.isEmpty else {
+            setBackgroundAppearance(nil)
+            return
+        }
+
+        rawExtras["backgroundImage"] = .string(imageDataURL)
+        rawExtras["backgroundAccent"] = appearance.selectedAccent?.jsonValue
+        if appearance.accents.isEmpty {
+            rawExtras.removeValue(forKey: "backgroundAccents")
+        } else {
+            rawExtras["backgroundAccents"] = .array(appearance.accents.map(\.jsonValue))
+        }
+        if let accentIndex = appearance.accentIndex {
+            rawExtras["backgroundAccentIndex"] = .number(Double(accentIndex))
+        } else {
+            rawExtras.removeValue(forKey: "backgroundAccentIndex")
+        }
+        self = normalized()
+    }
+
+    public mutating func selectBackgroundAccent(index: Int) {
+        guard var appearance = backgroundAppearance,
+              appearance.accents.indices.contains(index) else { return }
+        appearance.accentIndex = index
+        appearance.selectedAccent = appearance.accents[index]
+        setBackgroundAppearance(appearance)
+        accent = .background
+        self = normalized()
+    }
+
+    public mutating func clearBackgroundAppearance() {
+        setBackgroundAppearance(nil)
     }
 
     public func normalized() -> UserSettings {

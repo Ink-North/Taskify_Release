@@ -21,18 +21,29 @@ struct UpcomingShellScreen: View {
     @EnvironmentObject private var dataController: DataController
     @EnvironmentObject private var settingsManager: SettingsManager
 
-    @StateObject private var viewModel = UpcomingViewModel()
+    @StateObject private var viewModel: UpcomingViewModel
 
     @State private var editingTask: BoardTaskItem? = nil
     @State private var selectedEvent: UpcomingCalendarEventItem? = nil
     @State private var showCreateTask = false
     @State private var showSortSheet = false
     @State private var showFilterSheet = false
-    @State private var viewStyle: UpcomingPresentationStyle = .details
+    @State private var viewStyle: UpcomingPresentationStyle
     @State private var listDateKey = upcomingDateKey(for: Date())
     @State private var listMonthAnchor = startOfMonth(for: Date())
     @State private var pendingDetailScrollDateKey: String? = nil
     @State private var upcomingBoards: [UpcomingBoardDefinition] = []
+
+    private let preferencesStore: UpcomingPreferencesStore
+
+    init(profile: TaskifyProfile) {
+        self.profile = profile
+        let store = UpcomingPreferencesStore()
+        let preferences = store.load()
+        self.preferencesStore = store
+        _viewModel = StateObject(wrappedValue: UpcomingViewModel(preferences: preferences))
+        _viewStyle = State(initialValue: UpcomingPresentationStyle(rawValue: preferences.viewStyle) ?? .details)
+    }
 
     private var canCreateTask: Bool {
         creatableBoards.isEmpty == false
@@ -87,11 +98,11 @@ struct UpcomingShellScreen: View {
             .toolbar {
                 ToolbarItemGroup(placement: PlatformToolbarPlacement.trailing) {
                     Button {
-                        showFilterSheet = true
+                        viewStyle = viewStyle == .list ? .details : .list
                     } label: {
-                        Image(systemName: viewModel.selectedFilterIDs == nil ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                        Image(systemName: viewStyle == .list ? "calendar" : "list.bullet")
                     }
-                    .accessibilityLabel("Filter upcoming tasks")
+                    .accessibilityLabel("Change upcoming view")
 
                     Button {
                         showSortSheet = true
@@ -128,7 +139,13 @@ struct UpcomingShellScreen: View {
                 } else if let selected = dateFromUpcomingKey(listDateKey) {
                     listMonthAnchor = startOfMonth(for: selected)
                 }
+                persistPreferences()
             }
+            .onChange(of: viewModel.selectedFilterIDs) { _, _ in persistPreferences() }
+            .onChange(of: viewModel.sortMode) { _, _ in persistPreferences() }
+            .onChange(of: viewModel.sortAscending) { _, _ in persistPreferences() }
+            .onChange(of: viewModel.boardGrouping) { _, _ in persistPreferences() }
+            .onChange(of: viewModel.filterPresets) { _, _ in persistPreferences() }
             .sheet(item: $editingTask) { task in
                 UpcomingTaskEditWrapper(task: task, dataController: dataController, onDone: {
                     loadUpcoming()
@@ -173,6 +190,7 @@ struct UpcomingShellScreen: View {
                 UpcomingFilterSheet(
                     filterGroups: viewModel.filterGroups,
                     selectedFilterIDs: viewModel.selectedFilterIDs,
+                    filterPresets: viewModel.filterPresets,
                     onToggle: { optionID in
                         viewModel.toggleFilterOption(optionID)
                     },
@@ -181,6 +199,15 @@ struct UpcomingShellScreen: View {
                     },
                     onClearAll: {
                         viewModel.clearAllFilters()
+                    },
+                    onApplyPreset: { preset in
+                        viewModel.applyFilterPreset(preset)
+                    },
+                    onSavePreset: { name in
+                        viewModel.saveFilterPreset(named: name)
+                    },
+                    onDeletePreset: { preset in
+                        viewModel.deleteFilterPreset(preset)
                     }
                 )
                 .presentationDetents([.medium, .large])
@@ -189,51 +216,42 @@ struct UpcomingShellScreen: View {
     }
 
     private var controlsBar: some View {
-        VStack(spacing: 12) {
-            Picker("View", selection: $viewStyle) {
-                ForEach(UpcomingPresentationStyle.allCases) { style in
-                    Text(style.label).tag(style)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            HStack(spacing: 10) {
-                Button(action: jumpToToday) {
-                    Text("Today")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(ThemeColors.surfaceRaised)
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(viewStyle == .details && filteredIsEmpty)
-
-                Button(action: { showFilterSheet = true }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "line.3.horizontal.decrease.circle")
-                            .font(.subheadline)
-                        Text(viewModel.filterLabel)
-                            .font(.subheadline)
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 12)
+        HStack(spacing: 10) {
+            Button(action: jumpToToday) {
+                Text("Today")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .background(ThemeColors.surfaceRaised)
                     .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
+            }
+            .buttonStyle(.plain)
+            .disabled(viewStyle == .details && filteredIsEmpty)
 
-                Spacer(minLength: 0)
-
-                if viewModel.itemCount > 0 {
-                    Text("\(viewModel.itemCount)")
-                        .font(.caption.bold())
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.secondary.opacity(0.14))
-                        .clipShape(Capsule())
+            Button(action: { showFilterSheet = true }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .font(.subheadline)
+                    Text(viewModel.filterLabel)
+                        .font(.subheadline)
+                        .lineLimit(1)
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(ThemeColors.surfaceRaised)
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 0)
+
+            if viewModel.itemCount > 0 {
+                Text("\(viewModel.itemCount)")
+                    .font(.caption.bold())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.secondary.opacity(0.14))
+                    .clipShape(Capsule())
             }
         }
         .padding(.horizontal, 16)
@@ -504,6 +522,8 @@ struct UpcomingShellScreen: View {
 
         if viewStyle == .details {
             pendingDetailScrollDateKey = viewModel.resolvedDateKey(preferred: listDateKey)
+        } else if let selected = dateFromUpcomingKey(listDateKey) {
+            listMonthAnchor = startOfMonth(for: selected)
         }
     }
 
@@ -562,6 +582,10 @@ struct UpcomingShellScreen: View {
 
         guard let date = calendar.date(from: components) else { return }
         listDateKey = upcomingDateKey(for: date)
+    }
+
+    private func persistPreferences() {
+        preferencesStore.save(viewModel.currentPreferences(viewStyle: viewStyle.rawValue))
     }
 }
 
@@ -841,14 +865,25 @@ private struct UpcomingSortSheet: View {
 private struct UpcomingFilterSheet: View {
     let filterGroups: [UpcomingFilterGroup]
     let selectedFilterIDs: Set<String>?
+    let filterPresets: [UpcomingFilterPreset]
     let onToggle: (String) -> Void
     let onSelectAll: () -> Void
     let onClearAll: () -> Void
+    let onApplyPreset: (UpcomingFilterPreset) -> Void
+    let onSavePreset: (String) -> Void
+    let onDeletePreset: (UpcomingFilterPreset) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var showSavePresetAlert = false
+    @State private var presetName = ""
+    @State private var presetPendingDelete: UpcomingFilterPreset? = nil
 
     private var selectedIDs: Set<String> {
         selectedFilterIDs ?? Set(filterGroups.flatMap { [$0.boardOption.id] + $0.listOptions.map(\.id) })
+    }
+
+    private var suggestedPresetName: String {
+        "Preset \(filterPresets.count + 1)"
     }
 
     var body: some View {
@@ -858,8 +893,44 @@ private struct UpcomingFilterSheet: View {
                     HStack(spacing: 12) {
                         Button("Select All", action: onSelectAll)
                         Button("Clear All", action: onClearAll)
+                        Button("Save Preset") {
+                            presetName = suggestedPresetName
+                            showSavePresetAlert = true
+                        }
+                        .disabled(filterGroups.isEmpty)
                     }
                     .font(.subheadline.weight(.semibold))
+                }
+
+                if !filterPresets.isEmpty {
+                    Section("Presets") {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 10) {
+                                ForEach(filterPresets) { preset in
+                                    Button {
+                                        onApplyPreset(preset)
+                                    } label: {
+                                        Text(preset.name)
+                                            .font(.subheadline.weight(.semibold))
+                                            .padding(.horizontal, 14)
+                                            .padding(.vertical, 8)
+                                            .background(ThemeColors.surfaceRaised)
+                                            .clipShape(Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        Button(role: .destructive) {
+                                            presetPendingDelete = preset
+                                        } label: {
+                                            Label("Delete Preset", systemImage: "trash")
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    }
                 }
 
                 if filterGroups.isEmpty {
@@ -893,6 +964,43 @@ private struct UpcomingFilterSheet: View {
                 ToolbarItem(placement: PlatformToolbarPlacement.trailing) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .alert("Save Preset", isPresented: $showSavePresetAlert) {
+                TextField("Preset name", text: $presetName)
+                Button("Cancel", role: .cancel) {
+                    presetName = ""
+                }
+                Button("Save") {
+                    let name = presetName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    onSavePreset(name.isEmpty ? suggestedPresetName : name)
+                    presetName = ""
+                }
+            } message: {
+                Text("Save the current board filter selection.")
+            }
+            .confirmationDialog(
+                "Delete preset?",
+                isPresented: Binding(
+                    get: { presetPendingDelete != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            presetPendingDelete = nil
+                        }
+                    }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let presetPendingDelete {
+                        onDeletePreset(presetPendingDelete)
+                    }
+                    presetPendingDelete = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    presetPendingDelete = nil
+                }
+            } message: {
+                Text(presetPendingDelete?.name ?? "")
             }
         }
     }

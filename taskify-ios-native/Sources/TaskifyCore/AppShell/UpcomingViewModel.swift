@@ -125,6 +125,18 @@ public struct UpcomingFilterGroup: Identifiable, Equatable {
     }
 }
 
+public struct UpcomingFilterPreset: Identifiable, Equatable, Codable {
+    public let id: String
+    public let name: String
+    public let selection: [String]
+
+    public init(id: String, name: String, selection: [String]) {
+        self.id = id
+        self.name = name
+        self.selection = selection
+    }
+}
+
 public struct UpcomingDateGroup: Identifiable, Equatable {
     public let dateKey: String
     public let label: String
@@ -158,6 +170,7 @@ public final class UpcomingViewModel: ObservableObject {
     @Published public private(set) var filteredTasks: [BoardTaskItem] = []
     @Published public private(set) var filteredEvents: [UpcomingCalendarEventItem] = []
     @Published public private(set) var selectedFilterIDs: Set<String>? = nil
+    @Published public private(set) var filterPresets: [UpcomingFilterPreset] = []
     @Published public private(set) var sortMode: TaskSortMode = .dueDate
     @Published public private(set) var sortAscending: Bool = true
     @Published public private(set) var boardGrouping: UpcomingBoardGrouping = .mixed
@@ -171,8 +184,14 @@ public final class UpcomingViewModel: ObservableObject {
     private var allEvents: [UpcomingCalendarEventItem] = []
     private var boardDefinitions: [UpcomingBoardDefinition] = []
     private var boardDefinitionsById: [String: UpcomingBoardDefinition] = [:]
+    private var pendingSelectedFilterIDs: Set<String>? = nil
+    private var hasPendingSelectedFilterIDs = false
 
-    public init() {}
+    public init(preferences: UpcomingPreferences? = nil) {
+        if let preferences {
+            restore(preferences)
+        }
+    }
 
     public func setTasks(_ tasks: [BoardTaskItem]) {
         allTasks = tasks
@@ -188,7 +207,11 @@ public final class UpcomingViewModel: ObservableObject {
         boardDefinitions = boards
         boardDefinitionsById = Dictionary(uniqueKeysWithValues: boards.map { ($0.id, $0) })
         rebuildFilterGroups()
-        selectedFilterIDs = normalizedFilterSelection(selectedFilterIDs)
+        filterPresets = normalizedFilterPresets(filterPresets)
+        applyPendingSelectedFilterIDsIfPossible()
+        if !hasPendingSelectedFilterIDs {
+            selectedFilterIDs = normalizedFilterSelection(selectedFilterIDs)
+        }
         recompute()
     }
 
@@ -210,6 +233,8 @@ public final class UpcomingViewModel: ObservableObject {
     }
 
     public func setSelectedFilterIDs(_ ids: Set<String>?) {
+        hasPendingSelectedFilterIDs = false
+        pendingSelectedFilterIDs = nil
         let normalized = normalizedFilterSelection(ids)
         guard normalized != selectedFilterIDs else { return }
         selectedFilterIDs = normalized
@@ -258,6 +283,62 @@ public final class UpcomingViewModel: ObservableObject {
         }
 
         setSelectedFilterIDs(next)
+    }
+
+    public func restore(_ preferences: UpcomingPreferences) {
+        sortMode = preferences.sortMode
+        sortAscending = preferences.sortAscending
+        boardGrouping = preferences.boardGrouping
+        filterPresets = preferences.filterPresets
+        pendingSelectedFilterIDs = preferences.selectedFilterIDs.map(Set.init)
+        hasPendingSelectedFilterIDs = true
+        filterPresets = normalizedFilterPresets(filterPresets)
+        applyPendingSelectedFilterIDsIfPossible()
+        recompute()
+    }
+
+    public func currentPreferences(viewStyle: String) -> UpcomingPreferences {
+        let selectedFilterIDs: [String]?
+        if hasPendingSelectedFilterIDs {
+            selectedFilterIDs = pendingSelectedFilterIDs.map(orderedSelection(from:))
+        } else {
+            selectedFilterIDs = self.selectedFilterIDs.map(orderedSelection(from:))
+        }
+
+        return UpcomingPreferences(
+            selectedFilterIDs: selectedFilterIDs,
+            sortMode: sortMode,
+            sortAscending: sortAscending,
+            boardGrouping: boardGrouping,
+            viewStyle: viewStyle,
+            filterPresets: normalizedFilterPresets(filterPresets)
+        )
+    }
+
+    public func saveFilterPreset(named name: String) {
+        guard !allFilterOptions.isEmpty else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
+        filterPresets = normalizedFilterPresets(
+            filterPresets + [
+                UpcomingFilterPreset(
+                    id: UUID().uuidString,
+                    name: trimmedName,
+                    selection: currentFilterSelectionSnapshot()
+                ),
+            ]
+        )
+    }
+
+    public func applyFilterPreset(_ preset: UpcomingFilterPreset) {
+        guard !allFilterOptions.isEmpty else { return }
+        let allowed = Set(allFilterOptions.map(\.id))
+        setSelectedFilterIDs(Set(preset.selection.filter { allowed.contains($0) }))
+    }
+
+    public func deleteFilterPreset(_ preset: UpcomingFilterPreset) {
+        filterPresets.removeAll { $0.id == preset.id }
     }
 
     public func tasks(for dateKey: String) -> [BoardTaskItem] {
@@ -388,6 +469,17 @@ public final class UpcomingViewModel: ObservableObject {
                 listOptions: listOptions
             )
         }
+    }
+
+    private func applyPendingSelectedFilterIDsIfPossible() {
+        guard hasPendingSelectedFilterIDs else { return }
+        if pendingSelectedFilterIDs != nil && allFilterOptions.isEmpty {
+            return
+        }
+
+        selectedFilterIDs = normalizedFilterSelection(pendingSelectedFilterIDs)
+        pendingSelectedFilterIDs = nil
+        hasPendingSelectedFilterIDs = false
     }
 
     private func recompute() {
@@ -848,6 +940,56 @@ public final class UpcomingViewModel: ObservableObject {
             return allFilterOptions.first(where: { $0.id == first })?.label ?? "1 selected"
         }
         return "\(selectedFilterIDs.count) selected"
+    }
+
+    private func normalizedFilterPresets(_ presets: [UpcomingFilterPreset]) -> [UpcomingFilterPreset] {
+        presets.compactMap { preset in
+            let trimmedName = preset.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedName.isEmpty else { return nil }
+
+            let normalizedID = preset.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? UUID().uuidString
+                : preset.id
+
+            let dedupedSelection = dedupeSelection(preset.selection)
+            let normalizedSelection: [String]
+            if allFilterOptions.isEmpty {
+                normalizedSelection = dedupedSelection
+            } else {
+                let allowed = Set(dedupedSelection).intersection(Set(allFilterOptions.map(\.id)))
+                normalizedSelection = allFilterOptions.map(\.id).filter { allowed.contains($0) }
+            }
+
+            return UpcomingFilterPreset(
+                id: normalizedID,
+                name: trimmedName,
+                selection: normalizedSelection
+            )
+        }
+    }
+
+    private func currentFilterSelectionSnapshot() -> [String] {
+        if hasPendingSelectedFilterIDs {
+            guard let pendingSelectedFilterIDs else {
+                return allFilterOptions.map(\.id)
+            }
+            return orderedSelection(from: pendingSelectedFilterIDs)
+        }
+        guard let selectedFilterIDs else {
+            return allFilterOptions.map(\.id)
+        }
+        return orderedSelection(from: selectedFilterIDs)
+    }
+
+    private func orderedSelection(from ids: Set<String>) -> [String] {
+        let ordered = allFilterOptions.map(\.id).filter { ids.contains($0) }
+        let extras = ids.subtracting(Set(ordered)).sorted()
+        return ordered + extras
+    }
+
+    private func dedupeSelection(_ selection: [String]) -> [String] {
+        var seen = Set<String>()
+        return selection.filter { seen.insert($0).inserted }
     }
 
     private func normalizedDateKey(_ value: String?) -> String? {

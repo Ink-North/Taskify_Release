@@ -17,6 +17,7 @@ struct TaskifyApp: App {
                 .modelContainer(for: [TaskifyTask.self, TaskifyBoard.self, TaskifyCalendarEvent.self, TaskifyContact.self, TaskifyPublicFollow.self])
                 .task { await authVM.bootstrap() }
                 .preferredColorScheme(colorScheme)
+                .taskifyBaseFontSize(settingsManager.settings.baseFontSize)
                 .appAccent(settingsManager.settings.accent)
         }
     }

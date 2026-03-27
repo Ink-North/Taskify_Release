@@ -38,6 +38,30 @@ enum PlatformServices {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         #endif
     }
+
+    static func image(fromDataURL value: String) -> Image? {
+        guard let data = data(fromDataURL: value) else { return nil }
+        #if canImport(UIKit)
+        guard let image = UIImage(data: data) else { return nil }
+        return Image(uiImage: image)
+        #elseif canImport(AppKit)
+        guard let image = NSImage(data: data) else { return nil }
+        return Image(nsImage: image)
+        #else
+        return nil
+        #endif
+    }
+
+    private static func data(fromDataURL value: String) -> Data? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let commaIndex = trimmed.firstIndex(of: ",") else { return nil }
+        let prefix = trimmed[..<commaIndex]
+        let payload = trimmed[trimmed.index(after: commaIndex)...]
+        guard prefix.contains(";base64") else {
+            return nil
+        }
+        return Data(base64Encoded: String(payload))
+    }
 }
 
 enum PlatformToolbarPlacement {

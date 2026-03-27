@@ -99,4 +99,103 @@ struct UserSettingsTests {
         #expect(payload["backgroundImage"] as? String == "data:image/png;base64,abc")
         #expect(payload["accent"] as? String == "background")
     }
+
+    @Test("resolves imported background accents and preserves palette selection")
+    func importedBackgroundAccentSelection() throws {
+        let json = """
+        {
+          "accent": "background",
+          "backgroundImage": "data:image/png;base64,abc",
+          "backgroundAccentIndex": 1,
+          "backgroundAccent": {
+            "fill": "#445566",
+            "hover": "#556677",
+            "active": "#667788",
+            "soft": "#778899",
+            "border": "#8899aa",
+            "borderActive": "#99aabb",
+            "ring": "#aabbcc",
+            "on": "#ffffff",
+            "glow": "#001122",
+            "shadow": "#112233",
+            "shadowActive": "#223344"
+          },
+          "backgroundAccents": [
+            {
+              "fill": "#112233",
+              "hover": "#223344",
+              "active": "#334455",
+              "soft": "#445566",
+              "border": "#556677",
+              "borderActive": "#667788",
+              "ring": "#778899",
+              "on": "#ffffff",
+              "glow": "#8899aa",
+              "shadow": "#99aabb",
+              "shadowActive": "#aabbcc"
+            },
+            {
+              "fill": "#445566",
+              "hover": "#556677",
+              "active": "#667788",
+              "soft": "#778899",
+              "border": "#8899aa",
+              "borderActive": "#99aabb",
+              "ring": "#aabbcc",
+              "on": "#ffffff",
+              "glow": "#001122",
+              "shadow": "#112233",
+              "shadowActive": "#223344"
+            }
+          ]
+        }
+        """
+
+        var settings = try JSONDecoder().decode(UserSettings.self, from: Data(json.utf8))
+
+        #expect(settings.backgroundAppearance?.resolvedAccentIndex == 1)
+        #expect(settings.activeAccentFillHex == "#445566")
+
+        settings.selectBackgroundAccent(index: 0)
+        let encoded = try JSONEncoder().encode(settings)
+        let payload = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let backgroundAccent = try #require(payload["backgroundAccent"] as? [String: Any])
+
+        #expect(payload["backgroundAccentIndex"] as? Double == 0)
+        #expect(backgroundAccent["fill"] as? String == "#112233")
+    }
+
+    @Test("clearing imported background resets unsupported background fields")
+    func clearingImportedBackground() throws {
+        let json = """
+        {
+          "accent": "background",
+          "backgroundImage": "data:image/png;base64,abc",
+          "backgroundAccent": {
+            "fill": "#445566",
+            "hover": "#556677",
+            "active": "#667788",
+            "soft": "#778899",
+            "border": "#8899aa",
+            "borderActive": "#99aabb",
+            "ring": "#aabbcc",
+            "on": "#ffffff",
+            "glow": "#001122",
+            "shadow": "#112233",
+            "shadowActive": "#223344"
+          }
+        }
+        """
+
+        var settings = try JSONDecoder().decode(UserSettings.self, from: Data(json.utf8))
+        settings.clearBackgroundAppearance()
+
+        let encoded = try JSONEncoder().encode(settings)
+        let payload = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+
+        #expect(settings.backgroundAppearance == nil)
+        #expect(settings.accent == .blue)
+        #expect(payload["backgroundImage"] == nil)
+        #expect(payload["backgroundAccent"] == nil)
+    }
 }

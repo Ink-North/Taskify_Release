@@ -1,5 +1,33 @@
 import Foundation
 
+public enum Nip05CheckStatus: String, Codable, Equatable, Sendable {
+    case pending
+    case valid
+    case invalid
+}
+
+public struct Nip05CheckState: Codable, Equatable, Sendable {
+    public var status: Nip05CheckStatus
+    public var nip05: String
+    public var npub: String
+    public var checkedAt: Int
+    public var contactUpdatedAt: Int?
+
+    public init(
+        status: Nip05CheckStatus,
+        nip05: String,
+        npub: String,
+        checkedAt: Int,
+        contactUpdatedAt: Int? = nil
+    ) {
+        self.status = status
+        self.nip05 = nip05
+        self.npub = npub
+        self.checkedAt = checkedAt
+        self.contactUpdatedAt = contactUpdatedAt
+    }
+}
+
 public func makeContactId() -> String {
     UUID().uuidString.lowercased()
 }
@@ -61,12 +89,35 @@ public func formatContactNpub(_ value: String?) -> String {
     return npub
 }
 
+public func normalizeNostrPubkeyHex(_ value: String?) -> String? {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !trimmed.isEmpty else { return nil }
+    return try? NostrIdentityService.normalizePublicKeyInput(trimmed)
+}
+
 public func contactPrimaryName(_ contact: TaskifyContactRecord) -> String {
     let nickname = contact.name.trimmingCharacters(in: .whitespacesAndNewlines)
     let displayName = (contact.displayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     let username = formatContactUsername(contact.username)
     let npub = formatContactNpub(contact.npub)
     return nickname.isEmpty ? (displayName.isEmpty ? (username.isEmpty ? (npub.isEmpty ? "Contact" : npub) : username) : displayName) : nickname
+}
+
+public func contactVerifiedNip05(
+    contact: TaskifyContactRecord,
+    cache: [String: Nip05CheckState]
+) -> String? {
+    let nip05 = contact.nip05?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !nip05.isEmpty,
+          let normalizedNip05 = normalizeNip05(nip05),
+          let contactHex = normalizeNostrPubkeyHex(contact.npub),
+          let entry = cache[contact.id],
+          entry.status == .valid,
+          normalizeNip05(entry.nip05) == normalizedNip05,
+          normalizeNostrPubkeyHex(entry.npub) == contactHex else {
+        return nil
+    }
+    return nip05
 }
 
 public func contactSubtitle(_ contact: TaskifyContactRecord) -> String? {

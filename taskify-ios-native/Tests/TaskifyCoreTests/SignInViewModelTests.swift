@@ -51,4 +51,12 @@ struct SignInViewModelTests {
         #expect(ok == false)
         #expect(calls == 0)
     }
+
+    @Test("applyExternalError clears stale error when nil is passed")
+    func applyExternalErrorNilClears() {
+        let vm = SignInViewModel(submitAction: { _, _ in .signedOut })
+        vm.applyExternalError("old")
+        vm.applyExternalError(nil)
+        #expect(vm.errorMessage == nil)
+    }
 }

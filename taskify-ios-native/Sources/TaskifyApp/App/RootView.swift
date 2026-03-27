@@ -1,5 +1,5 @@
-import SwiftUI
 import SwiftData
+import SwiftUI
 import TaskifyCore
 
 struct RootView: View {
@@ -8,22 +8,102 @@ struct RootView: View {
     @EnvironmentObject private var settingsManager: SettingsManager
     @Environment(\.modelContext) private var modelContext
 
+    @State private var showFirstRunOnboarding: Bool?
+
     var body: some View {
-        switch authVM.state {
-        case .signedIn(let profile):
-            NativeAppShellView(profile: profile)
-                .task {
-                    await dataController.bootstrap(profile: profile, modelContext: modelContext)
+        Group {
+            if !authVM.hasBootstrapped || showFirstRunOnboarding == nil {
+                ProgressView("Loading Taskify...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(ThemeColors.surfaceGrouped)
+            } else {
+                ZStack {
+                    baseContent
+                        .disabled(showFirstRunOnboarding == true)
+                        .blur(radius: showFirstRunOnboarding == true ? 10 : 0)
+
+                    if showFirstRunOnboarding == true {
+                        onboardingOverlay
+                            .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    }
                 }
-        case .importing:
-            ProgressView("Signing in…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black.opacity(0.02))
-        case .error(let message):
-            SignInView(errorMessage: message)
-        case .signedOut:
-            SignInView(errorMessage: nil)
+                .animation(.easeInOut(duration: 0.22), value: showFirstRunOnboarding == true)
+            }
         }
+        .task(id: authVM.hasBootstrapped) {
+            guard authVM.hasBootstrapped, showFirstRunOnboarding == nil else { return }
+            showFirstRunOnboarding = FirstRunOnboardingGate.shouldShowFirstRunOnboarding(
+                secretKeyHex: authVM.activeProfile?.nsecHex,
+                onboardingDone: FirstRunOnboardingStore.isCompleted()
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var baseContent: some View {
+        if showFirstRunOnboarding == true, authVM.activeProfile == nil {
+            OnboardingBackdropView()
+        } else {
+            switch authVM.state {
+            case .signedIn(let profile):
+                NativeAppShellView(profile: profile)
+                    .task {
+                        await dataController.bootstrap(profile: profile, modelContext: modelContext)
+                    }
+            case .importing:
+                ProgressView("Signing in...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(ThemeColors.surfaceGrouped)
+            case .error(let message):
+                SignInView(errorMessage: message)
+            case .signedOut:
+                SignInView(errorMessage: nil)
+            }
+        }
+    }
+
+    private var onboardingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.16)
+                .ignoresSafeArea()
+
+            FirstRunOnboardingView(
+                pushSupported: NotificationPermissionCoordinator.isSupported,
+                pushConfigured: NotificationPermissionCoordinator.isSupported,
+                cloudRestoreAvailable: false,
+                onUseExistingKey: { value in
+                    authVM.useExistingOnboardingKey(value)
+                },
+                onGenerateNewKey: {
+                    authVM.generateOnboardingLogin()
+                },
+                onRestoreFromBackupFile: { data in
+                    try authVM.restoreFromBackup(data: data, settingsManager: settingsManager)
+                    completeFirstRunOnboarding()
+                },
+                onRestoreFromCloud: { _ in
+                    throw OnboardingUnavailableError.cloudRestoreUnavailable
+                },
+                onEnableNotifications: {
+                    let permission = try await NotificationPermissionCoordinator.requestAuthorization(
+                        settingsManager: settingsManager
+                    )
+                    if permission != .granted {
+                        throw NotificationPermissionError.denied
+                    }
+                },
+                onComplete: {
+                    completeFirstRunOnboarding()
+                }
+            )
+            .padding(20)
+            .frame(maxWidth: 620)
+        }
+    }
+
+    private func completeFirstRunOnboarding() {
+        FirstRunOnboardingStore.markCompleted()
+        showFirstRunOnboarding = false
     }
 }
 
@@ -59,5 +139,59 @@ struct NativeAppShellView: View {
                 .tag(AppShellViewModel.Tab.settings)
         }
         .tint(ThemeColors.accent(for: settingsManager.settings.accent))
+    }
+}
+
+private enum OnboardingUnavailableError: LocalizedError {
+    case cloudRestoreUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .cloudRestoreUnavailable:
+            return "Cloud backup service is unavailable in this app build."
+        }
+    }
+}
+
+private struct OnboardingBackdropView: View {
+    @Environment(\.appAccent) private var accent
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    ThemeColors.surfaceGrouped,
+                    ThemeColors.surfaceRaised,
+                    ThemeColors.surfaceBase,
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            Circle()
+                .fill(ThemeColors.accent(for: accent).opacity(0.12))
+                .frame(width: 260, height: 260)
+                .offset(x: 120, y: -180)
+                .blur(radius: 10)
+
+            Circle()
+                .fill(ThemeColors.accent(for: accent).opacity(0.08))
+                .frame(width: 200, height: 200)
+                .offset(x: -140, y: 220)
+                .blur(radius: 24)
+
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Taskify")
+                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                    .foregroundStyle(ThemeColors.textPrimary)
+                Text("Native iOS onboarding blocks the app until your account key is selected, matching the PWA's first-run gate.")
+                    .font(.body)
+                    .foregroundStyle(ThemeColors.textSecondary)
+                    .frame(maxWidth: 460, alignment: .leading)
+            }
+            .padding(32)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
     }
 }

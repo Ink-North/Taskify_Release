@@ -49,6 +49,7 @@ public final class DataController: ObservableObject {
     @Published public private(set) var calendarEventsVersion: Int = 0
     @Published public private(set) var contactsVersion: Int = 0
     @Published public private(set) var publicFollowsVersion: Int = 0
+    @Published public private(set) var contactNip05ChecksVersion: Int = 0
     @Published public private(set) var contactSyncState = ContactSyncState()
     @Published public private(set) var myProfileMetadata = TaskifyProfileMetadata()
 
@@ -59,6 +60,7 @@ public final class DataController: ObservableObject {
     private var profile: TaskifyProfile?
     private var activeSubscriptionKeys: Set<String> = []
     private var activeBoardId: String?
+    private var pendingBoardSyncIDs: Set<String> = []
 
     public init() {}
 
@@ -103,6 +105,7 @@ public final class DataController: ObservableObject {
         }
         activeSubscriptionKeys.removeAll()
         activeBoardId = nil
+        pendingBoardSyncIDs.removeAll()
         activeBoardItems = []
         syncing = false
     }
@@ -535,6 +538,38 @@ public final class DataController: ObservableObject {
         )
     }
 
+    /// Soft-deletes all completed tasks visible to the board's scope and publishes deletions.
+    public func clearCompletedTasks(boardId: String) async -> Int {
+        guard let ctx = modelContext else { return 0 }
+        let scopedBoardIDs = Set(activeSourceBoardIds(for: boardId))
+        guard !scopedBoardIDs.isEmpty else { return 0 }
+
+        let descriptor = FetchDescriptor<TaskifyTask>(
+            predicate: #Predicate<TaskifyTask> { task in
+                task.deleted == false && task.completed == true
+            },
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+        )
+        guard let storedTasks = try? ctx.fetch(descriptor) else { return 0 }
+
+        let editorPublicKey = currentPublicKeyHex()
+        let completedTasks = storedTasks.filter { scopedBoardIDs.contains($0.boardId) }
+        guard !completedTasks.isEmpty else { return 0 }
+
+        for task in completedTasks {
+            task.deleted = true
+            task.lastEditedBy = editorPublicKey ?? task.lastEditedBy ?? task.createdBy
+        }
+        try? ctx.save()
+
+        for task in completedTasks {
+            await publishTask(task, status: "deleted")
+        }
+
+        _ = refreshActiveBoardItems()
+        return completedTasks.count
+    }
+
     @discardableResult
     public func ensureCompoundChildBoard(_ child: BoardChildSnapshot) async -> BoardChildSnapshot? {
         let childId = child.id.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -836,15 +871,19 @@ public final class DataController: ObservableObject {
 
     private func subscribeToBoardTasks(boardId: String) {
         guard let pool = relayPool else {
+            pendingBoardSyncIDs.removeAll()
             syncing = false
             return
         }
 
         let sourceBoardIds = activeSourceBoardIds(for: boardId)
         guard !sourceBoardIds.isEmpty else {
+            pendingBoardSyncIDs.removeAll()
             syncing = false
             return
         }
+
+        pendingBoardSyncIDs = Set(sourceBoardIds)
 
         for sourceBoardId in sourceBoardIds {
             let bTag = boardTagHash(sourceBoardId)
@@ -874,8 +913,11 @@ public final class DataController: ObservableObject {
                     },
                     onEose: { [weak self] _ in
                         Task { @MainActor in
-                            self?.syncing = false
-                            _ = self?.refreshActiveBoardItems()
+                            guard let self else { return }
+                            self.pendingBoardSyncIDs.remove(sourceBoardId)
+                            guard self.pendingBoardSyncIDs.isEmpty else { return }
+                            self.syncing = false
+                            _ = self.refreshActiveBoardItems()
                         }
                     }
                 )
@@ -888,6 +930,7 @@ public final class DataController: ObservableObject {
         Task {
             try? await Task.sleep(nanoseconds: 25_000_000_000)
             await MainActor.run {
+                self.pendingBoardSyncIDs.removeAll()
                 self.syncing = false
                 _ = self.refreshActiveBoardItems()
             }
@@ -905,12 +948,18 @@ public final class DataController: ObservableObject {
     }
 
     private func activeSourceBoardIds(for boardId: String) -> [String] {
-        guard let board = fetchBoardModel(id: boardId) else { return [boardId] }
-        if board.kind == "compound" {
-            let childIds = decodedStringArray(board.childrenJSON)
-            return childIds.isEmpty ? [boardId] : childIds
+        guard let board = fetchBoardModel(id: boardId) else {
+            return BoardScopeResolver.scopedBoardIDs(
+                currentBoardId: boardId,
+                kind: nil,
+                childBoardIDs: []
+            )
         }
-        return [boardId]
+        return BoardScopeResolver.scopedBoardIDs(
+            currentBoardId: board.id,
+            kind: board.kind,
+            childBoardIDs: decodedStringArray(board.childrenJSON)
+        )
     }
 
     private func effectiveRelays(for board: TaskifyBoard) -> [String] {
@@ -1148,6 +1197,32 @@ public final class DataController: ObservableObject {
         }
         try? ctx.save()
         publicFollowsVersion &+= 1
+    }
+
+    private func saveNip05Check(_ check: Nip05CheckState, for contactId: String) {
+        var checks = loadNip05Checks()
+        let normalizedId = contactId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedId.isEmpty else { return }
+        if checks[normalizedId] == check {
+            return
+        }
+        checks[normalizedId] = check
+        persistNip05Checks(checks)
+    }
+
+    private func removeNip05Check(contactId: String) {
+        var checks = loadNip05Checks()
+        let normalizedId = contactId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedId.isEmpty, checks.removeValue(forKey: normalizedId) != nil else { return }
+        persistNip05Checks(checks)
+    }
+
+    private func persistNip05Checks(_ checks: [String: Nip05CheckState]) {
+        guard let profile else { return }
+        let existing = ContactPreferencesStore.loadNip05Checks(npub: profile.npub)
+        guard existing != checks else { return }
+        ContactPreferencesStore.saveNip05Checks(checks, npub: profile.npub)
+        contactNip05ChecksVersion &+= 1
     }
 
     private func enrichPublicFollows(_ follows: [TaskifyPublicFollowRecord], relays: [String]) async -> [TaskifyPublicFollowRecord] {
@@ -1696,6 +1771,104 @@ public final class DataController: ObservableObject {
             }
     }
 
+    public func loadNip05Checks() -> [String: Nip05CheckState] {
+        guard let profile else { return [:] }
+        return ContactPreferencesStore.loadNip05Checks(npub: profile.npub)
+    }
+
+    @discardableResult
+    public func ensureNip05Verification(
+        contactId: String,
+        nip05: String?,
+        npub: String?,
+        contactUpdatedAt: Int? = nil
+    ) async -> Nip05CheckState? {
+        guard !contactId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let normalizedNip05 = normalizeNip05(nip05),
+              let contactHex = normalizeNostrPubkeyHex(npub) else {
+            return nil
+        }
+
+        let checks = loadNip05Checks()
+        if let existing = checks[contactId],
+           existing.nip05 == normalizedNip05,
+           existing.npub == contactHex {
+            if existing.status == .pending {
+                return existing
+            }
+            let cachedUpdatedAt = existing.contactUpdatedAt
+            let targetUpdatedAt = contactUpdatedAt
+            if let cachedUpdatedAt {
+                if targetUpdatedAt == nil || targetUpdatedAt ?? 0 <= cachedUpdatedAt {
+                    return existing
+                }
+            } else if targetUpdatedAt == nil {
+                return existing
+            }
+        }
+
+        let now = Int(Date().timeIntervalSince1970 * 1000)
+        let pendingState = Nip05CheckState(
+            status: .pending,
+            nip05: normalizedNip05,
+            npub: contactHex,
+            checkedAt: now,
+            contactUpdatedAt: contactUpdatedAt
+        )
+        saveNip05Check(pendingState, for: contactId)
+
+        let finalStatus: Nip05CheckStatus
+        do {
+            let resolution = try await Nip05Resolver.resolve(normalizedNip05)
+            finalStatus = resolution.pubkey == contactHex ? .valid : .invalid
+        } catch {
+            finalStatus = .invalid
+        }
+
+        let resolvedState = Nip05CheckState(
+            status: finalStatus,
+            nip05: normalizedNip05,
+            npub: contactHex,
+            checkedAt: Int(Date().timeIntervalSince1970 * 1000),
+            contactUpdatedAt: contactUpdatedAt
+        )
+        saveNip05Check(resolvedState, for: contactId)
+        return resolvedState
+    }
+
+    @discardableResult
+    public func setPublicFollow(
+        contact: TaskifyContactRecord,
+        followed: Bool,
+        publish: Bool = true
+    ) async -> Bool {
+        guard let publicKeyHex = normalizeNostrPubkeyHex(contact.npub) else { return false }
+        let relay = contact.relays
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
+        let username = sanitizeUsername(contact.username ?? "").nilIfEmpty
+        let normalizedNip05 = normalizeNip05(contact.nip05)
+        let timestampMs = Int(Date().timeIntervalSince1970 * 1000)
+
+        var follows = fetchPublicFollows().filter { $0.pubkey != publicKeyHex }
+        if followed {
+            follows.append(TaskifyPublicFollowRecord(
+                pubkey: publicKeyHex,
+                relay: relay,
+                petname: nil,
+                username: username,
+                nip05: normalizedNip05,
+                updatedAt: timestampMs
+            ))
+        }
+        persistPublicFollows(follows)
+
+        if publish {
+            _ = await publishContactsToNostr(silent: true)
+        }
+        return true
+    }
+
     @discardableResult
     public func saveContact(_ draft: TaskifyContactDraft, publish: Bool = true) async -> TaskifyContactRecord? {
         guard let ctx = modelContext else { return nil }
@@ -1773,6 +1946,7 @@ public final class DataController: ObservableObject {
         ctx.delete(model)
         try? ctx.save()
         contactsVersion &+= 1
+        removeNip05Check(contactId: id)
         if publish {
             _ = await publishContactsToNostr(silent: true)
         }

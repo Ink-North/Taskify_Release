@@ -20,6 +20,10 @@
 		A00000000000000000000111 /* Sources/TaskifyApp/Features/Boards/ManageBoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000211 /* Sources/TaskifyApp/Features/Boards/ManageBoardView.swift */; };
 		A00000000000000000000112 /* Sources/TaskifyApp/App/PlatformCompat.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000212 /* Sources/TaskifyApp/App/PlatformCompat.swift */; };
 		A00000000000000000000113 /* Sources/TaskifyApp/Features/Contacts/ContactsShellScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000213 /* Sources/TaskifyApp/Features/Contacts/ContactsShellScreen.swift */; };
+		A00000000000000000000114 /* Sources/TaskifyApp/App/AppTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000214 /* Sources/TaskifyApp/App/AppTypography.swift */; };
+		A00000000000000000000115 /* Sources/TaskifyApp/App/NotificationPermissionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000215 /* Sources/TaskifyApp/App/NotificationPermissionCoordinator.swift */; };
+		A00000000000000000000116 /* Sources/TaskifyApp/Features/Auth/FirstRunOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000216 /* Sources/TaskifyApp/Features/Auth/FirstRunOnboardingView.swift */; };
+		A00000000000000000000117 /* Sources/TaskifyApp/Features/Settings/SettingsJSONDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000217 /* Sources/TaskifyApp/Features/Settings/SettingsJSONDocument.swift */; };
 		A00000000000000000000120 /* TaskifyCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000601 /* TaskifyCore */; };
 		A00000000000000000000130 /* Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000230 /* Resources/Assets.xcassets */; };
 /* End PBXBuildFile section */
@@ -38,6 +42,10 @@
 		A00000000000000000000211 /* Sources/TaskifyApp/Features/Boards/ManageBoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/ManageBoardView.swift; sourceTree = SOURCE_ROOT; };
 		A00000000000000000000212 /* Sources/TaskifyApp/App/PlatformCompat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/PlatformCompat.swift; sourceTree = SOURCE_ROOT; };
 		A00000000000000000000213 /* Sources/TaskifyApp/Features/Contacts/ContactsShellScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ContactsShellScreen.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000214 /* Sources/TaskifyApp/App/AppTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/AppTypography.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000215 /* Sources/TaskifyApp/App/NotificationPermissionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/NotificationPermissionCoordinator.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000216 /* Sources/TaskifyApp/Features/Auth/FirstRunOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Auth/FirstRunOnboardingView.swift; sourceTree = SOURCE_ROOT; };
+		A00000000000000000000217 /* Sources/TaskifyApp/Features/Settings/SettingsJSONDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsJSONDocument.swift; sourceTree = SOURCE_ROOT; };
 		A00000000000000000000220 /* Taskify.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Taskify.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000230 /* Resources/Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Resources/Assets.xcassets; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
@@ -70,9 +78,13 @@
 				A00000000000000000000202 /* Sources/TaskifyApp/App/AppAuthViewModel.swift */,
 				A00000000000000000000203 /* Sources/TaskifyApp/App/RootView.swift */,
 				A00000000000000000000212 /* Sources/TaskifyApp/App/PlatformCompat.swift */,
+				A00000000000000000000214 /* Sources/TaskifyApp/App/AppTypography.swift */,
+				A00000000000000000000215 /* Sources/TaskifyApp/App/NotificationPermissionCoordinator.swift */,
 				A00000000000000000000204 /* Sources/TaskifyApp/Features/Auth/SignInView.swift */,
+				A00000000000000000000216 /* Sources/TaskifyApp/Features/Auth/FirstRunOnboardingView.swift */,
 				A00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsShellScreen.swift */,
 				A00000000000000000000206 /* Sources/TaskifyApp/Features/Settings/SettingsShellScreen.swift */,
+				A00000000000000000000217 /* Sources/TaskifyApp/Features/Settings/SettingsJSONDocument.swift */,
 				A00000000000000000000207 /* Sources/TaskifyApp/Features/Upcoming/UpcomingShellScreen.swift */,
 				A00000000000000000000208 /* Sources/TaskifyApp/Legacy/TaskifyWebWrapperView.swift */,
 				A00000000000000000000209 /* Sources/TaskifyApp/Features/Tasks/TaskCardView.swift */,
@@ -209,6 +221,10 @@
 				A00000000000000000000111 /* Sources/TaskifyApp/Features/Boards/ManageBoardView.swift in Sources */,
 				A00000000000000000000112 /* Sources/TaskifyApp/App/PlatformCompat.swift in Sources */,
 				A00000000000000000000113 /* Sources/TaskifyApp/Features/Contacts/ContactsShellScreen.swift in Sources */,
+				A00000000000000000000114 /* Sources/TaskifyApp/App/AppTypography.swift in Sources */,
+				A00000000000000000000115 /* Sources/TaskifyApp/App/NotificationPermissionCoordinator.swift in Sources */,
+				A00000000000000000000116 /* Sources/TaskifyApp/Features/Auth/FirstRunOnboardingView.swift in Sources */,
+				A00000000000000000000117 /* Sources/TaskifyApp/Features/Settings/SettingsJSONDocument.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

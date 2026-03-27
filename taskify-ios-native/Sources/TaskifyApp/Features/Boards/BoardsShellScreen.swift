@@ -615,8 +615,7 @@ struct BoardsShellScreen: View {
                 syncState()
             },
             onClear: {
-                lastClearCompletedCount = boardDetailVM.clearCompletedForSelectedBoard()
-                syncState()
+                clearCompletedTasks()
             },
             onDismiss: { showFilterSortSheet = false }
         )
@@ -666,8 +665,7 @@ struct BoardsShellScreen: View {
             onFilterSort: { showFilterSortSheet = true },
             onShareBoard: { showShareSheet = true },
             onClearCompleted: {
-                lastClearCompletedCount = boardDetailVM.clearCompletedForSelectedBoard()
-                syncState()
+                clearCompletedTasks()
             }
         )
 
@@ -696,6 +694,15 @@ struct BoardsShellScreen: View {
         let tasks = await dataController.subscribeToBoard(boardId)
         boardDetailVM.setTasks(for: boardId, tasks: tasks)
         syncState()
+    }
+
+    private func clearCompletedTasks() {
+        guard let boardId = boardListVM.selectedBoardId else { return }
+        Task {
+            lastClearCompletedCount = await dataController.clearCompletedTasks(boardId: boardId)
+            boardDetailVM.setTasks(for: boardId, tasks: dataController.activeBoardItems)
+            syncState()
+        }
     }
 
     private func syncState() {
