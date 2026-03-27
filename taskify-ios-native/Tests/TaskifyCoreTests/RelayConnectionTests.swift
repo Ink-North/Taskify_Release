@@ -11,6 +11,7 @@ final class MockRelayPool: RelayPoolProtocol, @unchecked Sendable {
     var dispatchedMessages: [(RelayMessage, String)] = []
     var connectedUrls: [String] = []
     var disconnectedUrls: [String] = []
+    var permanentFailures: [(String, NSError?)] = []
 
     nonisolated func dispatch(message: RelayMessage, from relayUrl: String) {
         dispatchedMessages.append((message, relayUrl))
@@ -22,6 +23,10 @@ final class MockRelayPool: RelayPoolProtocol, @unchecked Sendable {
 
     func relayDidDisconnect(url: String) async {
         disconnectedUrls.append(url)
+    }
+
+    func relayDidFailPermanently(url: String, error: NSError?) async {
+        permanentFailures.append((url, error))
     }
 }
 

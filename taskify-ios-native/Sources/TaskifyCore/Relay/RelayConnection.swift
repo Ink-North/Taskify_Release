@@ -17,6 +17,7 @@ public protocol RelayPoolProtocol: AnyObject {
     nonisolated func dispatch(message: RelayMessage, from relayUrl: String)
     func relayDidConnect(url: String) async
     func relayDidDisconnect(url: String) async
+    func relayDidFailPermanently(url: String, error: NSError?) async
 }
 
 private final class RelayConnectionDelegateProxy: NSObject, URLSessionWebSocketDelegate {
@@ -279,6 +280,9 @@ public actor RelayConnection {
         guard let currentTask = webSocketTask, currentTask === task else { return }
         let shouldRetry = shouldReconnect && Self.shouldAutoReconnect(after: error)
         await teardownCurrentConnection(closeCode: .goingAway, notifyPool: true)
+        if shouldReconnect, !shouldRetry, let pool {
+            await pool.relayDidFailPermanently(url: url, error: error)
+        }
         guard shouldRetry else { return }
         let delay = reconnectDelay
         reconnectDelay = min(reconnectDelay * 2, Self.maxReconnectDelaySecs)

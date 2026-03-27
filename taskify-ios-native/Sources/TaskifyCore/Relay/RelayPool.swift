@@ -35,6 +35,7 @@ public actor RelayPool: RelayPoolProtocol {
 
     private let relayURLs: [String]
     private let onConnectionSummaryChange: (@Sendable (ConnectionSummary) -> Void)?
+    private let onPermanentFailure: (@Sendable (String, NSError?) -> Void)?
 
     // MARK: State
 
@@ -45,10 +46,12 @@ public actor RelayPool: RelayPoolProtocol {
 
     public init(
         relayURLs: [String],
-        onConnectionSummaryChange: (@Sendable (ConnectionSummary) -> Void)? = nil
+        onConnectionSummaryChange: (@Sendable (ConnectionSummary) -> Void)? = nil,
+        onPermanentFailure: (@Sendable (String, NSError?) -> Void)? = nil
     ) {
         self.relayURLs = relayURLs
         self.onConnectionSummaryChange = onConnectionSummaryChange
+        self.onPermanentFailure = onPermanentFailure
     }
 
     // MARK: Connect
@@ -121,6 +124,10 @@ public actor RelayPool: RelayPoolProtocol {
 
     public func relayDidDisconnect(url _: String) async {
         await publishConnectionSummary()
+    }
+
+    public func relayDidFailPermanently(url: String, error: NSError?) async {
+        onPermanentFailure?(url, error)
     }
 
     // MARK: Subscribe

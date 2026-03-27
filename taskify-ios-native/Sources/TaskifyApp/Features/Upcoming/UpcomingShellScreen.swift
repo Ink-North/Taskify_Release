@@ -907,24 +907,32 @@ private struct UpcomingFilterSheet: View {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 10) {
                                 ForEach(filterPresets) { preset in
-                                    Button {
-                                        onApplyPreset(preset)
-                                    } label: {
-                                        Text(preset.name)
-                                            .font(.subheadline.weight(.semibold))
-                                            .padding(.horizontal, 14)
-                                            .padding(.vertical, 8)
-                                            .background(ThemeColors.surfaceRaised)
-                                            .clipShape(Capsule())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .contextMenu {
-                                        Button(role: .destructive) {
-                                            presetPendingDelete = preset
+                                    HStack(spacing: 8) {
+                                        Button {
+                                            onApplyPreset(preset)
                                         } label: {
-                                            Label("Delete Preset", systemImage: "trash")
+                                            Text(preset.name)
+                                                .font(.subheadline.weight(.semibold))
                                         }
+                                        .buttonStyle(.plain)
+
+                                        Menu {
+                                            Button(role: .destructive) {
+                                                presetPendingDelete = preset
+                                            } label: {
+                                                Label("Delete Preset", systemImage: "trash")
+                                            }
+                                        } label: {
+                                            Image(systemName: "ellipsis.circle")
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .buttonStyle(.plain)
                                     }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 8)
+                                    .background(ThemeColors.surfaceRaised)
+                                    .clipShape(Capsule())
                                 }
                             }
                             .padding(.vertical, 4)

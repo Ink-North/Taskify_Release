@@ -35,9 +35,7 @@ public func makeContactId() -> String {
 public func normalizeRelayList(_ relays: [String]) -> [String] {
     var seen = Set<String>()
     var ordered: [String] = []
-    for relay in relays
-        .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
-        .filter({ !$0.isEmpty }) where seen.insert(relay).inserted {
+    for relay in relays.compactMap(RelayBlocklistStore.normalize) where seen.insert(relay).inserted {
         ordered.append(relay)
     }
     return ordered

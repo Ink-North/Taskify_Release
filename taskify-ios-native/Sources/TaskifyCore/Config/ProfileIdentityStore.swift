@@ -14,13 +14,15 @@ public struct ProfileIdentityStore {
     }
 
     public func saveProfile(_ profile: TaskifyProfile) throws {
-        let data = try JSONEncoder().encode(profile)
-        try secureStore.set(data, key: Keys.profile(profile.name))
-        try secureStore.set(Data(profile.name.utf8), key: Keys.activeProfile)
+        var sanitized = profile
+        sanitized.relays = normalizeRelayList(profile.relays)
+        let data = try JSONEncoder().encode(sanitized)
+        try secureStore.set(data, key: Keys.profile(sanitized.name))
+        try secureStore.set(Data(sanitized.name.utf8), key: Keys.activeProfile)
 
         var names = try allProfileNames()
-        if !names.contains(profile.name) {
-            names.append(profile.name)
+        if !names.contains(sanitized.name) {
+            names.append(sanitized.name)
             try saveProfileNames(names)
         }
     }
@@ -32,7 +34,13 @@ public struct ProfileIdentityStore {
         else {
             return nil
         }
-        return try JSONDecoder().decode(TaskifyProfile.self, from: data)
+        var profile = try JSONDecoder().decode(TaskifyProfile.self, from: data)
+        let sanitizedRelays = normalizeRelayList(profile.relays)
+        if sanitizedRelays != profile.relays {
+            profile.relays = sanitizedRelays
+            try saveProfile(profile)
+        }
+        return profile
     }
 
     public func allProfileNames() throws -> [String] {

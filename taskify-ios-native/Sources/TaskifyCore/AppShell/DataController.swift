@@ -672,6 +672,11 @@ public final class DataController: ObservableObject {
                 Task { @MainActor [weak self] in
                     self?.relayConnected = summary.connected
                 }
+            },
+            onPermanentFailure: { [weak self] url, error in
+                Task { @MainActor [weak self] in
+                    self?.handlePermanentRelayFailure(url: url, error: error)
+                }
             }
         )
         relayPool = pool
@@ -1203,12 +1208,48 @@ public final class DataController: ObservableObject {
     private func normalizeRelayList(_ relays: [String]) -> [String] {
         var seen = Set<String>()
         var ordered: [String] = []
-        for relay in relays
-            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
-            .filter({ !$0.isEmpty }) where seen.insert(relay).inserted {
+        for relay in relays.compactMap(RelayBlocklistStore.normalize) where seen.insert(relay).inserted {
             ordered.append(relay)
         }
         return ordered
+    }
+
+    private func handlePermanentRelayFailure(url: String, error: NSError?) {
+        RelayBlocklistStore.add(url)
+
+        var didPrune = false
+
+        if var prof = profile {
+            let filteredRelays = normalizeRelayList(prof.relays.filter { $0 != url })
+            if filteredRelays != prof.relays {
+                prof.relays = filteredRelays
+                profile = prof
+                persistProfile(prof)
+                didPrune = true
+            }
+        }
+
+        if let ctx = modelContext {
+            var updatedBoards = false
+            for board in fetchStoredBoards() {
+                let filteredHints = normalizeRelayList(decodedStringArray(board.relayHintsJSON).filter { $0 != url })
+                let existingHints = decodedStringArray(board.relayHintsJSON)
+                if filteredHints != existingHints {
+                    board.relayHintsJSON = filteredHints.isEmpty ? nil : encodeJSONString(filteredHints)
+                    updatedBoards = true
+                }
+            }
+            if updatedBoards {
+                try? ctx.save()
+                didPrune = true
+            }
+        }
+
+        let host = URLComponents(string: url)?.host ?? url
+        let detail = error?.localizedDescription ?? "TLS trust failed"
+        lastError = didPrune
+            ? "Removed relay \(host) after iOS rejected its TLS certificate (\(detail))."
+            : "iOS rejected relay \(host)'s TLS certificate (\(detail))."
     }
 
     private func currentPublicKeyHex() -> String? {

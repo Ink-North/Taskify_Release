@@ -74,4 +74,23 @@ struct ProfileIdentityStoreTests {
         let names = try store.allProfileNames()
         #expect(names == ["Ink"])
     }
+
+    @Test("saveProfile filters ATS-blocked relays")
+    func saveProfileFiltersBlockedRelays() throws {
+        let secure = InMemorySecureStore()
+        let store = ProfileIdentityStore(secureStore: secure)
+
+        let profile = TaskifyProfile(
+            name: "Nathan",
+            nsecHex: String(repeating: "a", count: 64),
+            npub: "npub1test",
+            relays: ["wss://relay.damus.io", "wss://relay.primal.net"],
+            boards: []
+        )
+
+        try store.saveProfile(profile)
+
+        let active = try store.loadActiveProfile()
+        #expect(active?.relays == ["wss://relay.damus.io"])
+    }
 }
