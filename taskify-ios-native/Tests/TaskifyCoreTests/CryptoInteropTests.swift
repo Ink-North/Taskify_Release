@@ -156,12 +156,28 @@ struct CalendarKeyTests {
     ///   node -e "const {deriveBoardKeyPair}=require('taskify-runtime-nostr');const k=deriveBoardKeyPair('test-board-id');console.log(k.skHex)"
     @Test("private key matches JS deriveBoardKeyPair output")
     func knownAnswerTest() throws {
-        // Replace this hex once you've run the JS reference and captured the output.
-        // Placeholder — test will be updated after Xcode build + JS cross-check.
         let kp = try deriveBoardCalendarKeyPair("test-board-id")
-        // Sanity: it's 32 bytes of non-zero data
-        #expect(kp.privateKeyBytes.count == 32)
-        #expect(kp.privateKeyBytes != Data(count: 32), "Key should not be all zeros")
+        #expect(kp.privateKeyBytes.hexString == "fb9b7a1482d0a4b7a2caeac449e11a26be3faeae91cb8bebdb0f29d73f78c9e9")
+    }
+}
+
+// MARK: - Board signer known-answer
+
+@Suite("Board signer known-answer")
+struct BoardSignerKnownAnswerTests {
+
+    @Test("BoardKeyInfo matches JS pubkey for test-board-id")
+    func testBoardIdPubkey() throws {
+        let info = try BoardKeyInfo(boardId: "test-board-id")
+        #expect(info.privateKeyBytes.hexString == "fb9b7a1482d0a4b7a2caeac449e11a26be3faeae91cb8bebdb0f29d73f78c9e9")
+        #expect(info.publicKeyHex == "7867df404773e8684a7992bc58f3122ed2a56c6e79b414bb672adbe975fd2ef4")
+    }
+
+    @Test("BoardKeyInfo matches JS pubkey for shared UUID board")
+    func sharedBoardUuidPubkey() throws {
+        let info = try BoardKeyInfo(boardId: "4d0f7654-1ba2-481f-8ec4-d0575d837196")
+        #expect(info.privateKeyBytes.hexString == "1cb01c257f557fc50d30007746da6f04387b649c59d3fa10c9d5a2fd06f16146")
+        #expect(info.publicKeyHex == "754e94a49991411c9534ded1a415fd6ab1283d5e83a434cbb76fd349fc6ee8b2")
     }
 }
 

@@ -93,6 +93,15 @@ extension View {
     }
 
     @ViewBuilder
+    func platformHideNavigationBar() -> some View {
+        #if os(iOS)
+        toolbar(.hidden, for: .navigationBar)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
     func platformNoAutoCaps() -> some View {
         #if os(iOS)
         textInputAutocapitalization(.never)

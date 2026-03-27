@@ -153,6 +153,85 @@ struct UpcomingViewModelTests {
         #expect(vm.events(for: "2026-03-27").map(\.id) == ["e1"])
     }
 
+    @Test("minimum date cutoff mirrors board-upcoming future-only grouping")
+    func minimumDateCutoff() {
+        let vm = UpcomingViewModel()
+        vm.setBoards([
+            .init(id: "b1", name: "Work", kind: "lists", columns: [.init(id: "todo", name: "Todo")]),
+        ])
+        vm.setMinimumDateKeyExclusive("2026-03-26")
+        vm.setTasks([
+            .init(
+                id: "t-past",
+                title: "Past due",
+                completed: false,
+                dueISO: "2026-03-25T18:00:00Z",
+                createdAt: 8,
+                columnId: "todo",
+                dueDateEnabled: true,
+                boardId: "b1",
+                boardName: "Work"
+            ),
+            .init(
+                id: "t-today",
+                title: "Today",
+                completed: false,
+                dueISO: "2026-03-26T18:00:00Z",
+                createdAt: 9,
+                columnId: "todo",
+                dueDateEnabled: true,
+                boardId: "b1",
+                boardName: "Work"
+            ),
+            .init(
+                id: "t-future",
+                title: "Tomorrow",
+                completed: false,
+                dueISO: "2026-03-27T18:00:00Z",
+                createdAt: 10,
+                columnId: "todo",
+                dueDateEnabled: true,
+                boardId: "b1",
+                boardName: "Work"
+            ),
+        ])
+        vm.setEvents([
+            .init(
+                id: "e-range",
+                boardId: "b1",
+                boardName: "Work",
+                title: "Conference",
+                kind: "date",
+                startDate: "2026-03-26",
+                endDate: "2026-03-28",
+                columnId: "todo"
+            ),
+            .init(
+                id: "e-today",
+                boardId: "b1",
+                boardName: "Work",
+                title: "Today sync",
+                kind: "time",
+                startISO: "2026-03-26T14:00:00Z",
+                columnId: "todo"
+            ),
+            .init(
+                id: "e-future",
+                boardId: "b1",
+                boardName: "Work",
+                title: "Tomorrow sync",
+                kind: "time",
+                startISO: "2026-03-27T14:00:00Z",
+                columnId: "todo"
+            ),
+        ])
+
+        #expect(vm.groups.map(\.dateKey) == ["2026-03-27", "2026-03-28"])
+        #expect(vm.tasks(for: "2026-03-27").map(\.id) == ["t-future"])
+        #expect(vm.events(for: "2026-03-27").map(\.id) == ["e-range", "e-future"])
+        #expect(vm.events(for: "2026-03-28").map(\.id) == ["e-range"])
+    }
+
     @Test("event search matches description and locations")
     func eventSearchMatchesDescriptionAndLocations() {
         let vm = UpcomingViewModel()

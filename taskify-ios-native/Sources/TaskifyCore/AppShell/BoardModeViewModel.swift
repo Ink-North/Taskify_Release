@@ -17,9 +17,9 @@ public enum BoardPageState: Equatable {
 public final class BoardModeViewModel: ObservableObject {
     @Published public private(set) var mode: BoardPageMode = .board
 
-    private var boardItems: [String] = []
-    private var upcomingItems: [String] = []
-    private var completedItems: [String] = []
+    private var boardItemCount = 0
+    private var upcomingItemCount = 0
+    private var completedItemCount = 0
 
     private var modeOverrides: [BoardPageMode: BoardPageState] = [:]
 
@@ -32,11 +32,11 @@ public final class BoardModeViewModel: ObservableObject {
 
         switch mode {
         case .board:
-            return boardItems.isEmpty ? .empty("No items on this board.") : .ready
+            return boardItemCount == 0 ? .empty("No items on this board.") : .ready
         case .boardUpcoming:
-            return upcomingItems.isEmpty ? .empty("No upcoming items on this board.") : .ready
+            return upcomingItemCount == 0 ? .empty("No upcoming items on this board.") : .ready
         case .completed:
-            return completedItems.isEmpty ? .empty("No completed items on this board.") : .ready
+            return completedItemCount == 0 ? .empty("No completed items on this board.") : .ready
         }
     }
 
@@ -45,17 +45,29 @@ public final class BoardModeViewModel: ObservableObject {
     }
 
     public func setBoardItems(_ items: [String]) {
-        boardItems = items
+        setBoardItemCount(items.count)
+    }
+
+    public func setBoardItemCount(_ count: Int) {
+        boardItemCount = max(0, count)
         clearOverride(for: .board)
     }
 
     public func setUpcomingItems(_ items: [String]) {
-        upcomingItems = items
+        setUpcomingItemCount(items.count)
+    }
+
+    public func setUpcomingItemCount(_ count: Int) {
+        upcomingItemCount = max(0, count)
         clearOverride(for: .boardUpcoming)
     }
 
     public func setCompletedItems(_ items: [String]) {
-        completedItems = items
+        setCompletedItemCount(items.count)
+    }
+
+    public func setCompletedItemCount(_ count: Int) {
+        completedItemCount = max(0, count)
         clearOverride(for: .completed)
     }
 

@@ -174,6 +174,7 @@ public final class UpcomingViewModel: ObservableObject {
     @Published public private(set) var sortMode: TaskSortMode = .dueDate
     @Published public private(set) var sortAscending: Bool = true
     @Published public private(set) var boardGrouping: UpcomingBoardGrouping = .mixed
+    @Published public private(set) var minimumDateKeyExclusive: String? = nil
     @Published public private(set) var filterLabel: String = "All boards"
     @Published public private(set) var itemCount: Int = 0
     @Published public var searchText: String = "" {
@@ -229,6 +230,13 @@ public final class UpcomingViewModel: ObservableObject {
     public func setBoardGrouping(_ grouping: UpcomingBoardGrouping) {
         guard boardGrouping != grouping else { return }
         boardGrouping = grouping
+        recompute()
+    }
+
+    public func setMinimumDateKeyExclusive(_ dateKey: String?) {
+        let normalized = normalizedDateKey(dateKey)
+        guard minimumDateKeyExclusive != normalized else { return }
+        minimumDateKeyExclusive = normalized
         recompute()
     }
 
@@ -492,13 +500,13 @@ public final class UpcomingViewModel: ObservableObject {
 
         var groupedTasks: [String: [BoardTaskItem]] = [:]
         filteredTasks.forEach { task in
-            guard let dateKey = dueDateKey(for: task) else { return }
+            guard let dateKey = groupedDueDateKey(for: task) else { return }
             groupedTasks[dateKey, default: []].append(task)
         }
 
         var groupedEvents: [String: [UpcomingCalendarEventItem]] = [:]
         filteredEvents.forEach { event in
-            eventDateKeys(for: event).forEach { dateKey in
+            groupedEventDateKeys(for: event).forEach { dateKey in
                 groupedEvents[dateKey, default: []].append(event)
             }
         }
@@ -531,7 +539,7 @@ public final class UpcomingViewModel: ObservableObject {
         var filtered = tasks.filter { task in
             guard !task.completed else { return false }
             guard task.dueDateEnabled != false else { return false }
-            return dueDateKey(for: task) != nil
+            return groupedDueDateKey(for: task) != nil
         }
 
         if !allFilterOptions.isEmpty, let selectedFilterIDs {
@@ -559,7 +567,7 @@ public final class UpcomingViewModel: ObservableObject {
     }
 
     private func applyEventFilters(to events: [UpcomingCalendarEventItem]) -> [UpcomingCalendarEventItem] {
-        var filtered = events.filter { !eventDateKeys(for: $0).isEmpty }
+        var filtered = events.filter { !groupedEventDateKeys(for: $0).isEmpty }
 
         if !allFilterOptions.isEmpty, let selectedFilterIDs {
             if selectedFilterIDs.isEmpty {
@@ -775,6 +783,12 @@ public final class UpcomingViewModel: ObservableObject {
         return Self.dateKey(fromISO: dueISO)
     }
 
+    private func groupedDueDateKey(for task: BoardTaskItem) -> String? {
+        guard let dateKey = dueDateKey(for: task) else { return nil }
+        guard let minimumDateKeyExclusive else { return dateKey }
+        return dateKey > minimumDateKeyExclusive ? dateKey : nil
+    }
+
     private func dueTimestamp(for task: BoardTaskItem) -> Int? {
         guard let dueISO = task.dueISO,
               let date = Self.parseISO(dueISO) else {
@@ -821,6 +835,12 @@ public final class UpcomingViewModel: ObservableObject {
             return []
         }
         return [dateKey]
+    }
+
+    private func groupedEventDateKeys(for event: UpcomingCalendarEventItem) -> [String] {
+        let keys = eventDateKeys(for: event)
+        guard let minimumDateKeyExclusive else { return keys }
+        return keys.filter { $0 > minimumDateKeyExclusive }
     }
 
     private func locationListName(boardId: String?, columnId: String?) -> String? {

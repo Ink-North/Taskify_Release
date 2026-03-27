@@ -91,7 +91,10 @@ public final class DataController: ObservableObject {
         activeBoardId = boardId
         syncing = true
         await refreshBoardMetadata(boardId: boardId)
+        let sourceBoardIds = activeSourceBoardIds(for: boardId)
+        await refreshAllBoardMetadata(boardIds: sourceBoardIds.filter { $0 != boardId })
         let localTasks = refreshActiveBoardItems()
+        subscribeToBoardMetadata(boardIds: sourceBoardIds)
         subscribeToBoardTasks(boardId: boardId)
         return localTasks
     }
@@ -233,8 +236,10 @@ public final class DataController: ObservableObject {
             createdAt: Int(Date().timeIntervalSince1970)
         )
         task.boardName = boardName(boardId: editVM.location.boardId)
+        task.sourceBoardId = editVM.location.boardId
         task.createdBy = currentPublicKeyHex()
         task.lastEditedBy = task.createdBy
+        task.updatedAt = isoTimestamp(unixSeconds: task.createdAt)
         applyEditToModel(editVM, task: task)
         ctx.insert(task)
         try? ctx.save()
@@ -264,8 +269,10 @@ public final class DataController: ObservableObject {
             createdAt: Int(Date().timeIntervalSince1970)
         )
         task.boardName = boardName(boardId: boardId)
+        task.sourceBoardId = boardId
         task.createdBy = currentPublicKeyHex()
         task.lastEditedBy = task.createdBy
+        task.updatedAt = isoTimestamp(unixSeconds: task.createdAt)
         task.column = columnId
         if let dueISO {
             task.dueISO = dueISO
@@ -289,6 +296,7 @@ public final class DataController: ObservableObject {
               let task = fetchTaskModel(id: taskId) else { return nil }
         applyEditToModel(editVM, task: task)
         task.lastEditedBy = currentPublicKeyHex() ?? task.lastEditedBy ?? task.createdBy
+        task.updatedAt = ISO8601DateFormatter().string(from: Date())
         try? ctx.save()
 
         let status = task.completed ? "done" : (task.deleted ? "deleted" : "open")
@@ -312,6 +320,7 @@ public final class DataController: ObservableObject {
             task.completedBy = nil
         }
         task.lastEditedBy = currentPublicKeyHex() ?? task.lastEditedBy ?? task.createdBy
+        task.updatedAt = ISO8601DateFormatter().string(from: Date())
         try? ctx.save()
 
         await publishTask(task, status: task.completed ? "done" : "open")
@@ -327,6 +336,7 @@ public final class DataController: ObservableObject {
               let task = fetchTaskModel(id: taskId) else { return false }
         task.deleted = true
         task.lastEditedBy = currentPublicKeyHex() ?? task.lastEditedBy ?? task.createdBy
+        task.updatedAt = ISO8601DateFormatter().string(from: Date())
         try? ctx.save()
 
         await publishTask(task, status: "deleted")
@@ -351,6 +361,7 @@ public final class DataController: ObservableObject {
            let newJSON = String(data: newData, encoding: .utf8) {
             task.subtasksJSON = newJSON
         }
+        task.updatedAt = ISO8601DateFormatter().string(from: Date())
         try? ctx.save()
 
         await publishTask(task, status: task.completed ? "done" : "open")
@@ -428,6 +439,7 @@ public final class DataController: ObservableObject {
         persistProfile(prof)
         await rebuildRelayPool()
         await refreshBoardMetadata(boardId: boardId)
+        await refreshAllBoardMetadata(boardIds: activeSourceBoardIds(for: boardId).filter { $0 != boardId })
         boardDefinitionsVersion &+= 1
 
         // Start syncing this board
@@ -679,11 +691,18 @@ public final class DataController: ObservableObject {
     private func refreshBoardMetadata(boardId: String) async {
         guard let pool = relayPool else { return }
         let bTag = boardTagHash(boardId)
-        let events = await pool.fetchEvents(filters: [[
-            "kinds": [TaskifyEventKind.boardDefinition.rawValue],
-            "#d": [bTag],
-            "limit": 20,
-        ]])
+        let events = await pool.fetchEvents(filters: [
+            [
+                "kinds": [TaskifyEventKind.boardDefinition.rawValue],
+                "#d": [bTag],
+                "limit": 20,
+            ],
+            [
+                "kinds": [TaskifyEventKind.boardDefinition.rawValue],
+                "#b": [bTag],
+                "limit": 20,
+            ],
+        ])
 
         guard let latest = events.max(by: { $0.created_at < $1.created_at }) else { return }
         applyIncomingBoardDefinition(latest, boardId: boardId)
@@ -709,40 +728,64 @@ public final class DataController: ObservableObject {
         let board = fetchOrCreateBoard(boardId: boardId)
         if let last = board.metadataCreatedAt, event.created_at < last { return }
 
+        let previousScope = activeBoardId == boardId ? activeSourceBoardIds(for: boardId) : []
         let decoded: BoardDefinitionPayload?
         if let plaintext = try? decryptTaskPayload(event.content, boardId: boardId) {
             decoded = BoardDefinitionCodec.decode(plaintext)
         } else {
             decoded = BoardDefinitionCodec.decode(event.content)
         }
-        guard let payload = decoded else { return }
+        let metadata = BoardDefinitionCodec.mergedMetadata(payload: decoded, tags: event.tags)
+        guard !metadata.isEmpty else { return }
 
         board.metadataCreatedAt = event.created_at
-        if let kind = event.tagValue("k"), !kind.isEmpty {
+        if let kind = metadata.kind {
             board.kind = kind
         }
-        if let name = event.tagValue("name"), !name.isEmpty {
+        if let name = normalizedBoardName(metadata.name) {
             board.name = name
             syncProfileBoardName(boardId: boardId, name: name)
+            syncStoredBoardNameReferences(boardId: boardId, name: name)
         }
-        board.clearCompletedDisabled = payload.clearCompletedDisabled
-        if let columns = payload.columns {
+        if let clearCompletedDisabled = metadata.clearCompletedDisabled {
+            board.clearCompletedDisabled = clearCompletedDisabled
+        }
+        if let columns = metadata.columns {
             board.columnsJSON = encodeJSONString(columns)
         }
-        if let children = payload.children {
-            board.childrenJSON = encodeJSONString(children)
-            createCompoundChildStubs(children, relayHints: effectiveRelays(for: board))
+        if let children = metadata.children {
+            let normalizedChildren = normalizeCompoundChildren(children, parentBoardId: boardId)
+            board.childrenJSON = encodeJSONString(normalizedChildren)
+            createCompoundChildStubs(normalizedChildren, relayHints: effectiveRelays(for: board))
         }
-        if let listIndex = payload.listIndex {
+        if let listIndex = metadata.indexCardEnabled {
             board.indexCardEnabled = listIndex
         }
-        if let hideBoardNames = payload.hideBoardNames {
+        if let hideBoardNames = metadata.hideChildBoardNames {
             board.hideChildBoardNames = hideBoardNames
+        }
+        if let archived = metadata.archived {
+            board.archived = archived
+        }
+        if let hidden = metadata.hidden {
+            board.hidden = hidden
+        }
+        if let sortMode = metadata.sortMode {
+            board.sortMode = sortMode
+            board.sortDirection = metadata.sortDirection ?? board.sortDirection ?? "asc"
         }
 
         try? modelContext?.save()
         boardDefinitionsVersion &+= 1
         _ = refreshActiveBoardItems()
+
+        let updatedScope = activeBoardId == boardId ? activeSourceBoardIds(for: boardId) : []
+        if activeBoardId == boardId, updatedScope != previousScope, let activeBoardId {
+            Task { [weak self] in
+                guard let self else { return }
+                let _ = await self.subscribeToBoard(activeBoardId)
+            }
+        }
     }
 
     private func mergeIncomingCalendarEvents(_ events: [NostrEvent], boardId: String) {
@@ -869,6 +912,47 @@ public final class DataController: ObservableObject {
         try? modelContext?.save()
     }
 
+    private func subscribeToBoardMetadata(boardIds: [String]) {
+        guard let pool = relayPool else { return }
+
+        var seen = Set<String>()
+        let uniqueBoardIds = boardIds.filter { seen.insert($0).inserted }
+        guard !uniqueBoardIds.isEmpty else { return }
+
+        let boardTags = uniqueBoardIds.map(boardTagHash)
+        let boardTagMap = Dictionary(uniqueKeysWithValues: zip(boardTags, uniqueBoardIds))
+        let filters: [[String: Any]] = [
+            [
+                "kinds": [TaskifyEventKind.boardDefinition.rawValue],
+                "#d": boardTags,
+            ],
+            [
+                "kinds": [TaskifyEventKind.boardDefinition.rawValue],
+                "#b": boardTags,
+            ],
+        ]
+
+        Task { [weak self] in
+            guard let self else { return }
+            let key = await pool.subscribe(
+                filters: filters,
+                onEvent: { [weak self] event, _ in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        guard let boardId = self.boardId(forBoardDefinitionEvent: event, boardTagMap: boardTagMap) else {
+                            return
+                        }
+                        self.applyIncomingBoardDefinition(event, boardId: boardId)
+                    }
+                },
+                onEose: { _ in }
+            )
+            await MainActor.run {
+                _ = self.activeSubscriptionKeys.insert(key)
+            }
+        }
+    }
+
     private func subscribeToBoardTasks(boardId: String) {
         guard let pool = relayPool else {
             pendingBoardSyncIDs.removeAll()
@@ -922,7 +1006,7 @@ public final class DataController: ObservableObject {
                     }
                 )
                 await MainActor.run {
-                    self.activeSubscriptionKeys.insert(key)
+                    _ = self.activeSubscriptionKeys.insert(key)
                 }
             }
         }
@@ -966,6 +1050,16 @@ public final class DataController: ObservableObject {
         normalizeRelayList((profile?.relays ?? []) + decodedStringArray(board.relayHintsJSON))
     }
 
+    private func boardId(forBoardDefinitionEvent event: NostrEvent, boardTagMap: [String: String]) -> String? {
+        if let dTag = event.tagValue("d"), let boardId = boardTagMap[dTag] {
+            return boardId
+        }
+        if let bTag = event.tagValue("b"), let boardId = boardTagMap[bTag] {
+            return boardId
+        }
+        return nil
+    }
+
     private func syncProfileBoardName(boardId: String, name: String) {
         guard var prof = profile,
               let index = prof.boards.firstIndex(where: { $0.id == boardId }),
@@ -973,6 +1067,38 @@ public final class DataController: ObservableObject {
         prof.boards[index].name = name
         profile = prof
         persistProfile(prof)
+    }
+
+    private func syncStoredBoardNameReferences(boardId: String, name: String) {
+        guard let ctx = modelContext else { return }
+
+        let taskDescriptor = FetchDescriptor<TaskifyTask>(
+            predicate: #Predicate<TaskifyTask> { task in
+                task.boardId == boardId
+            }
+        )
+        let eventDescriptor = FetchDescriptor<TaskifyCalendarEvent>(
+            predicate: #Predicate<TaskifyCalendarEvent> { event in
+                event.boardId == boardId
+            }
+        )
+
+        var didChange = false
+        let tasks = (try? ctx.fetch(taskDescriptor)) ?? []
+        for task in tasks where task.boardName != name {
+            task.boardName = name
+            didChange = true
+        }
+
+        let calendarEvents = (try? ctx.fetch(eventDescriptor)) ?? []
+        for event in calendarEvents where event.boardName != name {
+            event.boardName = name
+            didChange = true
+        }
+
+        guard didChange else { return }
+        try? ctx.save()
+        calendarEventsVersion &+= 1
     }
 
     private func boardNamesById() -> [String: String] {
@@ -1403,6 +1529,7 @@ public final class DataController: ObservableObject {
     }
 
     private func applyPayloadToModel(_ payload: [String: Any], status: String, task: TaskifyTask, createdAt: Int, colTag: String?) {
+        task.sourceBoardId = task.boardId
         task.boardName = boardName(boardId: task.boardId)
         if let title = payload["title"] as? String, !title.isEmpty {
             task.title = title
@@ -1435,11 +1562,29 @@ public final class DataController: ObservableObject {
         task.deleted = status == "deleted"
         task.column = colTag?.isEmpty == false ? colTag : nil
         task.createdAt = createdAt
+        if payload.keys.contains("updatedAt") {
+            task.updatedAt = stringField(payload["updatedAt"])
+        } else {
+            task.updatedAt = isoTimestamp(unixSeconds: createdAt)
+        }
         if payload.keys.contains("createdBy") {
             task.createdBy = normalizedPublicKeyField(payload["createdBy"])
         }
         if payload.keys.contains("lastEditedBy") {
             task.lastEditedBy = normalizedPublicKeyField(payload["lastEditedBy"]) ?? task.createdBy
+        }
+        if payload.keys.contains("sourceBoardId") {
+            task.sourceBoardId = stringField(payload["sourceBoardId"]) ?? task.boardId
+        }
+        if payload.keys.contains("inboxItem") {
+            switch payload["inboxItem"] {
+            case is NSNull:
+                task.inboxItem = nil
+            case let object as [String: Any]:
+                task.inboxItem = !object.isEmpty
+            default:
+                task.inboxItem = boolField(payload["inboxItem"])
+            }
         }
         if payload.keys.contains("hiddenUntilISO") {
             task.hiddenUntilISO = stringField(payload["hiddenUntilISO"])
@@ -1465,32 +1610,38 @@ public final class DataController: ObservableObject {
         do {
             let boardKeyInfo = try BoardKeyInfo(boardId: board.id)
             let bTag = boardTagHash(board.id)
-            let payload: BoardDefinitionPayload
-            switch board.kind {
-            case "lists":
-                payload = BoardDefinitionPayload(
-                    clearCompletedDisabled: board.clearCompletedDisabled,
-                    columns: decodedColumns(board.columnsJSON),
-                    listIndex: board.indexCardEnabled
-                )
-            case "compound":
-                payload = BoardDefinitionPayload(
-                    clearCompletedDisabled: board.clearCompletedDisabled,
-                    listIndex: board.indexCardEnabled,
-                    children: decodedStringArray(board.childrenJSON),
-                    hideBoardNames: board.hideChildBoardNames
-                )
-            default:
-                payload = BoardDefinitionPayload(
-                    clearCompletedDisabled: board.clearCompletedDisabled
-                )
-            }
+            let childBoardIds = decodedStringArray(board.childrenJSON)
+            let columns = decodedColumns(board.columnsJSON)
+            let payload = BoardDefinitionPayload(
+                name: board.name,
+                kind: board.kind,
+                clearCompletedDisabled: board.clearCompletedDisabled,
+                columns: board.kind == "lists" ? columns : nil,
+                listIndex: board.kind == "lists" || board.kind == "compound" ? board.indexCardEnabled : nil,
+                children: board.kind == "compound" ? childBoardIds : nil,
+                hideBoardNames: board.kind == "compound" ? board.hideChildBoardNames : nil,
+                archived: board.archived,
+                hidden: board.hidden,
+                sortMode: board.sortMode,
+                sortDirection: board.sortDirection,
+                version: 1
+            )
             guard let raw = BoardDefinitionCodec.encode(payload) else { return }
             let encrypted = try encryptTaskPayload(raw, boardId: board.id)
+            var tags: [[String]] = [["d", bTag], ["b", bTag], ["k", board.kind], ["name", board.name]]
+            if board.kind == "lists" {
+                tags.append(contentsOf: columns.map { ["col", $0.id, $0.name] })
+            }
+            if board.kind == "compound" {
+                tags.append(contentsOf: childBoardIds.map { ["ch", $0] })
+            }
+            if let sortMode = board.sortMode?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty {
+                tags.append(["sort", sortMode, board.sortDirection ?? "asc"])
+            }
             let unsigned = UnsignedNostrEvent(
                 pubkey: boardKeyInfo.publicKeyHex,
                 kind: TaskifyEventKind.boardDefinition.rawValue,
-                tags: [["d", bTag], ["b", bTag], ["k", board.kind], ["name", board.name]],
+                tags: tags,
                 content: encrypted
             )
             let event = try unsigned.sign(privateKeyBytes: boardKeyInfo.privateKeyBytes)
@@ -1506,7 +1657,8 @@ public final class DataController: ObservableObject {
     private func publishTask(_ task: TaskifyTask, status: String) async {
         guard let pool = relayPool else { return }
         do {
-            if let board = fetchBoardModel(id: task.boardId) {
+            let board = fetchBoardModel(id: task.boardId)
+            if let board {
                 await publishBoardMetadata(board)
             }
             let boardKeyInfo = try BoardKeyInfo(boardId: task.boardId)
@@ -1515,11 +1667,12 @@ public final class DataController: ObservableObject {
             let plaintext = String(data: json, encoding: .utf8)!
             let encrypted = try encryptTaskPayload(plaintext, boardId: task.boardId)
             let bTag = boardTagHash(task.boardId)
+            let colTag = board?.kind == "week" ? "day" : (task.column ?? "")
 
             let unsigned = UnsignedNostrEvent(
                 pubkey: boardKeyInfo.publicKeyHex,
                 kind: 30301,
-                tags: [["d", task.id], ["b", bTag], ["col", task.column ?? ""], ["status", status]],
+                tags: [["d", task.id], ["b", bTag], ["col", colTag], ["status", status]],
                 content: encrypted
             )
             let event = try unsigned.sign(privateKeyBytes: boardKeyInfo.privateKeyBytes)
@@ -1546,6 +1699,8 @@ public final class DataController: ObservableObject {
             "createdBy": nullable(task.createdBy),
             "lastEditedBy": nullable(task.lastEditedBy),
             "createdAt": task.createdAt > 0 ? task.createdAt * 1000 : NSNull(),
+            "updatedAt": nullable(task.updatedAt),
+            "sourceBoardId": nullable(task.sourceBoardId),
             "streak": nullable(task.streak),
             "longestStreak": nullable(task.longestStreak),
             "seriesId": nullable(task.seriesId),
@@ -1604,6 +1759,11 @@ public final class DataController: ObservableObject {
     private func normalizedPublicKeyField(_ value: Any?) -> String? {
         guard let raw = stringField(value) else { return nil }
         return try? NostrIdentityService.normalizePublicKeyInput(raw)
+    }
+
+    private func isoTimestamp(unixSeconds: Int) -> String? {
+        guard unixSeconds > 0 else { return nil }
+        return ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: TimeInterval(unixSeconds)))
     }
 
     private func updateJSONField(_ payload: [String: Any], key: String, setter: (String?) -> Void) {
@@ -1688,6 +1848,8 @@ public final class DataController: ObservableObject {
         board.sortMode = sortMode.rawValue
         board.sortDirection = ascending ? "asc" : "desc"
         try? ctx.save()
+        await publishBoardMetadata(board)
+        boardDefinitionsVersion &+= 1
     }
 
     /// Fetch the stored sort mode for a board.

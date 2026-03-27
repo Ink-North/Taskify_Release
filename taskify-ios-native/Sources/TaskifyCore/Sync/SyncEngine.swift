@@ -267,10 +267,11 @@ public final class BoardSyncManager: ObservableObject {
         let plaintext = String(data: json, encoding: .utf8)!
         let encrypted = try encryptTaskPayload(plaintext, boardId: task.boardId)
         let bTag = boardTagHash(task.boardId)
+        let colTag = task.column ?? ""
         let unsigned = UnsignedNostrEvent(
             pubkey: pubkeyHex,
             kind: 30301,
-            tags: [["d", task.id], ["b", bTag], ["col", task.column ?? ""], ["status", status]],
+            tags: [["d", task.id], ["b", bTag], ["col", colTag], ["status", status]],
             content: encrypted
         )
         let event = try unsigned.sign(privateKeyBytes: privateKeyBytes)
@@ -321,11 +322,27 @@ public final class BoardSyncManager: ObservableObject {
         task.deleted = status == "deleted"
         task.column = colTag?.isEmpty == false ? colTag : nil
         task.createdAt = eventCreatedAt
+        if payload.keys.contains("updatedAt") {
+            task.updatedAt = stringField(payload["updatedAt"])
+        }
         if payload.keys.contains("createdBy") {
             task.createdBy = normalizedPublicKeyField(payload["createdBy"])
         }
         if payload.keys.contains("lastEditedBy") {
             task.lastEditedBy = normalizedPublicKeyField(payload["lastEditedBy"]) ?? task.createdBy
+        }
+        if payload.keys.contains("sourceBoardId") {
+            task.sourceBoardId = stringField(payload["sourceBoardId"]) ?? task.boardId
+        }
+        if payload.keys.contains("inboxItem") {
+            switch payload["inboxItem"] {
+            case is NSNull:
+                task.inboxItem = nil
+            case let object as [String: Any]:
+                task.inboxItem = !object.isEmpty
+            default:
+                task.inboxItem = boolField(payload["inboxItem"])
+            }
         }
         if payload.keys.contains("hiddenUntilISO") {
             task.hiddenUntilISO = stringField(payload["hiddenUntilISO"])
@@ -366,6 +383,8 @@ public final class BoardSyncManager: ObservableObject {
             "createdBy": nullable(task.createdBy),
             "lastEditedBy": nullable(task.lastEditedBy),
             "createdAt": task.createdAt > 0 ? task.createdAt * 1000 : NSNull(),
+            "updatedAt": nullable(task.updatedAt),
+            "sourceBoardId": nullable(task.sourceBoardId),
             "streak": nullable(task.streak),
             "longestStreak": nullable(task.longestStreak),
             "seriesId": nullable(task.seriesId),

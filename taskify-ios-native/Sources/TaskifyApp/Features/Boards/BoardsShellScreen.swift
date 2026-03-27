@@ -5,18 +5,23 @@ struct BoardsShellScreen: View {
     @ObservedObject var shellVM: AppShellViewModel
     @EnvironmentObject private var dataController: DataController
     @EnvironmentObject private var settingsManager: SettingsManager
+    @Environment(\.appAccent) private var accentChoice
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var boardListVM = BoardListViewModel()
     @StateObject private var boardDetailVM = BoardDetailViewModel()
     @StateObject private var boardModeVM = BoardModeViewModel()
     @StateObject private var headerVM = BoardHeaderControlsViewModel(completedTabEnabled: true, canShareBoard: true)
     @StateObject private var listColumnsVM = ListColumnsViewModel()
+    @StateObject private var boardUpcomingVM = UpcomingViewModel()
 
     @State private var showShareSheet = false
     @State private var showFilterSortSheet = false
     @State private var showCreateBoard = false
+    @State private var createBoardStartsInJoinMode = false
     @State private var showManageBoard = false
     @State private var lastClearCompletedCount = 0
     @State private var editingTask: BoardTaskItem? = nil
+    @State private var selectedUpcomingEvent: UpcomingCalendarEventItem? = nil
     @State private var showCreateTask = false
     @State private var quickAddTitle = ""
     @FocusState private var quickAddFocused: Bool
@@ -42,8 +47,7 @@ struct BoardsShellScreen: View {
                     boardContentView
                 }
             }
-            .navigationTitle("Boards")
-            .toolbar { toolbarItems }
+            .platformHideNavigationBar()
             .onAppear { bootstrapBoards() }
             .onChange(of: boardListVM.selectedBoardId) { _, newValue in
                 Task { await loadBoardTasks(boardId: newValue) }
@@ -57,8 +61,15 @@ struct BoardsShellScreen: View {
                 boardListVM.setBoards(availableNavigationBoards, preferredBoardId: preferredStartupBoardId)
                 syncState()
             }
+            .onChange(of: dataController.calendarEventsVersion) { _, _ in
+                syncState()
+            }
             .onChange(of: boardModeVM.mode) { _, newValue in
                 headerVM.bind(mode: newValue)
+                guard newValue == .boardUpcoming else { return }
+                Task {
+                    await refreshBoardUpcomingEvents()
+                }
             }
             .onChange(of: settingsManager.settings.completedTab) { _, enabled in
                 if !enabled, boardModeVM.mode != .board {
@@ -67,8 +78,21 @@ struct BoardsShellScreen: View {
                 }
             }
             .sheet(item: $editingTask) { task in taskEditSheet(for: task) }
+            .sheet(item: $selectedUpcomingEvent) { event in
+                BoardUpcomingEventDetailSheet(
+                    event: event,
+                    timeLabel: boardUpcomingVM.eventTimeLabel(for: event, showDate: true),
+                    locationLabel: boardUpcomingVM.locationLabel(for: event)
+                )
+                .presentationDetents([.medium, .large])
+            }
             .sheet(isPresented: $showCreateTask) { taskCreateSheet() }
-            .sheet(isPresented: $showCreateBoard) { CreateBoardSheet(onCreated: { bootstrapBoards() }) }
+            .sheet(isPresented: $showCreateBoard) {
+                CreateBoardSheet(
+                    initialJoinMode: createBoardStartsInJoinMode,
+                    onCreated: { bootstrapBoards() }
+                )
+            }
             .sheet(isPresented: $showShareSheet) { shareBoardSheet }
             .sheet(isPresented: $showFilterSortSheet) { filterSortSheet() }
             .sheet(isPresented: $showManageBoard) { manageBoardSheet }
@@ -87,12 +111,18 @@ struct BoardsShellScreen: View {
             Text("Create a new board or join an existing one to get started.")
                 .font(.subheadline).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button(action: { showCreateBoard = true }) {
+            Button(action: {
+                createBoardStartsInJoinMode = false
+                showCreateBoard = true
+            }) {
                 Label("Create Board", systemImage: "plus.circle.fill")
             }
             .buttonStyle(.borderedProminent)
 
-            Button(action: { showCreateBoard = true }) {
+            Button(action: {
+                createBoardStartsInJoinMode = true
+                showCreateBoard = true
+            }) {
                 Label("Join Board", systemImage: "person.badge.plus")
             }
             .buttonStyle(.bordered)
@@ -104,97 +134,233 @@ struct BoardsShellScreen: View {
     // MARK: - Main board content
 
     private var boardContentView: some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 12) {
-                HStack(alignment: .center, spacing: 12) {
-                    HStack(spacing: 10) {
-                        boardPickerButton
+        ZStack {
+            boardBackdrop
 
-                        if canShareSelectedBoard {
-                            BoardHeaderIconButton(
-                                systemName: "square.and.arrow.up",
-                                accessibilityLabel: "Share board",
-                                action: { headerVM.openShareBoard() }
-                            )
+            VStack(spacing: 10) {
+                VStack(spacing: 10) {
+                    HStack(alignment: .center, spacing: 12) {
+                        HStack(spacing: 10) {
+                            boardPickerButton
+
+                            if canShareSelectedBoard {
+                                BoardHeaderIconButton(
+                                    systemName: "square.and.arrow.up",
+                                    accessibilityLabel: "Share board",
+                                    action: { headerVM.openShareBoard() }
+                                )
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+
+                        HStack(spacing: 10) {
+                            syncStatusIndicator
+                            boardHeaderActions
+
+                            if canCreateTaskFromHeader {
+                                BoardHeaderIconButton(
+                                    systemName: "plus",
+                                    accessibilityLabel: "Add task",
+                                    action: { showCreateTask = true }
+                                )
+                            }
                         }
                     }
 
-                    Spacer(minLength: 0)
-
-                    HStack(spacing: 8) {
-                        syncStatusIndicator
-                        boardHeaderActions
-
-                        if canCreateTaskFromHeader {
-                            BoardHeaderIconButton(
-                                systemName: "plus",
-                                accessibilityLabel: "Add task",
-                                action: { showCreateTask = true }
-                            )
+                    if showsTopQuickAddBar {
+                        HStack(spacing: 8) {
+                            Image(systemName: "plus")
+                                .foregroundStyle(.secondary)
+                                .font(.subheadline)
+                            TextField("Quick add task…", text: $quickAddTitle)
+                                .focused($quickAddFocused)
+                                .onSubmit { Task { await quickAddTask() } }
+                                .textFieldStyle(.plain)
+                                .font(.subheadline)
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(Color.secondary.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                 }
+                .padding(.horizontal, 12)
+                .padding(.top, 2)
 
-                if showsTopQuickAddBar {
-                    HStack(spacing: 8) {
-                        Image(systemName: "plus")
-                            .foregroundStyle(.secondary)
-                            .font(.subheadline)
-                        TextField("Quick add task…", text: $quickAddTitle)
-                            .focused($quickAddFocused)
-                            .onSubmit { Task { await quickAddTask() } }
-                            .textFieldStyle(.plain)
-                            .font(.subheadline)
+                ZStack(alignment: .bottom) {
+                    RoundedRectangle(cornerRadius: 34, style: .continuous)
+                        .fill(boardPanelFill)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                                .stroke(boardPanelStroke, lineWidth: 1.25)
+                        )
+                        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.26 : 0.08), radius: 20, y: 10)
+
+                    InteractiveBoardModePane(
+                        modeVM: boardModeVM,
+                        detailVM: boardDetailVM,
+                        upcomingVM: boardUpcomingVM,
+                        listColumnsVM: listColumnsVM,
+                        usesColumnLayout: usesColumnBoardLayout,
+                        showsIndexLane: showsIndexLane,
+                        usesWeekLayout: showsWeekBoardLayout,
+                        weekStart: settingsManager.settings.weekStart,
+                        allowsInlineTaskEntry: allowsInlineTaskEntry,
+                        allowsListCreation: allowsListCreation,
+                        hideCompletedSubtasks: settingsManager.settings.hideCompletedSubtasks,
+                        showsStreaks: settingsManager.settings.streaksEnabled,
+                        showsCompletedTasksInBoard: !settingsManager.settings.completedTab,
+                        onToggleComplete: { taskId in
+                            Task {
+                                if let updated = await dataController.toggleComplete(taskId: taskId) {
+                                    boardDetailVM.updateTask(updated)
+                                    syncState()
+                                }
+                            }
+                        },
+                        onTapTask: { task in editingTask = task },
+                        onTapEvent: { event in selectedUpcomingEvent = event },
+                        onToggleSubtask: { taskId, subtaskId in
+                            Task {
+                                if let updated = await dataController.toggleSubtask(taskId: taskId, subtaskId: subtaskId) {
+                                    boardDetailVM.updateTask(updated)
+                                }
+                            }
+                        },
+                        onInlineAddTask: { columnId, title in
+                            handleInlineTaskAdd(columnId: columnId, title: title)
+                        },
+                        onAddList: { name in
+                            handleListAdd(name: name)
+                        },
+                        onRefresh: {
+                            await refreshSelectedBoardScope()
+                        }
+                    )
+                    .padding(.horizontal, 6)
+                    .padding(.top, 10)
+                    .padding(.bottom, showsBottomTaskComposer ? 94 : 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if showsBottomTaskComposer {
+                        boardQuickAddComposer
+                            .padding(.horizontal, 18)
+                            .padding(.bottom, 16)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .background(Color.secondary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 10)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var boardBackdrop: some View {
+        ZStack {
+            LinearGradient(
+                colors: colorScheme == .dark
+                    ? [
+                        Color(red: 16/255, green: 24/255, blue: 55/255),
+                        Color(red: 12/255, green: 28/255, blue: 46/255),
+                        Color.black,
+                    ]
+                    : [
+                        ThemeColors.surfaceGrouped,
+                        ThemeColors.surfaceRaised,
+                        ThemeColors.surfaceBase,
+                    ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Circle()
+                .fill(ThemeColors.accent(for: accentChoice).opacity(colorScheme == .dark ? 0.18 : 0.08))
+                .frame(width: 260, height: 260)
+                .offset(x: 170, y: -260)
+                .blur(radius: 22)
+
+            Circle()
+                .fill(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.16))
+                .frame(width: 220, height: 220)
+                .offset(x: -180, y: -220)
+                .blur(radius: 36)
+        }
+        .ignoresSafeArea()
+    }
+
+    private var boardPanelFill: LinearGradient {
+        LinearGradient(
+            colors: colorScheme == .dark
+                ? [
+                    Color.white.opacity(0.08),
+                    Color.white.opacity(0.03),
+                    Color.black.opacity(0.34),
+                ]
+                : [
+                    Color.white.opacity(0.82),
+                    Color.white.opacity(0.62),
+                ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private var boardPanelStroke: Color {
+        colorScheme == .dark ? Color.white.opacity(0.14) : Color.white.opacity(0.7)
+    }
+
+    private var boardQuickAddComposer: some View {
+        HStack(alignment: .center, spacing: 12) {
+            HStack(spacing: 10) {
+                TextField("New Task", text: $quickAddTitle)
+                    .focused($quickAddFocused)
+                    .onSubmit { Task { await quickAddTask() } }
+                    .textFieldStyle(.plain)
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(.primary)
+
+                if !quickAddTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button("Clear") {
+                        quickAddTitle = ""
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 8)
-
-            InteractiveBoardModePane(
-                modeVM: boardModeVM,
-                detailVM: boardDetailVM,
-                listColumnsVM: listColumnsVM,
-                usesColumnLayout: usesColumnBoardLayout,
-                showsIndexLane: showsIndexLane,
-                usesWeekLayout: showsWeekBoardLayout,
-                weekStart: settingsManager.settings.weekStart,
-                allowsInlineTaskEntry: allowsInlineTaskEntry,
-                allowsListCreation: allowsListCreation,
-                hideCompletedSubtasks: settingsManager.settings.hideCompletedSubtasks,
-                showsStreaks: settingsManager.settings.streaksEnabled,
-                showsCompletedTasksInBoard: !settingsManager.settings.completedTab,
-                onToggleComplete: { taskId in
-                    Task {
-                        if let updated = await dataController.toggleComplete(taskId: taskId) {
-                            boardDetailVM.updateTask(updated)
-                            syncState()
-                        }
-                    }
-                },
-                onTapTask: { task in editingTask = task },
-                onToggleSubtask: { taskId, subtaskId in
-                    Task {
-                        if let updated = await dataController.toggleSubtask(taskId: taskId, subtaskId: subtaskId) {
-                            boardDetailVM.updateTask(updated)
-                        }
-                    }
-                },
-                onInlineAddTask: { columnId, title in
-                    handleInlineTaskAdd(columnId: columnId, title: title)
-                },
-                onAddList: { name in
-                    handleListAdd(name: name)
-                },
-                onRefresh: {
-                    await loadBoardTasks(boardId: boardListVM.selectedBoardId)
-                }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(colorScheme == .dark ? Color.black.opacity(0.28) : Color.white.opacity(0.78))
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color.white.opacity(colorScheme == .dark ? 0.1 : 0.55), lineWidth: 1)
+            )
+
+            Button(action: handleBottomQuickAddAction) {
+                Image(systemName: "plus")
+                    .font(.system(size: 26, weight: .bold))
+                    .foregroundStyle(Color.white)
+                    .frame(width: 64, height: 64)
+                    .background(
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        ThemeColors.accent(for: accentChoice),
+                                        ThemeColors.accent(for: accentChoice).opacity(0.82),
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                    )
+                    .shadow(color: ThemeColors.accent(for: accentChoice).opacity(0.28), radius: 16, y: 8)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -211,11 +377,24 @@ struct BoardsShellScreen: View {
                 }
             }
             Divider()
+            Button(action: {
+                createBoardStartsInJoinMode = false
+                showCreateBoard = true
+            }) {
+                Label("New Board", systemImage: "plus.circle")
+            }
+            Button(action: {
+                createBoardStartsInJoinMode = true
+                showCreateBoard = true
+            }) {
+                Label("Join Board", systemImage: "person.badge.plus")
+            }
+            Divider()
             Button(action: { showManageBoard = true }) {
                 Label("Board Settings", systemImage: "gearshape")
             }
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Text(selectedBoardName)
                     .font(.headline)
                     .lineLimit(1)
@@ -223,11 +402,21 @@ struct BoardsShellScreen: View {
                 Image(systemName: "chevron.down")
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
+                Image(systemName: "folder.badge.plus")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ThemeColors.accent(for: accentChoice))
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Color.secondary.opacity(0.08))
-            .clipShape(Capsule())
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(
+                Capsule()
+                    .fill(colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.8))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(Color.white.opacity(colorScheme == .dark ? 0.14 : 0.5), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.18 : 0.05), radius: 12, y: 6)
         }
     }
 
@@ -314,7 +503,7 @@ struct BoardsShellScreen: View {
     }
 
     private var allowsInlineTaskEntry: Bool {
-        selectedBoardKind == "lists" || selectedBoardKind == "compound"
+        false
     }
 
     private var allowsListCreation: Bool {
@@ -322,13 +511,15 @@ struct BoardsShellScreen: View {
     }
 
     private var canCreateTaskFromHeader: Bool {
-        guard let kind = selectedBoardKind else { return false }
-        return kind != "compound" && kind != "lists" && kind != "week"
+        !showsBottomTaskComposer
     }
 
     private var showsTopQuickAddBar: Bool {
-        guard let kind = selectedBoardKind else { return false }
-        return kind != "compound" && kind != "lists" && kind != "week"
+        false
+    }
+
+    private var showsBottomTaskComposer: Bool {
+        boardModeVM.mode == .board && boardListVM.selectedBoardId != nil
     }
 
     private var showsUpcomingToggle: Bool {
@@ -347,25 +538,54 @@ struct BoardsShellScreen: View {
         return availableNavigationBoards.contains(where: { $0.id == preferred }) ? preferred : nil
     }
 
-    // MARK: - Toolbar
-
-    @ToolbarContentBuilder
-    private var toolbarItems: some ToolbarContent {
-        ToolbarItemGroup(placement: PlatformToolbarPlacement.trailing) {
-            if boardListVM.state == .ready {
-                Button(action: { showCreateBoard = true }) {
-                    Image(systemName: "folder.badge.plus")
-                }
-            }
-        }
-    }
-
     // MARK: - Quick add
 
     private func quickAddTask() async {
-        let defaultCol = usesColumnBoardLayout ? listColumnsVM.listColumns.first?.id : nil
-        await createQuickTask(title: quickAddTitle, columnId: defaultCol)
+        let trimmed = quickAddTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        switch selectedBoardKind {
+        case "compound":
+            guard let displayColumnId = listColumnsVM.listColumns.first?.id,
+                  let source = listColumnsVM.source(for: displayColumnId) else {
+                quickAddFocused = true
+                return
+            }
+            await createQuickTask(
+                title: trimmed,
+                columnId: source.columnId,
+                boardIdOverride: source.boardId
+            )
+        case "week":
+            let weekdayIndex = max(0, Calendar.current.component(.weekday, from: Date()) - 1)
+            let dueISO = BoardDetailViewModel.isoForWeekday(
+                weekdayIndex,
+                weekStart: settingsManager.settings.weekStart
+            )
+            await createQuickTask(
+                title: trimmed,
+                columnId: nil,
+                dueISO: dueISO,
+                dueDateEnabled: true
+            )
+        default:
+            let storedColumns = boardListVM.selectedBoardId.map { dataController.boardColumns(boardId: $0) } ?? []
+            let defaultCol = usesColumnBoardLayout
+                ? (storedColumns.first?.id ?? listColumnsVM.listColumns.first?.id)
+                : nil
+            await createQuickTask(title: trimmed, columnId: defaultCol)
+        }
+
         quickAddTitle = ""
+    }
+
+    private func handleBottomQuickAddAction() {
+        let trimmed = quickAddTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            quickAddFocused = true
+            return
+        }
+        Task { await quickAddTask() }
     }
 
     private func createQuickTask(
@@ -657,6 +877,11 @@ struct BoardsShellScreen: View {
         return dataController.boardKind(boardId: selectedId)
     }
 
+    private func boardScopeBoardIDs(for boardId: String) -> [String] {
+        let scoped = dataController.relatedBoardDefinitions(for: boardId).map(\.id)
+        return scoped.isEmpty ? [boardId] : scoped
+    }
+
     private func bootstrapBoards() {
         boardListVM.setBoards(availableNavigationBoards, preferredBoardId: preferredStartupBoardId)
         boardDetailVM.setSelectedBoard(id: boardListVM.selectedBoardId)
@@ -681,6 +906,10 @@ struct BoardsShellScreen: View {
     private func loadBoardTasks(boardId: String?) async {
         guard let boardId else {
             boardDetailVM.setSelectedBoard(id: nil)
+            boardUpcomingVM.setMinimumDateKeyExclusive(nil)
+            boardUpcomingVM.setBoards([])
+            boardUpcomingVM.setTasks([])
+            boardUpcomingVM.setEvents([])
             return
         }
         boardDetailVM.setSelectedBoard(id: boardId)
@@ -693,6 +922,21 @@ struct BoardsShellScreen: View {
         // Subscribe and get local-first tasks
         let tasks = await dataController.subscribeToBoard(boardId)
         boardDetailVM.setTasks(for: boardId, tasks: tasks)
+        syncState()
+
+        if boardModeVM.mode == .boardUpcoming {
+            await refreshBoardUpcomingEvents(boardId: boardId)
+        }
+    }
+
+    private func refreshSelectedBoardScope() async {
+        await loadBoardTasks(boardId: boardListVM.selectedBoardId)
+    }
+
+    private func refreshBoardUpcomingEvents(boardId: String? = nil) async {
+        let resolvedBoardId = boardId ?? boardListVM.selectedBoardId
+        guard let resolvedBoardId else { return }
+        await dataController.refreshUpcomingCalendarEvents(boardIds: boardScopeBoardIDs(for: resolvedBoardId))
         syncState()
     }
 
@@ -707,6 +951,7 @@ struct BoardsShellScreen: View {
 
     private func syncState() {
         syncListColumnsState()
+        syncBoardUpcomingState()
         seedBoardModeState()
     }
 
@@ -746,13 +991,29 @@ struct BoardsShellScreen: View {
         })
     }
 
+    private func syncBoardUpcomingState() {
+        guard let boardId = boardListVM.selectedBoardId else {
+            boardUpcomingVM.setMinimumDateKeyExclusive(nil)
+            boardUpcomingVM.setBoards([])
+            boardUpcomingVM.setTasks([])
+            boardUpcomingVM.setEvents([])
+            return
+        }
+
+        let scopeBoardIDs = boardScopeBoardIDs(for: boardId)
+        boardUpcomingVM.setMinimumDateKeyExclusive(boardUpcomingDateKey(for: Date()))
+        boardUpcomingVM.setBoards(dataController.upcomingBoardDefinitions(boardIds: scopeBoardIDs))
+        boardUpcomingVM.setTasks(boardDetailVM.visibleTasks)
+        boardUpcomingVM.setEvents(dataController.fetchUpcomingCalendarEvents(boardIds: scopeBoardIDs))
+    }
+
     private func seedBoardModeState() {
-        let boardItems = settingsManager.settings.completedTab
-            ? boardDetailVM.visibleTasks.filter { !$0.completed }.map(\.id)
-            : boardDetailVM.visibleTasks.map(\.id)
-        boardModeVM.setBoardItems(boardItems)
-        boardModeVM.setUpcomingItems(boardDetailVM.upcomingTasks().map(\.id))
-        boardModeVM.setCompletedItems(boardDetailVM.visibleTasks.filter(\.completed).map(\.id))
+        let boardItemCount = settingsManager.settings.completedTab
+            ? boardDetailVM.visibleTasks.filter { !$0.completed }.count
+            : boardDetailVM.visibleTasks.count
+        boardModeVM.setBoardItemCount(boardItemCount)
+        boardModeVM.setUpcomingItemCount(boardUpcomingVM.itemCount)
+        boardModeVM.setCompletedItemCount(boardDetailVM.visibleTasks.filter(\.completed).count)
     }
 }
 
@@ -761,6 +1022,7 @@ struct BoardsShellScreen: View {
 struct InteractiveBoardModePane: View {
     @ObservedObject var modeVM: BoardModeViewModel
     @ObservedObject var detailVM: BoardDetailViewModel
+    @ObservedObject var upcomingVM: UpcomingViewModel
     @ObservedObject var listColumnsVM: ListColumnsViewModel
     var usesColumnLayout: Bool = true
     var showsIndexLane: Bool = false
@@ -773,6 +1035,7 @@ struct InteractiveBoardModePane: View {
     var showsCompletedTasksInBoard: Bool = false
     var onToggleComplete: (String) -> Void
     var onTapTask: (BoardTaskItem) -> Void
+    var onTapEvent: (UpcomingCalendarEventItem) -> Void
     var onToggleSubtask: (String, String) -> Void
     var onInlineAddTask: (String, String) -> Void
     var onAddList: (String) -> Void
@@ -792,61 +1055,80 @@ struct InteractiveBoardModePane: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .empty(let message):
-                VStack(spacing: 10) {
-                    Image(systemName: "checklist").font(.title2).foregroundStyle(.secondary)
-                    Text(message).font(.subheadline).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .ready:
-                switch modeVM.mode {
-                case .board:
-                    if usesColumnLayout {
-                        InteractiveBoardColumnsPane(
-                            columnsVM: listColumnsVM,
-                            detailVM: detailVM,
-                            showsIndexLane: showsIndexLane,
-                            allowsInlineTaskEntry: allowsInlineTaskEntry,
-                            allowsListCreation: allowsListCreation,
-                            hideCompletedSubtasks: hideCompletedSubtasks,
-                            showsStreaks: showsStreaks,
-                            showsCompletedTasksInBoard: showsCompletedTasksInBoard,
-                            onToggleComplete: onToggleComplete,
-                            onTapTask: onTapTask,
-                            onToggleSubtask: onToggleSubtask,
-                            onInlineAddTask: onInlineAddTask,
-                            onAddList: onAddList,
-                            onRefresh: onRefresh
-                        )
-                    } else if usesWeekLayout {
-                        InteractiveWeekBoardPane(
-                            detailVM: detailVM,
-                            weekStart: weekStart,
-                            hideCompletedSubtasks: hideCompletedSubtasks,
-                            showsStreaks: showsStreaks,
-                            showsCompletedTasksInBoard: showsCompletedTasksInBoard,
-                            onToggleComplete: onToggleComplete,
-                            onTapTask: onTapTask,
-                            onToggleSubtask: onToggleSubtask,
-                            onInlineAddTask: onInlineAddTask,
-                            onRefresh: onRefresh
-                        )
-                    } else {
-                        taskList(
-                            showsCompletedTasksInBoard
-                                ? detailVM.visibleTasks
-                                : detailVM.visibleTasks.filter { !$0.completed },
-                            emptyIcon: "checklist",
-                            emptyText: detailVM.emptyMessage
-                        )
+                if modeVM.mode == .board && (usesColumnLayout || usesWeekLayout) {
+                    boardModeContent
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "checklist").font(.title2).foregroundStyle(.secondary)
+                        Text(message).font(.subheadline).foregroundStyle(.secondary)
                     }
-                case .boardUpcoming:
-                    taskList(detailVM.upcomingTasks(), emptyIcon: "calendar", emptyText: "No upcoming tasks")
-                case .completed:
-                    taskList(detailVM.visibleTasks.filter(\.completed), emptyIcon: "checkmark.circle", emptyText: "No completed tasks")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+            case .ready:
+                boardModeContent
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var boardModeContent: some View {
+        switch modeVM.mode {
+        case .board:
+            if usesColumnLayout {
+                InteractiveBoardColumnsPane(
+                    columnsVM: listColumnsVM,
+                    detailVM: detailVM,
+                    showsIndexLane: showsIndexLane,
+                    allowsInlineTaskEntry: allowsInlineTaskEntry,
+                    allowsListCreation: allowsListCreation,
+                    hideCompletedSubtasks: hideCompletedSubtasks,
+                    showsStreaks: showsStreaks,
+                    showsCompletedTasksInBoard: showsCompletedTasksInBoard,
+                    onToggleComplete: onToggleComplete,
+                    onTapTask: onTapTask,
+                    onToggleSubtask: onToggleSubtask,
+                    onInlineAddTask: onInlineAddTask,
+                    onAddList: onAddList,
+                    onRefresh: onRefresh
+                )
+            } else if usesWeekLayout {
+                InteractiveWeekBoardPane(
+                    detailVM: detailVM,
+                    weekStart: weekStart,
+                    allowsInlineTaskEntry: allowsInlineTaskEntry,
+                    hideCompletedSubtasks: hideCompletedSubtasks,
+                    showsStreaks: showsStreaks,
+                    showsCompletedTasksInBoard: showsCompletedTasksInBoard,
+                    onToggleComplete: onToggleComplete,
+                    onTapTask: onTapTask,
+                    onToggleSubtask: onToggleSubtask,
+                    onInlineAddTask: onInlineAddTask,
+                    onRefresh: onRefresh
+                )
+            } else {
+                taskList(
+                    showsCompletedTasksInBoard
+                        ? detailVM.visibleTasks
+                        : detailVM.visibleTasks.filter { !$0.completed },
+                    emptyIcon: "checklist",
+                    emptyText: detailVM.emptyMessage
+                )
+            }
+        case .boardUpcoming:
+            InteractiveBoardUpcomingPane(
+                upcomingVM: upcomingVM,
+                hideCompletedSubtasks: hideCompletedSubtasks,
+                showsStreaks: showsStreaks,
+                onToggleComplete: onToggleComplete,
+                onTapTask: onTapTask,
+                onTapEvent: onTapEvent,
+                onToggleSubtask: onToggleSubtask,
+                onRefresh: onRefresh
+            )
+        case .completed:
+            taskList(detailVM.visibleTasks.filter(\.completed), emptyIcon: "checkmark.circle", emptyText: "No completed tasks")
+        }
     }
 
     @ViewBuilder
@@ -897,6 +1179,144 @@ struct InteractiveBoardModePane: View {
     }
 }
 
+struct InteractiveBoardUpcomingPane: View {
+    @ObservedObject var upcomingVM: UpcomingViewModel
+    var hideCompletedSubtasks: Bool = false
+    var showsStreaks: Bool = true
+    var onToggleComplete: (String) -> Void
+    var onTapTask: (BoardTaskItem) -> Void
+    var onTapEvent: (UpcomingCalendarEventItem) -> Void
+    var onToggleSubtask: (String, String) -> Void
+    var onRefresh: (() async -> Void)? = nil
+
+    var body: some View {
+        if upcomingVM.groups.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: "calendar")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                Text("No upcoming items on this board.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    ForEach(upcomingVM.groups) { group in
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .center, spacing: 8) {
+                                Text(group.label)
+                                    .font(.headline)
+                                Text("\(group.tasks.count + group.events.count)")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.secondary.opacity(0.12))
+                                    .clipShape(Capsule())
+                            }
+
+                            VStack(spacing: 10) {
+                                ForEach(group.events) { event in
+                                    BoardUpcomingEventCard(
+                                        event: event,
+                                        timeLabel: upcomingVM.eventTimeLabel(for: event),
+                                        locationLabel: upcomingVM.locationLabel(for: event),
+                                        onTap: { onTapEvent(event) }
+                                    )
+                                }
+                                ForEach(group.tasks) { task in
+                                    TaskCardView(
+                                        task: task,
+                                        metaLabel: upcomingVM.locationLabel(for: task),
+                                        priority: task.priority,
+                                        subtasksJSON: task.subtasksJSON,
+                                        dueTimeEnabled: task.dueTimeEnabled ?? false,
+                                        streak: showsStreaks ? task.streak : nil,
+                                        hasRecurrence: task.recurrenceJSON != nil,
+                                        hideCompletedSubtasks: hideCompletedSubtasks,
+                                        onToggleComplete: { onToggleComplete(task.id) },
+                                        onTap: { onTapTask(task) },
+                                        onToggleSubtask: { subtaskId in
+                                            onToggleSubtask(task.id, subtaskId)
+                                        }
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                            .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .refreshable {
+                await onRefresh?()
+            }
+        }
+    }
+}
+
+private struct BoardUpcomingEventCard: View {
+    let event: UpcomingCalendarEventItem
+    let timeLabel: String
+    let locationLabel: String
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "calendar")
+                    .font(.title3)
+                    .foregroundStyle(ThemeColors.accentBlue)
+                    .frame(width: 24, height: 24)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(event.title.isEmpty ? "Untitled" : event.title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(3)
+
+                    if !timeLabel.isEmpty {
+                        Text(timeLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(locationLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    if let description = event.description,
+                       !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(description)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 12)
+            .padding(.horizontal, 14)
+            .background(ThemeColors.surfaceBase)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        )
+    }
+}
+
 // MARK: - Interactive Board Columns Pane
 
 struct InteractiveBoardColumnsPane: View {
@@ -915,6 +1335,7 @@ struct InteractiveBoardColumnsPane: View {
     var onAddList: (String) -> Void
     var onRefresh: (() async -> Void)? = nil
     @Environment(\.appAccent) private var accentChoice
+    @Environment(\.colorScheme) private var colorScheme
     @State private var inlineTitles: [String: String] = [:]
     @State private var pendingListName = ""
     @State private var selectedIndexColumnId: String?
@@ -966,6 +1387,7 @@ struct InteractiveBoardColumnsPane: View {
                     .onChange(of: indexEntryIDs) { _, _ in
                         syncSelectedIndexColumn()
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
         }
@@ -993,8 +1415,9 @@ struct InteractiveBoardColumnsPane: View {
         }
         .padding(14)
         .frame(width: 220, alignment: .topLeading)
-        .background(Color.secondary.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .background(laneBackground)
+        .overlay(laneBorder)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
@@ -1080,6 +1503,8 @@ struct InteractiveBoardColumnsPane: View {
                 }
             }
 
+            Spacer(minLength: 0)
+
             if allowsInlineTaskEntry {
                 inlineTaskComposer(for: column)
                     .padding(.top, 6)
@@ -1090,10 +1515,11 @@ struct InteractiveBoardColumnsPane: View {
                     .padding(.top, 6)
             }
         }
-        .padding(10)
-        .frame(width: 280, alignment: .topLeading)
-        .background(Color.secondary.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(14)
+        .frame(width: 300, alignment: .topLeading)
+        .background(laneBackground)
+        .overlay(laneBorder)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
@@ -1148,9 +1574,28 @@ struct InteractiveBoardColumnsPane: View {
         }
         .padding(14)
         .frame(width: 240, alignment: .topLeading)
-        .background(Color.secondary.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .background(laneBackground)
+        .overlay(laneBorder)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var laneBackground: some View {
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: colorScheme == .dark
+                        ? [Color.white.opacity(0.08), Color.black.opacity(0.18)]
+                        : [Color.white.opacity(0.78), Color.white.opacity(0.58)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+    }
+
+    private var laneBorder: some View {
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+            .stroke(Color.white.opacity(colorScheme == .dark ? 0.12 : 0.42), lineWidth: 1)
     }
 
     private func submitInlineTask(for columnId: String) {
@@ -1195,7 +1640,9 @@ struct InteractiveBoardColumnsPane: View {
 struct InteractiveWeekBoardPane: View {
     @ObservedObject var detailVM: BoardDetailViewModel
     @Environment(\.appAccent) private var accentChoice
+    @Environment(\.colorScheme) private var colorScheme
     var weekStart: Int = 0
+    var allowsInlineTaskEntry: Bool = false
     var hideCompletedSubtasks: Bool = false
     var showsStreaks: Bool = true
     var showsCompletedTasksInBoard: Bool = false
@@ -1225,6 +1672,7 @@ struct InteractiveWeekBoardPane: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 8)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .refreshable {
             await onRefresh?()
         }
@@ -1287,7 +1735,11 @@ struct InteractiveWeekBoardPane: View {
                 }
             }
 
-            inlineTaskComposer(for: day)
+            Spacer(minLength: 0)
+
+            if allowsInlineTaskEntry {
+                inlineTaskComposer(for: day)
+            }
 
             if completedCount > 0 {
                 Text("\(completedCount) completed")
@@ -1295,10 +1747,36 @@ struct InteractiveWeekBoardPane: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .padding(10)
-        .frame(width: 280, alignment: .topLeading)
-        .background(Color.secondary.opacity(day.isToday ? 0.08 : 0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(14)
+        .frame(width: 300, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: colorScheme == .dark
+                            ? [
+                                Color.white.opacity(day.isToday ? 0.12 : 0.08),
+                                Color.black.opacity(day.isToday ? 0.18 : 0.24),
+                            ]
+                            : [
+                                Color.white.opacity(day.isToday ? 0.88 : 0.78),
+                                Color.white.opacity(0.6),
+                            ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(
+                    day.isToday
+                        ? ThemeColors.accent(for: accentChoice).opacity(colorScheme == .dark ? 0.36 : 0.28)
+                        : Color.white.opacity(colorScheme == .dark ? 0.12 : 0.42),
+                    lineWidth: 1
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
@@ -1343,21 +1821,30 @@ struct BoardHeaderIconButton: View {
     var accessibilityLabel: String
     var action: () -> Void
     @Environment(\.appAccent) private var accentChoice
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.subheadline.weight(.semibold))
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(isActive ? ThemeColors.accent(for: accentChoice) : .primary)
-                .frame(width: 36, height: 36)
+                .frame(width: 46, height: 46)
                 .background(
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(isActive ? ThemeColors.accent(for: accentChoice).opacity(0.16) : Color.secondary.opacity(0.08))
+                    Circle()
+                        .fill(isActive
+                            ? ThemeColors.accent(for: accentChoice).opacity(0.16)
+                            : (colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.8))
+                        )
+                )
+                .overlay(
+                    Circle()
+                        .stroke(Color.white.opacity(colorScheme == .dark ? 0.14 : 0.45), lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.45)
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.18 : 0.05), radius: 12, y: 6)
         .accessibilityLabel(accessibilityLabel)
     }
 }
@@ -1466,18 +1953,101 @@ struct FilterSortSheet: View {
     }
 }
 
+private struct BoardUpcomingEventDetailSheet: View {
+    let event: UpcomingCalendarEventItem
+    let timeLabel: String
+    let locationLabel: String
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(event.title.isEmpty ? "Untitled" : event.title)
+                            .font(.title3.weight(.semibold))
+                        if !timeLabel.isEmpty {
+                            Label(timeLabel, systemImage: "clock")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(locationLabel)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let summary = event.summary,
+                       !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        boardUpcomingDetailSection(title: "Summary", value: summary)
+                    }
+
+                    if let description = event.description,
+                       !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        boardUpcomingDetailSection(title: "Notes", value: description)
+                    }
+
+                    if !event.locations.isEmpty {
+                        boardUpcomingDetailSection(title: "Locations", value: event.locations.joined(separator: "\n"))
+                    }
+
+                    if !event.references.isEmpty {
+                        boardUpcomingDetailSection(title: "References", value: event.references.joined(separator: "\n"))
+                    }
+                }
+                .padding(20)
+            }
+            .navigationTitle("Event")
+            .platformInlineTitle()
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private func boardUpcomingDetailSection(title: String, value: String) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+        Text(value)
+            .font(.body)
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private func boardUpcomingDateKey(for date: Date) -> String {
+    let components = Calendar.current.dateComponents([.year, .month, .day], from: date)
+    let year = components.year ?? 0
+    let month = components.month ?? 1
+    let day = components.day ?? 1
+    return String(format: "%04d-%02d-%02d", year, month, day)
+}
+
 // MARK: - Create Board Sheet
 
 struct CreateBoardSheet: View {
     @EnvironmentObject private var dataController: DataController
     @Environment(\.dismiss) private var dismiss
+    var initialJoinMode: Bool = false
     var onCreated: (() -> Void)? = nil
 
     @State private var boardName = ""
     @State private var boardKind = "lists"
-    @State private var joinMode = false
+    @State private var joinMode: Bool
     @State private var joinBoardId = ""
     @State private var relayCSV = ""
+
+    init(initialJoinMode: Bool = false, onCreated: (() -> Void)? = nil) {
+        self.initialJoinMode = initialJoinMode
+        self.onCreated = onCreated
+        _joinMode = State(initialValue: initialJoinMode)
+    }
 
     private var parsedJoinPayload: BoardSharePayload? {
         BoardShareContract.parse(joinBoardId)
