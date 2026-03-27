@@ -6293,6 +6293,36 @@ export default function App() {
   useEffect(() => { boardsRef.current = boards; }, [boards]);
   const tasksRef = useRef<Task[]>(tasks);
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
+
+  // AES key migration: track items encrypted with the legacy key (SHA-256(boardId) == public tag).
+  // When detected, we re-encrypt and re-publish with the secure labeled key.
+  const aesMigrationPendingTasksRef = useRef<Set<string>>(new Set());
+  const aesMigrationPendingBoardIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pendingBoardIds = aesMigrationPendingBoardIdsRef.current;
+    if (pendingBoardIds.size === 0) return;
+    aesMigrationPendingBoardIdsRef.current = new Set();
+    for (const boardId of pendingBoardIds) {
+      const board = boardsRef.current.find((b) => b.nostr?.boardId === boardId);
+      if (!board) continue;
+      publishBoardMetadataRef.current?.(board)?.catch(() => {});
+    }
+  }, [boards]);
+
+  useEffect(() => {
+    const pendingTaskIds = aesMigrationPendingTasksRef.current;
+    if (pendingTaskIds.size === 0) return;
+    aesMigrationPendingTasksRef.current = new Set();
+    for (const taskId of pendingTaskIds) {
+      const task = tasksRef.current.find((t) => t.id === taskId);
+      if (!task) continue;
+      const board = boardsRef.current.find((b) => b.id === task.boardId);
+      if (!board) continue;
+      maybePublishTaskRef.current?.(task, board, { skipBoardMetadata: true })?.catch(() => {});
+    }
+  }, [tasks]);
+
   const calendarEventsRef = useRef<CalendarEvent[]>(calendarEvents);
   useEffect(() => { calendarEventsRef.current = calendarEvents; }, [calendarEvents]);
   const [inboxProcessedSeed] = useState<string[]>(() => {
@@ -12754,11 +12784,16 @@ export default function App() {
     const kindTag = tagValue(ev, "k");
     const name = tagValue(ev, "name");
     let payload: any = {};
+    let boardDecryptedWithLegacyKey = false;
     try {
-      const dec = await decryptFromBoard(boardId, ev.content);
-      payload = dec ? JSON.parse(dec) : {};
+      const { plaintext, usedLegacyKey } = await decryptFromBoard(boardId, ev.content);
+      boardDecryptedWithLegacyKey = usedLegacyKey;
+      payload = plaintext ? JSON.parse(plaintext) : {};
     } catch {
       try { payload = ev.content ? JSON.parse(ev.content) : {}; } catch {}
+    }
+    if (boardDecryptedWithLegacyKey) {
+      aesMigrationPendingBoardIdsRef.current.add(boardId);
     }
     setBoards((prev) => {
       const boardIndex = prev.findIndex((item) => item.id === board.id);
@@ -12951,11 +12986,16 @@ export default function App() {
     }
 
     let payload: any = {};
+    let taskDecryptedWithLegacyKey = false;
     try {
-      const dec = await decryptFromBoard(boardId, ev.content);
-      payload = dec ? JSON.parse(dec) : {};
+      const { plaintext, usedLegacyKey } = await decryptFromBoard(boardId, ev.content);
+      taskDecryptedWithLegacyKey = usedLegacyKey;
+      payload = plaintext ? JSON.parse(plaintext) : {};
     } catch {
       try { payload = ev.content ? JSON.parse(ev.content) : {}; } catch {}
+    }
+    if (taskDecryptedWithLegacyKey) {
+      aesMigrationPendingTasksRef.current.add(taskId);
     }
     const status = tagValue(ev, "status");
     const col = tagValue(ev, "col");

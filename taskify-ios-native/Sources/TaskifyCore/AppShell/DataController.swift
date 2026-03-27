@@ -1711,6 +1711,7 @@ public final class DataController: ObservableObject {
             "documents": jsonField(task.documentsJSON),
             "subtasks": jsonField(task.subtasksJSON),
             "assignees": jsonField(task.assigneesJSON),
+            "inboxItem": nullable(task.inboxItem),
         ]
     }
 

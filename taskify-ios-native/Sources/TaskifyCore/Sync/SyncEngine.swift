@@ -395,6 +395,7 @@ public final class BoardSyncManager: ObservableObject {
             "assignees": jsonField(task.assigneesJSON),
             "documents": jsonField(task.documentsJSON),
             "images": jsonField(task.imagesJSON),
+            "inboxItem": nullable(task.inboxItem),
         ]
     }
 
