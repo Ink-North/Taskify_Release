@@ -12200,9 +12200,9 @@ export default function App() {
           serverEntry,
           nostrSkHex,
         });
-      } catch (err) {
-        console.warn("[attachments] Failed to encrypt/upload image; falling back to inline payload", err);
-        return img;
+      } catch (err: any) {
+        console.error("[attachments] Failed to encrypt/upload image", err);
+        throw new Error(err?.message || "Failed to upload encrypted image attachment.");
       }
     }));
 
@@ -12222,9 +12222,9 @@ export default function App() {
         });
         const { dataUrl, preview, full, ...rest } = doc as any;
         return { ...rest, remoteUrl, encrypted: true };
-      } catch (err) {
-        console.warn("[attachments] Failed to encrypt/upload document; falling back to inline payload", err);
-        return doc;
+      } catch (err: any) {
+        console.error("[attachments] Failed to encrypt/upload document", err);
+        throw new Error(err?.message || `Failed to upload encrypted file attachment: ${doc?.name || "document"}`);
       }
     }));
 
