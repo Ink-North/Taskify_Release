@@ -217,7 +217,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
-  onSave: (t: Task)=>void;
+  onSave: (t: Task)=>void | Promise<void>;
   onSwitchToEvent?: (t: Task)=>void;
   weekStart: Weekday;
   boardKind: Board["kind"];
@@ -243,6 +243,8 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [images, setImages] = useState<string[]>(task.images || []);
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const [documents, setDocuments] = useState<TaskDocument[]>(task.documents || []);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
   const [newSubtask, setNewSubtask] = useState("");
   const [selectedBoardId, setSelectedBoardId] = useState(task.boardId);
@@ -1459,8 +1461,17 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     };
   }
 
-  function save(overrides: Partial<Task> = {}) {
-    onSave(normalizeTaskBounty(buildTask(overrides)));
+  async function save(overrides: Partial<Task> = {}) {
+    if (saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(normalizeTaskBounty(buildTask(overrides)));
+    } catch (err: any) {
+      console.error("Failed to save task", err);
+      setSaveError(err?.message || "Failed to save task.");
+      setSaving(false);
+    }
   }
 
   async function copyCurrent() {
@@ -1615,12 +1626,29 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
             className="edit-sheet__action edit-sheet__action--accent"
             onClick={() => save()}
             aria-label="Save task"
+            disabled={saving}
           >
-            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2}>
-              <path d="M5 12l4 4 10-10" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            {saving ? (
+              <span className="text-xs px-1">Uploading…</span>
+            ) : (
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path d="M5 12l4 4 10-10" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
           </button>
         </div>
+
+        {saveError && (
+          <div className="px-4 pt-2 text-xs" style={{ color: "var(--color-rose, #f43f5e)" }}>
+            {saveError}
+          </div>
+        )}
+
+        {saving && (
+          <div className="px-4 pt-2 text-xs text-secondary">
+            Uploading encrypted attachments to your selected file server. Please keep Taskify open until save finishes.
+          </div>
+        )}
 
         {onSwitchToEvent && (
           <div className="mt-[-1rem] mb-[-1rem] w-full pb-[0.1rem]">
