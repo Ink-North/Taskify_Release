@@ -15721,7 +15721,7 @@ export default function App() {
     }
   }
 
-  function saveEdit(updated: Task) {
+  async function saveEdit(updated: Task) {
     let editedTask: Task | null = null;
     let previousAssignees: TaskAssignee[] | null = null;
     setTasks(prev => {
@@ -15762,7 +15762,6 @@ export default function App() {
           updatedAt: new Date().toISOString(),
         };
         const normalizedNext = normalizeTaskBounty(next);
-        maybePublishTask(normalizedNext).catch(() => {});
         editedTask = normalizedNext;
         return normalizedNext;
       });
@@ -15787,7 +15786,6 @@ export default function App() {
           };
         }
         const normalizedNext = normalizeTaskBounty(next);
-        maybePublishTask(normalizedNext).catch(() => {});
         editedTask = normalizedNext;
         const withNew = [...arr, normalizedNext];
         return settings.showFullWeekRecurring && editedTask?.recurrence
@@ -15799,6 +15797,7 @@ export default function App() {
         : arr;
     });
     if (editedTask) {
+      await maybePublishTask(editedTask);
       void maybeSendTaskAssignments(editedTask, { previousAssignees }).catch((err) => {
         console.warn("Failed to send task assignments", err);
       });
