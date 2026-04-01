@@ -166,7 +166,8 @@ import {
   MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
   type HistoryEntryRaw,
 } from "./lib/walletHistory";
-import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "./lib/fileStorage";
+import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, parseFileServers, findServerEntry, serializeFileServers, DEFAULT_FILE_SERVERS } from "./lib/fileStorage";
+import { encryptAndUploadAttachment, parseDataUrl } from "./lib/attachmentCrypto";
 import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
@@ -1629,6 +1630,7 @@ type Settings = {
   walletMintBackupEnabled: boolean;
   walletContactsSyncEnabled: boolean;
   fileStorageServer: string;
+  fileServers: string; // JSON-serialized FileServerEntry[]
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
   cloudBackupsEnabled: boolean;
@@ -4034,6 +4036,9 @@ function useSettings() {
           : false,
         walletContactsSyncEnabled,
         fileStorageServer,
+        fileServers: typeof parsed?.fileServers === "string" && parsed.fileServers.trim()
+          ? parsed.fileServers.trim()
+          : serializeFileServers(DEFAULT_FILE_SERVERS),
         walletMintBackupEnabled,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
@@ -4068,6 +4073,7 @@ function useSettings() {
         walletPaymentRequestsBackgroundChecksEnabled: true,
         walletContactsSyncEnabled: true,
         fileStorageServer: DEFAULT_FILE_STORAGE_SERVER,
+        fileServers: serializeFileServers(DEFAULT_FILE_SERVERS),
         npubCashLightningAddressEnabled: true,
         npubCashAutoClaim: true,
         cloudBackupsEnabled: false,
@@ -4108,6 +4114,15 @@ function useSettings() {
       } else {
         next.fileStorageServer =
           normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
+      }
+      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
+        // fileServers changed: validate and keep in sync
+        const rawServers = (s as any).fileServers;
+        next.fileServers = typeof rawServers === "string" && rawServers.trim()
+          ? rawServers.trim()
+          : serializeFileServers(DEFAULT_FILE_SERVERS);
+      } else if (!next.fileServers) {
+        next.fileServers = serializeFileServers(DEFAULT_FILE_SERVERS);
       }
       if (!next.backgroundImage) {
         next.backgroundImage = null;
@@ -12097,6 +12112,68 @@ export default function App() {
       pendingNostrTasksRef.current.delete(pendingKey);
     }
   }
+  // Ensure all images and documents for a shared board are stored remotely (encrypted).
+  // Images still as data URLs are encrypted and uploaded to the file server.
+  // Documents already carrying a remoteUrl have their local blobs stripped before publish.
+  // Documents still carrying only a dataUrl are encrypted and uploaded.
+  // Throws if any upload fails — save must not silently fall back to inline payloads.
+  async function prepareAttachmentsForPublish(
+    params: { images?: string[]; documents?: TaskDocument[]; boardId: string }
+  ): Promise<{ images: string[] | null; documents: any[] | null }> {
+    const servers = parseFileServers(settings.fileServers);
+    const serverEntry = findServerEntry(servers, settings.fileStorageServer)
+      ?? servers[0]
+      ?? { url: settings.fileStorageServer, type: "nip96" as const };
+
+    const nextImages = typeof params.images === "undefined" ? null : await Promise.all((params.images || []).map(async (img, index) => {
+      if (!img || !img.startsWith("data:")) return img; // already a remote URL
+      try {
+        const { mimeType, bytes } = parseDataUrl(img);
+        return await encryptAndUploadAttachment({
+          boardId: params.boardId,
+          data: bytes,
+          mimeType,
+          filename: `task-image-${index + 1}`,
+          serverEntry,
+          nostrSkHex,
+        });
+      } catch (err: any) {
+        console.error("[attachments] Failed to encrypt/upload image", err);
+        throw new Error(err?.message || "Failed to upload encrypted image attachment.");
+      }
+    }));
+
+    const nextDocuments = typeof params.documents === "undefined" ? null : await Promise.all((params.documents || []).map(async (doc) => {
+      // Remote-first doc already uploaded at attach-time: strip local blobs, keep metadata + remoteUrl
+      if (doc.remoteUrl) {
+        const { dataUrl: _d, preview: _p, full: _f, ...rest } = doc as any;
+        return { ...rest };
+      }
+      // Legacy inline doc: encrypt+upload now
+      if (!doc?.dataUrl || !doc.dataUrl.startsWith("data:")) {
+        return doc; // nothing to upload (unexpected, pass through)
+      }
+      try {
+        const { mimeType, bytes } = parseDataUrl(doc.dataUrl);
+        const remoteUrl = await encryptAndUploadAttachment({
+          boardId: params.boardId,
+          data: bytes,
+          mimeType: doc.mimeType || mimeType,
+          filename: doc.name || doc.id || "document",
+          serverEntry,
+          nostrSkHex,
+        });
+        const { dataUrl: _d, preview: _p, full: _f, ...rest } = doc as any;
+        return { ...rest, remoteUrl, encrypted: true };
+      } catch (err: any) {
+        console.error("[attachments] Failed to encrypt/upload document", err);
+        throw new Error(err?.message || `Failed to upload encrypted file attachment: ${doc?.name || "document"}`);
+      }
+    }));
+
+    return { images: nextImages, documents: nextDocuments };
+  }
+
   async function maybePublishTask(
     t: Task,
     boardOverride?: Board,
@@ -12136,9 +12213,15 @@ export default function App() {
     body.dueTimeEnabled = typeof t.dueTimeEnabled === 'boolean' ? t.dueTimeEnabled : null;
     body.dueTimeZone = typeof t.dueTimeZone === "string" ? t.dueTimeZone : null;
     // Reminders are device-specific and should not be published to shared boards.
-    // Include explicit nulls to signal removals when undefined
-    body.images = (typeof t.images === 'undefined') ? null : t.images;
-    body.documents = (typeof t.documents === 'undefined') ? null : t.documents;
+    // Include explicit nulls to signal removals when undefined.
+    // Attachments are encrypted+uploaded to the file server before publishing.
+    const preparedAttachments = await prepareAttachmentsForPublish({
+      images: t.images,
+      documents: t.documents,
+      boardId,
+    });
+    body.images = preparedAttachments.images;
+    body.documents = preparedAttachments.documents;
     body.bounty = (typeof t.bounty === 'undefined') ? null : (normalizedBounty ?? null);
     body.subtasks = (typeof t.subtasks === 'undefined') ? null : t.subtasks;
     body.assignees = (typeof t.assignees === "undefined") ? null : t.assignees;
@@ -19546,6 +19629,8 @@ export default function App() {
           defaultRelays={defaultRelays}
           nostrPK={nostrPK}
           nostrSkHex={nostrSkHex}
+          fileServers={settings.fileServers}
+          fileStorageServer={settings.fileStorageServer}
         />
       )}
 
