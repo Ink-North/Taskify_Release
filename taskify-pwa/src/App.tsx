@@ -178,14 +178,7 @@ import {
   MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
   type HistoryEntryRaw,
 } from "./lib/walletHistory";
-import {
-  DEFAULT_FILE_STORAGE_SERVER,
-  DEFAULT_FILE_SERVERS,
-  normalizeFileServerUrl,
-  parseFileServers,
-  serializeFileServers,
-  findServerEntry,
-} from "./lib/fileStorage";
+import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, parseFileServers, findServerEntry, serializeFileServers, DEFAULT_FILE_SERVERS } from "./lib/fileStorage";
 import { encryptAndUploadAttachment, parseDataUrl } from "./lib/attachmentCrypto";
 import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
@@ -4041,7 +4034,9 @@ function useSettings() {
           : false,
         walletContactsSyncEnabled,
         fileStorageServer,
-        fileServers,
+        fileServers: typeof parsed?.fileServers === "string" && parsed.fileServers.trim()
+          ? parsed.fileServers.trim()
+          : serializeFileServers(DEFAULT_FILE_SERVERS),
         walletMintBackupEnabled,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
@@ -4127,7 +4122,13 @@ function useSettings() {
         next.fileStorageServer =
           normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
       }
-      if (!next.fileServers) {
+      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
+        // fileServers changed: validate and keep in sync
+        const rawServers = (s as any).fileServers;
+        next.fileServers = typeof rawServers === "string" && rawServers.trim()
+          ? rawServers.trim()
+          : serializeFileServers(DEFAULT_FILE_SERVERS);
+      } else if (!next.fileServers) {
         next.fileServers = serializeFileServers(DEFAULT_FILE_SERVERS);
       }
       if (!next.backgroundImage) {
@@ -12181,15 +12182,21 @@ export default function App() {
       pendingNostrTasksRef.current.delete(pendingKey);
     }
   }
+  // Ensure all images and documents for a shared board are stored remotely (encrypted).
+  // Images still as data URLs are encrypted and uploaded to the file server.
+  // Documents already carrying a remoteUrl have their local blobs stripped before publish.
+  // Documents still carrying only a dataUrl are encrypted and uploaded.
+  // Throws if any upload fails — save must not silently fall back to inline payloads.
   async function prepareAttachmentsForPublish(
     params: { images?: string[]; documents?: TaskDocument[]; boardId: string }
   ): Promise<{ images: string[] | null; documents: any[] | null }> {
     const servers = parseFileServers(settings.fileServers);
     const serverEntry = findServerEntry(servers, settings.fileStorageServer)
+      ?? servers[0]
       ?? { url: settings.fileStorageServer, type: "nip96" as const };
 
     const nextImages = typeof params.images === "undefined" ? null : await Promise.all((params.images || []).map(async (img, index) => {
-      if (!img || !img.startsWith("data:")) return img;
+      if (!img || !img.startsWith("data:")) return img; // already a remote URL
       try {
         const { mimeType, bytes } = parseDataUrl(img);
         return await encryptAndUploadAttachment({
@@ -12207,8 +12214,14 @@ export default function App() {
     }));
 
     const nextDocuments = typeof params.documents === "undefined" ? null : await Promise.all((params.documents || []).map(async (doc) => {
-      if (!doc?.dataUrl || !doc.dataUrl.startsWith("data:") || doc.remoteUrl) {
-        return doc;
+      // Remote-first doc already uploaded at attach-time: strip local blobs, keep metadata + remoteUrl
+      if (doc.remoteUrl) {
+        const { dataUrl: _d, preview: _p, full: _f, ...rest } = doc as any;
+        return { ...rest };
+      }
+      // Legacy inline doc: encrypt+upload now
+      if (!doc?.dataUrl || !doc.dataUrl.startsWith("data:")) {
+        return doc; // nothing to upload (unexpected, pass through)
       }
       try {
         const { mimeType, bytes } = parseDataUrl(doc.dataUrl);
@@ -12220,7 +12233,7 @@ export default function App() {
           serverEntry,
           nostrSkHex,
         });
-        const { dataUrl, preview, full, ...rest } = doc as any;
+        const { dataUrl: _d, preview: _p, full: _f, ...rest } = doc as any;
         return { ...rest, remoteUrl, encrypted: true };
       } catch (err: any) {
         console.error("[attachments] Failed to encrypt/upload document", err);
@@ -12270,7 +12283,8 @@ export default function App() {
     body.dueTimeEnabled = typeof t.dueTimeEnabled === 'boolean' ? t.dueTimeEnabled : null;
     body.dueTimeZone = typeof t.dueTimeZone === "string" ? t.dueTimeZone : null;
     // Reminders are device-specific and should not be published to shared boards.
-    // Include explicit nulls to signal removals when undefined
+    // Include explicit nulls to signal removals when undefined.
+    // Attachments are encrypted+uploaded to the file server before publishing.
     const preparedAttachments = await prepareAttachmentsForPublish({
       images: t.images,
       documents: t.documents,
@@ -19845,6 +19859,8 @@ export default function App() {
           defaultRelays={defaultRelays}
           nostrPK={nostrPK}
           nostrSkHex={nostrSkHex}
+          fileServers={settings.fileServers}
+          fileStorageServer={settings.fileStorageServer}
         />
       )}
 
