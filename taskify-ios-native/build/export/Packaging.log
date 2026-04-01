@@ -1,0 +1,147 @@
+2026-03-27 15:21:48 +0000 [MT] Initial pipeline context: <IDEDistributionProcessingPipelineContext: 0xba207a400; archive(resolved)="<IDEArchive: 0xba2b5be20>", distributionTask(resolved)="2", distributionDestination(resolved)="1", distributionMethod(resolved)="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team(resolved)="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	Chain (15, self inclusive):
+	<IDEDistributionProcessingPipelineContext: 0xba207a400; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionProcessingPipelineContext: 0xba2079800; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionContext: 0xba20f7200; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionContext: 0xba20f6d00; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionContext: 0xba20f6a80; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionContext: 0xba20f6800; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionContext: 0xba20f6580; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionContext: 0xba20f6300; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionContext: 0xba20f6080; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionContext: 0xba20f4c80; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionContext: 0xba20f4a00; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionContext: 0xba20f4780; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="<IDEProvisioningBasicTeam: 0xba49acd00; teamID='JUH98962T7', teamName='Nathan Hughes'>">
+	<IDEDistributionContext: 0xba20f4500; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="(null)">
+	<IDEDistributionContext: 0xba20f4000; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="<IDEDistributionMethodiOSAppStoreDistribution: 0xba2b73880>", team="(null)">
+	<IDEDistributionContext: 0x1039ef350; archive = "<IDEArchive: 0xba2b5be20>", distributionMethod="(null)", team="(null)">
+</IDEDistributionProcessingPipelineContext: 0xba207a400>
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionCreateDestRootStep
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionCopyItemStep
+2026-03-27 15:21:48 +0000 [MT] Running /usr/bin/ditto '-V' '/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios-native/build/Taskify.xcarchive/Products/Applications/Taskify.app' '/var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/Root/Payload/Taskify.app'
+2026-03-27 15:21:48 +0000  >>> Copying /Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios-native/build/Taskify.xcarchive/Products/Applications/Taskify.app 
+2026-03-27 15:21:48 +0000  copying file ./_CodeSignature/CodeResources ... 
+2026-03-27 15:21:48 +0000  3333 bytes for ./_CodeSignature/CodeResources
+2026-03-27 15:21:48 +0000  copying file ./AppIcon60x60@2x.png ... 
+2026-03-27 15:21:48 +0000  7818 bytes for ./AppIcon60x60@2x.png
+2026-03-27 15:21:48 +0000  copying file ./Taskify ... 
+2026-03-27 15:21:48 +0000  6044576 bytes for ./Taskify
+2026-03-27 15:21:48 +0000  copying file ./Assets.car ... 
+2026-03-27 15:21:48 +0000  181160 bytes for ./Assets.car
+2026-03-27 15:21:48 +0000  copying file ./AppIcon76x76@2x~ipad.png ... 
+2026-03-27 15:21:48 +0000  9909 bytes for ./AppIcon76x76@2x~ipad.png
+2026-03-27 15:21:48 +0000  copying file ./CryptoSwift_CryptoSwift.bundle/PrivacyInfo.xcprivacy ... 
+2026-03-27 15:21:48 +0000  373 bytes for ./CryptoSwift_CryptoSwift.bundle/PrivacyInfo.xcprivacy
+2026-03-27 15:21:48 +0000  copying file ./CryptoSwift_CryptoSwift.bundle/Info.plist ... 
+2026-03-27 15:21:48 +0000  693 bytes for ./CryptoSwift_CryptoSwift.bundle/Info.plist
+2026-03-27 15:21:48 +0000  copying file ./embedded.mobileprovision ... 
+2026-03-27 15:21:48 +0000  14559 bytes for ./embedded.mobileprovision
+2026-03-27 15:21:48 +0000  copying file ./Info.plist ... 
+2026-03-27 15:21:48 +0000  1641 bytes for ./Info.plist
+2026-03-27 15:21:48 +0000  copying file ./PkgInfo ... 
+2026-03-27 15:21:48 +0000  8 bytes for ./PkgInfo
+2026-03-27 15:21:48 +0000 [MT] /usr/bin/ditto exited with 0
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionEmbedProfileStep
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionInfoPlistStep
+2026-03-27 15:21:48 +0000 [MT] Skipping setting DTXcodeBuildDistribution because toolsBuildVersionName was nil.
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionItemRemovalStep
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionAppThinningPlistStep
+2026-03-27 15:21:48 +0000 [MT] Skipping step: IDEDistributionAppThinningPlistStep because it said so
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionSymbolsStep
+2026-03-27 15:21:48 +0000 [MT] Writing /var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/Symbols/19803E9B-916F-32D1-93D5-06201B0C3BC1.symbols
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionCopyAppleProvidedContentStep
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionAppThinningStep
+2026-03-27 15:21:48 +0000 [MT] Skipping step: IDEDistributionAppThinningStep because it said so
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionArchThinningStep
+2026-03-27 15:21:48 +0000 [MT] Archs to thin for item /Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios-native/build/Taskify.xcarchive/Products/Applications/Taskify.app are []
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionODRStep
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionStripXattrsStep
+2026-03-27 15:21:48 +0000 [MT] Skipping stripping extended attributes because the codesign step will strip them.
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionCodesignStep
+2026-03-27 15:21:48 +0000 [MT] Entitlements for <IDEDistributionItem: 0xba20a3ba0; bundleID='solife.me.Taskify', path='<DVTFilePath:0xba20a2040:'/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios-native/build/Taskify.xcarchive/Products/Applications/Taskify.app'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0xba20a3b40; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0xba21709c0; name='Apple Development: Nathan Hughes (RKNK52QG55)', hash='22A02B082887D0F684473CA7D85667AD832F0CFC', serialNumber='78CABD38542BD5853644B0731CF182CE', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-03-22 23:34:32 +0000''>', entitlements='{
+    "application-identifier" = "JUH98962T7.solife.me.Taskify";
+    "com.apple.developer.team-identifier" = JUH98962T7;
+    "get-task-allow" = 1;
+}', teamID='JUH98962T7', identifier='solife.me.Taskify', executablePath='<DVTFilePath:0xba20a3420:'/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios-native/build/Taskify.xcarchive/Products/Applications/Taskify.app/Taskify'>', hardenedRuntime='0'>'>: {
+    "application-identifier" = "JUH98962T7.solife.me.Taskify";
+    "beta-reports-active" = 1;
+    "com.apple.developer.team-identifier" = JUH98962T7;
+    "get-task-allow" = 0;
+}
+2026-03-27 15:21:48 +0000 [MT] Associated App Clip Identifiers Filter: Skipping because "com.apple.developer.associated-appclip-app-identifiers" is not present
+2026-03-27 15:21:48 +0000 [MT] Entitlements for <IDEDistributionItem: 0xba20a3ba0; bundleID='solife.me.Taskify', path='<DVTFilePath:0xba20a2040:'/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios-native/build/Taskify.xcarchive/Products/Applications/Taskify.app'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0xba20a3b40; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0xba2172700; name='Apple Development: Nathan Hughes (RKNK52QG55)', hash='22A02B082887D0F684473CA7D85667AD832F0CFC', serialNumber='78CABD38542BD5853644B0731CF182CE', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-03-22 23:34:32 +0000''>', entitlements='{
+    "application-identifier" = "JUH98962T7.solife.me.Taskify";
+    "com.apple.developer.team-identifier" = JUH98962T7;
+    "get-task-allow" = 1;
+}', teamID='JUH98962T7', identifier='solife.me.Taskify', executablePath='<DVTFilePath:0xba20a3420:'/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios-native/build/Taskify.xcarchive/Products/Applications/Taskify.app/Taskify'>', hardenedRuntime='0'>'> are: {
+    "application-identifier" = "JUH98962T7.solife.me.Taskify";
+    "beta-reports-active" = 1;
+    "com.apple.developer.team-identifier" = JUH98962T7;
+    "get-task-allow" = 0;
+}
+2026-03-27 15:21:48 +0000 [MT] Writing entitlements for <IDEDistributionItem: 0xba20a3ba0; bundleID='solife.me.Taskify', path='<DVTFilePath:0xba20a2040:'/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios-native/build/Taskify.xcarchive/Products/Applications/Taskify.app'>', codeSigningInfo='<_DVTCodeSigningInformation_Path: 0xba20a3b40; isSigned='1', isAdHocSigned='0', signingCertificate='<DVTSigningCertificate: 0xba2172700; name='Apple Development: Nathan Hughes (RKNK52QG55)', hash='22A02B082887D0F684473CA7D85667AD832F0CFC', serialNumber='78CABD38542BD5853644B0731CF182CE', certificateKinds='(
+    "1.2.840.113635.100.6.1.12",
+    "1.2.840.113635.100.6.1.2"
+), issueDate='2026-03-22 23:34:32 +0000''>', entitlements='{
+    "application-identifier" = "JUH98962T7.solife.me.Taskify";
+    "com.apple.developer.team-identifier" = JUH98962T7;
+    "get-task-allow" = 1;
+}', teamID='JUH98962T7', identifier='solife.me.Taskify', executablePath='<DVTFilePath:0xba20a3420:'/Users/openclaw/.openclaw/workspace/Taskify_Release/taskify-ios-native/build/Taskify.xcarchive/Products/Applications/Taskify.app/Taskify'>', hardenedRuntime='0'>'> to: /var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/entitlements~~~JtwLx0
+2026-03-27 15:21:48 +0000 [MT] invoking codesign: <NSConcreteTask: 0xba4d0b070; launchPath='/usr/bin/codesign', arguments='(
+    "-f",
+    "-s",
+    93DA42EE1546FD4EC0BC46BF9C63358FD9A9710D,
+    "--entitlements",
+    "/var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/entitlements~~~JtwLx0",
+    "--preserve-metadata=identifier,flags,runtime,launch-constraints,library-constraints",
+    "--generate-entitlement-der",
+    "--strip-disallowed-xattrs",
+    "-vvv",
+    "/var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/Root/Payload/Taskify.app"
+)'>
+2026-03-27 15:21:48 +0000 [MT] codesign output: /var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/Root/Payload/Taskify.app: replacing existing signature
+/var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/Root/Payload/Taskify.app: signed app bundle with Mach-O thin (arm64) [solife.me.Taskify]
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionZipODRItemStep
+2026-03-27 15:21:48 +0000 [MT] Skipping step: IDEDistributionZipODRItemStep because it said so
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionCreateIPAStep
+2026-03-27 15:21:48 +0000 [MT] Running /usr/bin/rsync '-8aPhhE' '/var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/Symbols' '--link-dest' '/var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc' '/var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/Root'
+2026-03-27 15:21:48 +0000  Symbols/
+Symbols/19803E9B-916F-32D1-93D5-06201B0C3BC1.symbols
+2026-03-27 15:21:48 +0000 [MT] /usr/bin/rsync exited with 0
+2026-03-27 15:21:48 +0000 [MT] Running /usr/bin/ditto '-V' '-c' '-k' '--norsrc' '/var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/Root' '/var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/Packages/Taskify.ipa'
+2026-03-27 15:21:48 +0000  >>> Copying /var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/Root 
+2026-03-27 15:21:48 +0000  copying file ./Payload/Taskify.app/_CodeSignature/CodeResources ... 
+2026-03-27 15:21:48 +0000  3333 bytes for ./Payload/Taskify.app/_CodeSignature/CodeResources
+2026-03-27 15:21:48 +0000  copying file ./Payload/Taskify.app/AppIcon60x60@2x.png ... 
+2026-03-27 15:21:48 +0000  7818 bytes for ./Payload/Taskify.app/AppIcon60x60@2x.png
+2026-03-27 15:21:48 +0000  copying file ./Payload/Taskify.app/Taskify ... 
+2026-03-27 15:21:48 +0000  6044640 bytes for ./Payload/Taskify.app/Taskify
+2026-03-27 15:21:48 +0000  copying file ./Payload/Taskify.app/Assets.car ... 
+2026-03-27 15:21:48 +0000  181160 bytes for ./Payload/Taskify.app/Assets.car
+copying file ./Payload/Taskify.app/AppIcon76x76@2x~ipad.png ... 
+2026-03-27 15:21:48 +0000  9909 bytes for ./Payload/Taskify.app/AppIcon76x76@2x~ipad.png
+2026-03-27 15:21:48 +0000  copying file ./Payload/Taskify.app/CryptoSwift_CryptoSwift.bundle/PrivacyInfo.xcprivacy ... 
+2026-03-27 15:21:48 +0000  373 bytes for ./Payload/Taskify.app/CryptoSwift_CryptoSwift.bundle/PrivacyInfo.xcprivacy
+copying file ./Payload/Taskify.app/CryptoSwift_CryptoSwift.bundle/Info.plist ... 
+693 bytes for ./Payload/Taskify.app/CryptoSwift_CryptoSwift.bundle/Info.plist
+2026-03-27 15:21:48 +0000  copying file ./Payload/Taskify.app/embedded.mobileprovision ... 
+2026-03-27 15:21:48 +0000  14507 bytes for ./Payload/Taskify.app/embedded.mobileprovision
+copying file ./Payload/Taskify.app/Info.plist ... 
+2026-03-27 15:21:48 +0000  1641 bytes for ./Payload/Taskify.app/Info.plist
+2026-03-27 15:21:48 +0000  copying file ./Payload/Taskify.app/PkgInfo ... 
+8 bytes for ./Payload/Taskify.app/PkgInfo
+2026-03-27 15:21:48 +0000  copying file ./Symbols/19803E9B-916F-32D1-93D5-06201B0C3BC1.symbols ... 
+2026-03-27 15:21:48 +0000  15677876 bytes for ./Symbols/19803E9B-916F-32D1-93D5-06201B0C3BC1.symbols
+2026-03-27 15:21:48 +0000 [MT] /usr/bin/ditto exited with 0
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionAppStoreInformationStep
+2026-03-27 15:21:48 +0000 [MT] Skipping step: IDEDistributionAppStoreInformationStep because it said so
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionGenerateProcessedDistributionItems
+2026-03-27 15:21:48 +0000 [MT] IDEDistributionItem init <DVTFilePath:0xba21d9e60:'/var/folders/k8/l13lqpzs38vct4stxprqvvv00000gn/T/XcodeDistPipeline.~~~Sikvvc/Root/Payload/Taskify.app'>
+2026-03-27 15:21:48 +0000 [MT] Processing step: IDEDistributionCreateManifestStep
+2026-03-27 15:21:48 +0000 [MT] Skipping step: IDEDistributionCreateManifestStep because it said so

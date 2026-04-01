@@ -178,7 +178,14 @@ import {
   MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
   type HistoryEntryRaw,
 } from "./lib/walletHistory";
-import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "./lib/fileStorage";
+import {
+  DEFAULT_FILE_STORAGE_SERVER,
+  DEFAULT_FILE_SERVERS,
+  normalizeFileServerUrl,
+  parseFileServers,
+  serializeFileServers,
+  findServerEntry,
+} from "./lib/fileStorage";
 import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
@@ -1569,6 +1576,7 @@ type Settings = {
   walletMintBackupEnabled: boolean;
   walletContactsSyncEnabled: boolean;
   fileStorageServer: string;
+  fileServers: string; // JSON-serialized FileServerEntry[]
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
   cloudBackupsEnabled: boolean;
@@ -3924,6 +3932,18 @@ function useSettings() {
             ? parsed.fileStorageServer.trim()
             : DEFAULT_FILE_STORAGE_SERVER,
         ) || DEFAULT_FILE_STORAGE_SERVER;
+      const fileServers = (() => {
+        if (typeof parsed?.fileServers === "string" && parsed.fileServers.trim()) {
+          return parsed.fileServers.trim();
+        }
+        // Migrate from legacy single-server setting: build server list seeded with the saved server
+        const servers = DEFAULT_FILE_SERVERS.slice();
+        const existingEntry = findServerEntry(servers, fileStorageServer);
+        if (!existingEntry) {
+          servers.unshift({ url: fileStorageServer, type: "nip96" });
+        }
+        return serializeFileServers(servers);
+      })();
       const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
       const nostrBackupMetadataEnabled = nostrBackupEnabled;
       const pushRaw = parsed?.pushNotifications;
@@ -4020,6 +4040,7 @@ function useSettings() {
           : false,
         walletContactsSyncEnabled,
         fileStorageServer,
+        fileServers,
         walletMintBackupEnabled,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
@@ -4054,6 +4075,7 @@ function useSettings() {
         walletPaymentRequestsBackgroundChecksEnabled: true,
         walletContactsSyncEnabled: true,
         fileStorageServer: DEFAULT_FILE_STORAGE_SERVER,
+        fileServers: serializeFileServers(DEFAULT_FILE_SERVERS),
         npubCashLightningAddressEnabled: true,
         npubCashAutoClaim: true,
         cloudBackupsEnabled: false,
@@ -4082,6 +4104,15 @@ function useSettings() {
           ? 'android'
           : detectedPlatform;
       }
+      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
+        // fileServers changed: keep fileStorageServer in sync with selected server
+        const servers = parseFileServers((s as any).fileServers);
+        const currentSelected = normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
+        const entry = findServerEntry(servers, currentSelected);
+        if (!entry && servers.length > 0) {
+          next.fileStorageServer = normalizeFileServerUrl(servers[0].url) || DEFAULT_FILE_STORAGE_SERVER;
+        }
+      }
       if (Object.prototype.hasOwnProperty.call(s, "fileStorageServer")) {
         const rawServer = (s as any).fileStorageServer;
         const normalizedServer =
@@ -4094,6 +4125,9 @@ function useSettings() {
       } else {
         next.fileStorageServer =
           normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
+      }
+      if (!next.fileServers) {
+        next.fileServers = serializeFileServers(DEFAULT_FILE_SERVERS);
       }
       if (!next.backgroundImage) {
         next.backgroundImage = null;
@@ -20147,6 +20181,7 @@ export default function App() {
             mintBackupEnabled={settings.walletMintBackupEnabled}
             contactsSyncEnabled={settings.walletContactsSyncEnabled}
             fileStorageServer={settings.fileStorageServer}
+            fileServers={settings.fileServers}
             messageItems={walletMessageItems}
             messagesUnreadCount={messagesUnreadCount}
             onAcceptMessage={acceptInboxMessage}

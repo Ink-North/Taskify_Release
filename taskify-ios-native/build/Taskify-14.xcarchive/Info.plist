@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ApplicationProperties</key>
+	<dict>
+		<key>ApplicationPath</key>
+		<string>Applications/Taskify.app</string>
+		<key>Architectures</key>
+		<array>
+			<string>arm64</string>
+		</array>
+		<key>CFBundleIdentifier</key>
+		<string>solife.me.Taskify</string>
+		<key>CFBundleShortVersionString</key>
+		<string>1.0</string>
+		<key>CFBundleVersion</key>
+		<string>14</string>
+		<key>SigningIdentity</key>
+		<string>Apple Development: Nathan Hughes (RKNK52QG55)</string>
+		<key>Team</key>
+		<string>JUH98962T7</string>
+	</dict>
+	<key>ArchiveVersion</key>
+	<integer>2</integer>
+	<key>CreationDate</key>
+	<date>2026-03-27T15:36:56Z</date>
+	<key>Name</key>
+	<string>Taskify</string>
+	<key>SchemeName</key>
+	<string>Taskify</string>
+</dict>
+</plist>

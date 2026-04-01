@@ -1,7 +1,11 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { finalizeEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
-import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "../lib/fileStorage";
+import {
+  DEFAULT_FILE_STORAGE_SERVER,
+  normalizeFileServerUrl,
+  type FileServerEntry,
+} from "../lib/fileStorage";
 
 export type Nip96ServerInfo = {
   baseUrl: string;
@@ -35,6 +39,12 @@ function encodeBase64(value: string): string {
     // ignore
   }
   return value;
+}
+
+/** Base64url encoding (URL-safe, no padding) required by BUD-11 */
+function encodeBase64Url(value: string): string {
+  const b64 = encodeBase64(value);
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 async function parseJsonSafe(response: Response): Promise<any> {
@@ -91,6 +101,26 @@ function buildNip98AuthHeader(url: string, method: string, payloadHashHex: strin
   const event = finalizeEvent(template, signerBytes);
   const encoded = encodeBase64(JSON.stringify(event));
   return `Nostr ${encoded}`;
+}
+
+function buildBlossomAuthHeader(sha256hex: string, signer: string | Uint8Array): string {
+  const signerBytes =
+    typeof signer === "string"
+      ? hexToBytes(signer.startsWith("0x") ? signer.slice(2) : signer)
+      : signer;
+  const expiration = Math.floor(Date.now() / 1000) + 300;
+  const template: EventTemplate = {
+    kind: 24242,
+    content: "Upload Blob",
+    tags: [
+      ["t", "upload"],
+      ["x", sha256hex],
+      ["expiration", String(expiration)],
+    ],
+    created_at: Math.floor(Date.now() / 1000),
+  };
+  const event = finalizeEvent(template, signerBytes);
+  return `Nostr ${encodeBase64Url(JSON.stringify(event))}`;
 }
 
 async function pollProcessingUrl(url: string, headers: HeadersInit, timeoutMs: number): Promise<{ status: number; data: any }> {
@@ -196,4 +226,149 @@ export async function uploadAvatarToNip96(options: {
     response: data,
     info,
   };
+}
+
+export async function uploadAvatarToBlossom(options: {
+  serverUrl: string;
+  file: Blob;
+  filename?: string;
+  contentType?: string;
+  signer: string | Uint8Array;
+  signal?: AbortSignal;
+}): Promise<Nip96UploadResult> {
+  const normalizedBase = normalizeFileServerUrl(options.serverUrl) || options.serverUrl;
+  const uploadUrl = `${normalizedBase}/upload`;
+  const mimeType = options.contentType || options.file.type || "application/octet-stream";
+  const fileBytes = new Uint8Array(await options.file.arrayBuffer());
+  const sha256hex = bytesToHex(sha256(fileBytes));
+
+  console.info("[blossom] Uploading avatar", { server: normalizedBase });
+
+  const res = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": mimeType,
+      "Content-Length": String(options.file.size),
+      "X-SHA-256": sha256hex,
+      Authorization: buildBlossomAuthHeader(sha256hex, options.signer),
+    },
+    body: options.file,
+    signal: options.signal,
+  });
+
+  const data = await parseJsonSafe(res);
+
+  if (!res.ok) {
+    const reason = res.headers.get("X-Reason") || data?.message || `Upload failed (${res.status})`;
+    throw new Error(reason);
+  }
+
+  const pictureUrl = typeof data?.url === "string" ? data.url.trim() : null;
+  if (!pictureUrl) {
+    throw new Error("Blossom upload response did not include a url.");
+  }
+
+  console.info("[blossom] Upload complete", { url: pictureUrl });
+
+  return {
+    url: pictureUrl,
+    nip94: null,
+    response: data,
+    info: { baseUrl: normalizedBase, apiUrl: uploadUrl },
+  };
+}
+
+export async function uploadAvatarToOriginless(options: {
+  serverUrl: string;
+  file: Blob;
+  filename?: string;
+  contentType?: string;
+  signal?: AbortSignal;
+}): Promise<Nip96UploadResult> {
+  const normalizedBase = normalizeFileServerUrl(options.serverUrl) || options.serverUrl;
+  const uploadUrl = `${normalizedBase}/upload`;
+
+  console.info("[originless] Uploading avatar", { server: normalizedBase });
+
+  const form = new FormData();
+  const uploadBlob =
+    options.file instanceof File
+      ? options.file
+      : new File([options.file], options.filename || "avatar", {
+          type: options.contentType || options.file.type || "application/octet-stream",
+        });
+  form.append("file", uploadBlob);
+
+  const res = await fetch(uploadUrl, {
+    method: "POST",
+    body: form,
+    signal: options.signal,
+  });
+
+  const data = await parseJsonSafe(res);
+
+  if (!res.ok) {
+    throw new Error(data?.message || `Upload failed (${res.status})`);
+  }
+
+  const pictureUrl = typeof data?.url === "string" ? data.url.trim() : null;
+  if (!pictureUrl) {
+    throw new Error("Originless upload response did not include a url.");
+  }
+
+  console.info("[originless] Upload complete", { url: pictureUrl });
+
+  return {
+    url: pictureUrl,
+    nip94: null,
+    response: data,
+    info: { baseUrl: normalizedBase, apiUrl: uploadUrl },
+  };
+}
+
+export async function uploadAvatar(options: {
+  serverEntry: FileServerEntry;
+  file: Blob;
+  filename?: string;
+  contentType?: string;
+  signer?: string | Uint8Array;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}): Promise<Nip96UploadResult> {
+  const { serverEntry } = options;
+  switch (serverEntry.type) {
+    case "blossom": {
+      if (!options.signer) throw new Error("Blossom upload requires a signer.");
+      return uploadAvatarToBlossom({
+        serverUrl: serverEntry.url,
+        file: options.file,
+        filename: options.filename,
+        contentType: options.contentType,
+        signer: options.signer,
+        signal: options.signal,
+      });
+    }
+    case "originless": {
+      return uploadAvatarToOriginless({
+        serverUrl: serverEntry.url,
+        file: options.file,
+        filename: options.filename,
+        contentType: options.contentType,
+        signal: options.signal,
+      });
+    }
+    case "nip96":
+    default: {
+      if (!options.signer) throw new Error("NIP-96 upload requires a signer.");
+      return uploadAvatarToNip96({
+        serverUrl: serverEntry.url,
+        file: options.file,
+        filename: options.filename,
+        contentType: options.contentType,
+        signer: options.signer,
+        timeoutMs: options.timeoutMs,
+        signal: options.signal,
+      });
+    }
+  }
 }
