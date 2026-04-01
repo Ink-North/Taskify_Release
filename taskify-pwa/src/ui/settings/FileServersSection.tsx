@@ -37,10 +37,17 @@ export function FileServersSection({ fileStorageServer, fileServers, onSelectSer
   const servers = parseFileServers(fileServers);
   const selectedNorm = normalizeFileServerUrl(fileStorageServer) || fileStorageServer;
 
-  const [addOpen, setAddOpen] = useState(false);
-  const [addType, setAddType] = useState<FileServerType>("nip96");
+  const [addStep, setAddStep] = useState<"closed" | "type" | "url">("closed");
+  const [addType, setAddType] = useState<FileServerType | null>(null);
   const [addUrl, setAddUrl] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
+
+  const resetAdd = useCallback(() => {
+    setAddStep("closed");
+    setAddType(null);
+    setAddUrl("");
+    setAddError(null);
+  }, []);
 
   const handleSelect = useCallback(
     (url: string) => {
@@ -80,13 +87,12 @@ export function FileServersSection({ fileStorageServer, fileServers, onSelectSer
     } catch {
       label = undefined;
     }
-    const entry: FileServerEntry = { url: normalized, type: addType, label };
+    const entry: FileServerEntry = { url: normalized, type: addType!, label };
     const next = [...servers, entry];
     onUpdateServers(serializeFileServers(next));
     onSelectServer(normalized);
-    setAddUrl("");
-    setAddOpen(false);
-  }, [addUrl, addType, servers, onUpdateServers, onSelectServer]);
+    resetAdd();
+  }, [addUrl, addType, servers, onUpdateServers, onSelectServer, resetAdd]);
 
   return (
     <div className="space-y-2">
@@ -165,23 +171,34 @@ export function FileServersSection({ fileStorageServer, fileServers, onSelectSer
         })}
       </div>
 
-      {/* Add server UI */}
-      {addOpen ? (
-        <div className="glass-panel rounded-xl p-3 space-y-2">
-          {/* Type selector */}
-          <div className="flex gap-2">
+      {/* Add server UI — step 1: choose type */}
+      {addStep === "type" && (
+        <div className="glass-panel rounded-xl p-3 space-y-3">
+          <div className="text-xs text-secondary font-medium">Select server type</div>
+          <div className="flex flex-col gap-2">
             {(["nip96", "blossom", "originless"] as FileServerType[]).map((t) => (
               <button
                 key={t}
-                className={`ghost-button button-sm pressable${addType === t ? " accent-button" : ""}`}
-                onClick={() => setAddType(t)}
+                className="ghost-button pressable text-left"
+                style={{ justifyContent: "flex-start", padding: "0.5rem 0.75rem" }}
+                onClick={() => { setAddType(t); setAddStep("url"); }}
               >
                 {TYPE_LABELS[t]}
               </button>
             ))}
           </div>
+          <button className="ghost-button button-sm pressable" onClick={resetAdd}>
+            Cancel
+          </button>
+        </div>
+      )}
 
-          {/* URL input */}
+      {/* Add server UI — step 2: enter URL */}
+      {addStep === "url" && (
+        <div className="glass-panel rounded-xl p-3 space-y-2">
+          <div className="text-xs text-secondary font-medium">
+            {TYPE_LABELS[addType!]} server URL
+          </div>
           <div className="flex gap-2">
             <input
               className="pill-input flex-1"
@@ -194,24 +211,25 @@ export function FileServersSection({ fileStorageServer, fileServers, onSelectSer
             <button className="accent-button button-sm pressable" onClick={handleAdd}>
               Add
             </button>
-            <button
-              className="ghost-button button-sm pressable"
-              onClick={() => { setAddOpen(false); setAddUrl(""); setAddError(null); }}
-            >
-              Cancel
-            </button>
           </div>
-
           {addError && (
             <div className="text-xs" style={{ color: "var(--color-rose, #f43f5e)" }}>
               {addError}
             </div>
           )}
+          <button
+            className="ghost-button button-sm pressable"
+            onClick={() => { setAddStep("type"); setAddUrl(""); setAddError(null); }}
+          >
+            ← Back
+          </button>
         </div>
-      ) : (
+      )}
+
+      {addStep === "closed" && (
         <button
           className="ghost-button button-sm pressable"
-          onClick={() => setAddOpen(true)}
+          onClick={() => setAddStep("type")}
         >
           + Add server
         </button>
