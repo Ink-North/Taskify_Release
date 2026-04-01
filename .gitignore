@@ -1,0 +1,8 @@
+node_modules/
+.build/
+*.xcuserdata
+taskify-ios/build/
+taskify-ios-native/build/
+*.xcuserstate
+worker/node_modules/
+dist/

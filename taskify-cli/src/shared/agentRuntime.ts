@@ -27,7 +27,10 @@ export type AgentTaskCreateInput = {
   priority?: 1 | 2 | 3;
   columnId?: string;
   idempotencyKey?: string;
-  assignees?: string[];
+  assignees?: Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }>;
+  recurrence?: Record<string, unknown>;
+  reminders?: Array<string | number>;
+  documents?: Array<Record<string, unknown>>;
 };
 
 export type AgentTaskPatchInput = {
@@ -37,7 +40,13 @@ export type AgentTaskPatchInput = {
   priority?: 1 | 2 | 3 | null;
   columnId?: string | null;
   inboxItem?: boolean;
-  assignees?: string[];
+  assignees?: Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }>;
+  recurrence?: Record<string, unknown> | null;
+  reminders?: Array<string | number> | null;
+  documents?: Array<Record<string, unknown>> | null;
+  dueTimeEnabled?: boolean | null;
+  dueTimeZone?: string | null;
+  hiddenUntilISO?: string | null;
 };
 
 export type AgentRuntime = {

@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { nip19 } from "nostr-tools";
-import { normalizeCalendarEventPayload } from "taskify-core";
+import { normalizeCalendarEventPayload, normalizeDelimitedValues, normalizeLocationList } from "taskify-core";
 
 // Sub-sheet components
 import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
@@ -49,6 +49,7 @@ import {
   formatTimeLabel,
   parseTimePickerValue,
   formatTimePickerValue,
+  currentTimeValue,
 } from "../../domains/dateTime/dateUtils";
 
 // Timezone utilities (from domains)
@@ -78,6 +79,7 @@ import {
 // Nostr key utilities
 import { deriveBoardNostrKeys } from "../../domains/nostr/nostrKeyUtils";
 import { hexToBytes } from "../../domains/nostr/nostrCrypto";
+import { normalizeNostrPubkey } from "../../lib/nostr";
 
 // Share / inbox utilities
 import {
@@ -205,6 +207,7 @@ function EventEditModal({
 
   const [invitePickerOpen, setInvitePickerOpen] = useState(false);
   const [inviteSearch, setInviteSearch] = useState("");
+  const [manualInviteNpub, setManualInviteNpub] = useState("");
   const invitedPubkeys = useMemo(
     () => new Set(participantValidation.normalized.map((participant) => participant.pubkey)),
     [participantValidation.normalized],
@@ -212,7 +215,9 @@ function EventEditModal({
   const contactByPubkey = useMemo(() => {
     const map = new Map<string, Contact>();
     (contacts || []).forEach((contact) => {
-      const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+      // Use normalizeNostrPubkey first to handle bech32 (npub1...) format
+      const compressed = normalizeNostrPubkey(contact?.npub ?? "");
+      const pubkey = compressed ? normalizeNostrPubkeyHex(compressed) : normalizeNostrPubkeyHex(contact?.npub ?? "");
       if (pubkey) map.set(pubkey, contact);
     });
     return map;
@@ -323,15 +328,15 @@ function EventEditModal({
   const [startDate, setStartDate] = useState(initialStartDate);
   const [endDate, setEndDate] = useState(initialEndDate);
 
-  const initialStartTime = event.kind === "time" ? isoTimePart(event.startISO, initialStartTzid) : "09:00";
+  const initialStartTime = event.kind === "time" ? isoTimePart(event.startISO, initialStartTzid) : currentTimeValue(0, initialStartTzid);
   const initialEndTime = event.kind === "time"
     ? (() => {
         if (event.endISO) return isoTimePart(event.endISO, initialEndTzid);
         const startMs = Date.parse(event.startISO);
-        if (Number.isNaN(startMs)) return "10:00";
+        if (Number.isNaN(startMs)) return currentTimeValue(60, initialStartTzid);
         return isoTimePart(new Date(startMs + 60 * 60 * 1000).toISOString(), initialEndTzid);
       })()
-    : "10:00";
+    : currentTimeValue(60, initialStartTzid);
   const [startTime, setStartTime] = useState(initialStartTime);
   const [endTime, setEndTime] = useState(initialEndTime);
   const timePickerHourColumnRef = useRef<HTMLDivElement | null>(null);
@@ -635,15 +640,15 @@ function EventEditModal({
     if (whenPicker !== "startTime" && whenPicker !== "endTime" && whenPicker !== "reminderTime") return;
     const hourIndex = HOURS_12.indexOf(timePickerHour);
     if (hourIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex);
+      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex, "instant");
     }
     const minuteIndex = MINUTES.indexOf(timePickerMinute);
     if (minuteIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex);
+      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex, "instant");
     }
     const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
     if (meridiemIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex);
+      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex, "instant");
     }
   }, [whenPicker, timePickerHour, timePickerMinute, timePickerMeridiem]);
 
@@ -674,11 +679,11 @@ function EventEditModal({
       const clampedIndex = getWheelNearestIndex(column, HOURS_12.length);
       if (clampedIndex == null) return;
       const nextHour = HOURS_12[clampedIndex];
-      if (nextHour && timePickerHourValueRef.current !== nextHour) {
-        setTimePickerFromParts(nextHour, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-      }
       if (nextHour) {
-        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex);
+        timePickerHourValueRef.current = nextHour;
+        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -693,11 +698,11 @@ function EventEditModal({
       const clampedIndex = getWheelNearestIndex(column, MINUTES.length);
       if (clampedIndex == null) return;
       const nextMinute = MINUTES[clampedIndex];
-      if (Number.isFinite(nextMinute) && timePickerMinuteValueRef.current !== nextMinute) {
-        setTimePickerFromParts(timePickerHourValueRef.current, nextMinute, timePickerMeridiemValueRef.current);
-      }
       if (Number.isFinite(nextMinute)) {
-        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex);
+        timePickerMinuteValueRef.current = nextMinute as number;
+        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -712,11 +717,11 @@ function EventEditModal({
       const clampedIndex = getWheelNearestIndex(column, MERIDIEMS.length);
       if (clampedIndex == null) return;
       const nextMeridiem = MERIDIEMS[clampedIndex];
-      if (nextMeridiem && timePickerMeridiemValueRef.current !== nextMeridiem) {
-        setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, nextMeridiem);
-      }
       if (nextMeridiem) {
-        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex);
+        timePickerMeridiemValueRef.current = nextMeridiem;
+        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -738,29 +743,13 @@ function EventEditModal({
     setEndTime(isoTimePart(nextEnd, safeEndTzid));
   }, [allDay, endDate, endTime, safeEndTzid, safeStartTzid, startDate, startTime]);
 
-  const normalizeHashtags = (raw: string): string[] | undefined => {
-    const parts = raw
-      .split(/[,\n]+/g)
-      .map((value) => value.trim())
-      .filter(Boolean)
-      .map((value) => (value.startsWith("#") ? value.slice(1) : value));
-    const unique = Array.from(new Set(parts));
-    return unique.length ? unique : undefined;
-  };
+  const normalizeHashtags = (raw: string): string[] | undefined =>
+    normalizeDelimitedValues(raw, /[,\n]+/g, { stripPrefix: "#" });
 
-  const normalizeReferences = (raw: string): string[] | undefined => {
-    const lines = raw
-      .split(/\n+/g)
-      .map((value) => value.trim())
-      .filter(Boolean);
-    const unique = Array.from(new Set(lines));
-    return unique.length ? unique : undefined;
-  };
+  const normalizeReferences = (raw: string): string[] | undefined =>
+    normalizeDelimitedValues(raw, /\n+/g);
 
-  const normalizeLocations = (list: string[]): string[] | undefined => {
-    const out = list.map((value) => value.trim()).filter(Boolean);
-    return out.length ? out : undefined;
-  };
+  const normalizeLocations = (list: string[]): string[] | undefined => normalizeLocationList(list);
 
   const buildDraft = (): CalendarEvent => {
     const boardId = selectedBoardId;
@@ -986,12 +975,37 @@ function EventEditModal({
   const handleOpenInvitePicker = () => {
     if (isReadOnly) return;
     setInviteSearch("");
+    setManualInviteNpub("");
     setInvitePickerOpen(true);
+  };
+
+  // Resolves npub1 bech32, nostr: URIs, and raw hex to a 64-char hex pubkey.
+  const resolveInviteInput = (input: string): string | null => {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    // Try bech32 / nostr: URI first (normalizeNostrPubkey handles these)
+    const compressed = normalizeNostrPubkey(trimmed);
+    if (compressed) return normalizeNostrPubkeyHex(compressed);
+    // Fall back to straight hex
+    return normalizeNostrPubkeyHex(trimmed);
+  };
+
+  const handleAddManualInvitee = () => {
+    if (isReadOnly) return;
+    const raw = manualInviteNpub.trim();
+    if (!raw) return;
+    const pubkey = resolveInviteInput(raw);
+    if (!pubkey) return;
+    setParticipants((prev) => {
+      if (prev.some((p) => normalizeNostrPubkeyHex(p.pubkey) === pubkey)) return prev;
+      return [...prev, { pubkey, relay: "", role: "attendee" }];
+    });
+    setManualInviteNpub("");
   };
 
   const handleToggleInviteContact = (contact: Contact) => {
     if (isReadOnly) return;
-    const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+    const pubkey = resolveInviteInput(contact?.npub ?? "");
     if (!pubkey) return;
     setParticipants((prev) => {
       const existing = prev.some((participant) => normalizeNostrPubkeyHex(participant.pubkey) === pubkey);
@@ -1552,10 +1566,7 @@ function EventEditModal({
               <button
                 type="button"
                 className="ghost-button button-sm pressable"
-                onClick={() => {
-                  handleAddParticipant();
-                  setShowAdvanced(true);
-                }}
+                onClick={handleOpenInvitePicker}
                 disabled={isReadOnly}
               >
                 Add invitee
@@ -2001,7 +2012,7 @@ function EventEditModal({
           {filteredInviteContacts.length ? (
             <div className="space-y-2">
               {filteredInviteContacts.map((contact) => {
-                const pubkey = normalizeNostrPubkeyHex(contact?.npub);
+                const pubkey = resolveInviteInput(contact?.npub ?? "");
                 if (!pubkey) return null;
                 const label = contactPrimaryName(contact);
                 const subtitle = formatContactNpub(contact.npub);
@@ -2038,6 +2049,28 @@ function EventEditModal({
           ) : (
             <div className="text-sm text-secondary">No contacts found.</div>
           )}
+          {/* Manual npub entry for contacts not in the list */}
+          <div className="space-y-1">
+            <div className="text-xs text-secondary">Or invite by npub / hex pubkey</div>
+            <div className="flex gap-2">
+              <input
+                value={manualInviteNpub}
+                onChange={(e) => setManualInviteNpub(e.target.value)}
+                className="edit-field-input flex-1"
+                placeholder="npub1... or hex pubkey"
+                readOnly={isReadOnly}
+                onKeyDown={(e) => { if (e.key === "Enter") handleAddManualInvitee(); }}
+              />
+              <button
+                type="button"
+                className="ghost-button button-sm pressable"
+                onClick={handleAddManualInvitee}
+                disabled={isReadOnly || !resolveInviteInput(manualInviteNpub)}
+              >
+                Add
+              </button>
+            </div>
+          </div>
           <div className="flex gap-2">
             <button
               type="button"
@@ -2045,6 +2078,7 @@ function EventEditModal({
               onClick={() => {
                 setInvitePickerOpen(false);
                 setInviteSearch("");
+                setManualInviteNpub("");
               }}
             >
               Done

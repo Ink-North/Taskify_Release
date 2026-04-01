@@ -74,7 +74,7 @@ Build `taskify-core` into the single shared domain/protocol layer consumed by bo
 - transport-agnostic envelope builders/parsers
 - backup snapshot/merge/sanitize domain helpers
 
-### Wave 4: Nostr pure primitives
+### Wave 4: Nostr pure primitives ✅ (completed on `feat/core-wave4-nostr-primitives`)
 **Source candidates**
 - `taskify-pwa/src/domains/nostr/nostrKeyUtils.ts`
 - `taskify-pwa/src/domains/nostr/nostrCrypto.ts`

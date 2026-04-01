@@ -18,7 +18,7 @@ function normalizeRelayList(list) {
     const relays = list.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean);
     return relays.length ? Array.from(new Set(relays)) : undefined;
 }
-function normalizeTaskDueISO(value) {
+export function normalizeTaskDueISO(value) {
     if (typeof value !== "string")
         return undefined;
     const trimmed = value.trim();
@@ -29,7 +29,7 @@ function normalizeTaskDueISO(value) {
         return undefined;
     return parsed.toISOString();
 }
-function normalizeTaskTimeZone(value) {
+export function normalizeTaskTimeZone(value) {
     if (typeof value !== "string")
         return undefined;
     const trimmed = value.trim();
@@ -43,7 +43,7 @@ function normalizeTaskTimeZone(value) {
         return undefined;
     }
 }
-function normalizeTaskPriority(value) {
+export function normalizeTaskPriority(value) {
     if (typeof value === "number" && Number.isFinite(value)) {
         const rounded = Math.round(value);
         if (rounded >= 1 && rounded <= 3)
@@ -59,7 +59,7 @@ function normalizeTaskPriority(value) {
     }
     return undefined;
 }
-function normalizeTaskReminders(value) {
+export function normalizeTaskReminders(value) {
     if (!Array.isArray(value))
         return undefined;
     const reminders = [];
@@ -75,7 +75,7 @@ function normalizeTaskReminders(value) {
     });
     return reminders.length ? reminders : undefined;
 }
-function normalizeTaskSubtasks(value) {
+export function normalizeTaskSubtasks(value) {
     if (!Array.isArray(value))
         return undefined;
     const subtasks = value
@@ -91,7 +91,13 @@ function normalizeTaskSubtasks(value) {
         .filter((entry) => !!entry);
     return subtasks.length ? subtasks : undefined;
 }
-function normalizeTaskRecurrence(value) {
+export function normalizeTaskDocuments(value) {
+    if (!Array.isArray(value))
+        return undefined;
+    const docs = value.filter((entry) => !!entry && typeof entry === "object");
+    return docs.length ? docs : undefined;
+}
+export function normalizeTaskRecurrence(value) {
     if (!value || typeof value !== "object")
         return undefined;
     const rawType = value.type;
@@ -99,13 +105,13 @@ function normalizeTaskRecurrence(value) {
         return undefined;
     return { ...value, type: rawType.trim() };
 }
-function normalizeTaskId(value) {
+export function normalizeTaskId(value) {
     if (typeof value !== "string")
         return undefined;
     const trimmed = value.trim();
     return trimmed || undefined;
 }
-function normalizeTaskAssignmentStatus(value) {
+export function normalizeTaskAssignmentStatus(value) {
     if (value === "pending" || value === "accepted" || value === "declined" || value === "tentative")
         return value;
     if (value === "maybe")
@@ -122,7 +128,7 @@ function toRawHexPubkey(value) {
         return trimmed;
     return null;
 }
-function normalizeTaskAssignees(value) {
+export function normalizeTaskAssignees(value) {
     if (!Array.isArray(value))
         return undefined;
     const assignees = [];
@@ -142,19 +148,19 @@ function normalizeTaskAssignees(value) {
     });
     return assignees.length ? assignees : undefined;
 }
-function normalizeTaskAssignmentFlag(value) {
+export function normalizeTaskAssignmentFlag(value) {
     if (typeof value !== "boolean")
         return undefined;
     return value;
 }
-function normalizeTaskAssignmentResponseStatus(value) {
+export function normalizeTaskAssignmentResponseStatus(value) {
     if (value === "accepted" || value === "declined" || value === "tentative")
         return value;
     if (value === "maybe")
         return "tentative";
     return undefined;
 }
-function normalizeTaskAssignmentResponseTime(value) {
+export function normalizeTaskAssignmentResponseTime(value) {
     if (typeof value !== "string")
         return undefined;
     const trimmed = value.trim();
@@ -217,6 +223,7 @@ export function buildTaskShareEnvelope(payload, sender) {
             reminders: normalizeTaskReminders(payload.reminders),
             subtasks: normalizeTaskSubtasks(payload.subtasks),
             recurrence: normalizeTaskRecurrence(payload.recurrence),
+            documents: normalizeTaskDocuments(payload.documents),
             sourceTaskId: normalizeTaskId(payload.sourceTaskId),
             assignment: normalizeTaskAssignmentFlag(payload.assignment),
             assignees: normalizeTaskAssignees(payload.assignees),
@@ -232,6 +239,20 @@ export function buildTaskAssignmentResponseEnvelope(payload, sender) {
     if (!status)
         throw new Error("Invalid assignment response status.");
     return { v: 1, kind: "taskify-share", sender: sender?.npub || sender?.name ? sender : undefined, item: { type: "task-assignment-response", taskId, status, respondedAt: normalizeTaskAssignmentResponseTime(payload.respondedAt) } };
+}
+export function buildEventRsvpResponseEnvelope(payload, sender) {
+    const eventId = normalizeTaskId(payload.eventId);
+    if (!eventId)
+        throw new Error("Missing event id for RSVP response.");
+    const status = normalizeTaskAssignmentResponseStatus(payload.status);
+    if (!status)
+        throw new Error("Invalid RSVP response status.");
+    return {
+        v: 1,
+        kind: "taskify-share",
+        sender: sender?.npub || sender?.name ? sender : undefined,
+        item: { type: "event-rsvp-response", eventId, status, respondedAt: normalizeTaskAssignmentResponseTime(payload.respondedAt) },
+    };
 }
 export function buildCalendarEventInviteEnvelope(payload, sender) {
     const eventId = typeof payload.eventId === "string" ? payload.eventId.trim() : "";
@@ -305,7 +326,7 @@ export function parseShareEnvelope(raw) {
         const title = typeof item.title === "string" ? item.title.trim() : "";
         if (!title)
             return null;
-        return { v: 1, kind: "taskify-share", item: { type: "task", title, note: typeof item.note === "string" ? item.note.trim() : undefined, priority: normalizeTaskPriority(item.priority), dueISO: normalizeTaskDueISO(item.dueISO), dueDateEnabled: typeof item.dueDateEnabled === "boolean" ? item.dueDateEnabled : undefined, dueTimeEnabled: typeof item.dueTimeEnabled === "boolean" ? item.dueTimeEnabled : undefined, dueTimeZone: normalizeTaskTimeZone(item.dueTimeZone), reminders: normalizeTaskReminders(item.reminders), subtasks: normalizeTaskSubtasks(item.subtasks), recurrence: normalizeTaskRecurrence(item.recurrence), sourceTaskId: normalizeTaskId(item.sourceTaskId), assignment: normalizeTaskAssignmentFlag(item.assignment), assignees: normalizeTaskAssignees(item.assignees), relays: normalizeRelayList(item.relays) }, sender: sanitizeSender(parsed.sender) };
+        return { v: 1, kind: "taskify-share", item: { type: "task", title, note: typeof item.note === "string" ? item.note.trim() : undefined, priority: normalizeTaskPriority(item.priority), dueISO: normalizeTaskDueISO(item.dueISO), dueDateEnabled: typeof item.dueDateEnabled === "boolean" ? item.dueDateEnabled : undefined, dueTimeEnabled: typeof item.dueTimeEnabled === "boolean" ? item.dueTimeEnabled : undefined, dueTimeZone: normalizeTaskTimeZone(item.dueTimeZone), reminders: normalizeTaskReminders(item.reminders), subtasks: normalizeTaskSubtasks(item.subtasks), recurrence: normalizeTaskRecurrence(item.recurrence), documents: normalizeTaskDocuments(item.documents), sourceTaskId: normalizeTaskId(item.sourceTaskId), assignment: normalizeTaskAssignmentFlag(item.assignment), assignees: normalizeTaskAssignees(item.assignees), relays: normalizeRelayList(item.relays) }, sender: sanitizeSender(parsed.sender) };
     }
     if (item.type === "task-assignment-response") {
         const taskId = normalizeTaskId(item.taskId);
@@ -313,6 +334,13 @@ export function parseShareEnvelope(raw) {
         if (!taskId || !status)
             return null;
         return { v: 1, kind: "taskify-share", item: { type: "task-assignment-response", taskId, status, respondedAt: normalizeTaskAssignmentResponseTime(item.respondedAt) }, sender: sanitizeSender(parsed.sender) };
+    }
+    if (item.type === "event-rsvp-response") {
+        const eventId = normalizeTaskId(item.eventId);
+        const status = normalizeTaskAssignmentResponseStatus(item.status);
+        if (!eventId || !status)
+            return null;
+        return { v: 1, kind: "taskify-share", item: { type: "event-rsvp-response", eventId, status, respondedAt: normalizeTaskAssignmentResponseTime(item.respondedAt) }, sender: sanitizeSender(parsed.sender) };
     }
     if (item.type === "event") {
         const eventId = typeof item.eventId === "string" ? item.eventId.trim() : "";

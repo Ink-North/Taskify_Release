@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import type { TaskDocument, TaskDocumentPreview } from "../../lib/documents";
 import { loadDocumentPreview } from "../../lib/documents";
 import { Modal } from "../Modal";
+import { decryptAttachment } from "../../lib/attachmentCrypto";
 
 export function DocumentThumbnail({ document: doc, onClick }: { document: TaskDocument; onClick: () => void }) {
   const [derivedPreview, setDerivedPreview] = useState<TaskDocumentPreview | null>(doc.preview ?? null);
@@ -63,20 +64,67 @@ export function DocumentThumbnail({ document: doc, onClick }: { document: TaskDo
 
 export function DocumentPreviewModal({
   document,
+  boardId,
   onClose,
   onDownloadDocument,
   onOpenExternal,
 }: {
   document: TaskDocument;
+  boardId?: string;
   onClose: () => void;
   onDownloadDocument?: (doc: TaskDocument) => void;
   onOpenExternal?: (doc: TaskDocument) => void;
 }) {
+  const [resolvedDataUrl, setResolvedDataUrl] = useState<string | null>(document.dataUrl || null);
+  const [loadingRemote, setLoadingRemote] = useState(false);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
   const full = document.full;
   const label = document.name || "Document";
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!document.remoteUrl) {
+      setResolvedDataUrl(document.dataUrl || null);
+      setLoadingRemote(false);
+      setRemoteError(null);
+      return;
+    }
+    if (document.encrypted && boardId) {
+      setLoadingRemote(true);
+      setRemoteError(null);
+      decryptAttachment({ boardId, url: document.remoteUrl, mimeType: document.mimeType })
+        .then((dataUrl) => {
+          if (cancelled) return;
+          setResolvedDataUrl(dataUrl);
+          setLoadingRemote(false);
+        })
+        .catch((err: any) => {
+          if (cancelled) return;
+          setRemoteError(err?.message || "Failed to decrypt document");
+          setLoadingRemote(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+    setResolvedDataUrl(document.remoteUrl);
+    setLoadingRemote(false);
+    setRemoteError(null);
+    return () => {
+      cancelled = true;
+    };
+  }, [document, boardId]);
+
+  const effectiveDocument = resolvedDataUrl && resolvedDataUrl !== document.dataUrl
+    ? { ...document, dataUrl: resolvedDataUrl }
+    : document;
+
   let content: React.ReactNode;
-  if (document.kind === "pdf") {
+  if (loadingRemote) {
+    content = <div className="doc-modal__content"><div className="doc-modal__placeholder">Decrypting document…</div></div>;
+  } else if (remoteError) {
+    content = <div className="doc-modal__content"><div className="doc-modal__placeholder">{remoteError}</div></div>;
+  } else if (effectiveDocument.kind === "pdf") {
     content = (
       <div className="doc-modal__content">
         <div className="doc-modal__placeholder">
@@ -85,7 +133,7 @@ export function DocumentPreviewModal({
             type="button"
             className="ghost-button button-sm pressable"
             style={{ marginTop: "0.75rem" }}
-            onClick={() => onOpenExternal?.(document)}
+            onClick={() => onOpenExternal?.(effectiveDocument)}
           >
             Open full screen
           </button>
@@ -122,7 +170,7 @@ export function DocumentPreviewModal({
       <button
         type="button"
         className="ghost-button button-sm pressable"
-        onClick={() => onDownloadDocument?.(document)}
+        onClick={() => onDownloadDocument?.(effectiveDocument)}
       >
         Download
       </button>

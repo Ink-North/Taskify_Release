@@ -14,8 +14,7 @@ import {
   LS_SPENT_NOSTR_PAYMENTS,
 } from "../localStorageKeys";
 import { LS_BACKGROUND_IMAGE } from "../domains/storageKeys";
-import { AGENT_IDEMPOTENCY_STORAGE_KEY } from "../agent/agentIdempotency";
-import { AGENT_SECURITY_STORAGE_KEY } from "../agent/agentSecurity";
+
 import { getTaskifyDb, TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./taskifyDb";
 import { idbKeyValue } from "./idbKeyValue";
 
@@ -23,6 +22,7 @@ const TASKS_KEY = "taskify_tasks_v5";
 const BOARDS_KEY = "taskify_boards_v2";
 const EVENTS_KEY = "taskify_calendar_events_v1";
 const EXTERNAL_EVENTS_KEY = "taskify_calendar_external_events_v1";
+const BOARD_SYNC_CURSORS_KEY = "taskify_board_sync_cursors_v1";
 
 const CASHU_PROOFS_KEY = "cashu_proofs_v1";
 const CASHU_ACTIVE_MINT_KEY = "cashu_active_mint_v1";
@@ -53,8 +53,8 @@ export async function initializeStorageBoundaries(): Promise<void> {
       EVENTS_KEY,
       EXTERNAL_EVENTS_KEY,
       LS_BACKGROUND_IMAGE,
-      AGENT_IDEMPOTENCY_STORAGE_KEY,
-      AGENT_SECURITY_STORAGE_KEY,
+
+      BOARD_SYNC_CURSORS_KEY, // relay sync cursors — must preload so repeat opens skip limit:500
     ]),
     idbKeyValue.initStore(TASKIFY_STORE_WALLET, [
       CASHU_PROOFS_KEY,

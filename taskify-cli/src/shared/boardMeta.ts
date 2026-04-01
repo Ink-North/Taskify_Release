@@ -3,6 +3,12 @@ export type BoardMeta = {
   kind?: string;
   columns?: { id: string; name: string }[];
   children?: string[];
+  archived?: boolean;
+  hidden?: boolean;
+  indexCardEnabled?: boolean;
+  clearCompletedDisabled?: boolean;
+  hideChildBoardNames?: boolean;
+  shareSettings?: Record<string, unknown>;
 };
 
 type EventLike = {
@@ -35,6 +41,12 @@ export function extractBoardMetaFromEventLike(event: EventLike, _boardId: string
   let contentKind: string | undefined;
   let contentColumns: { id: string; name: string }[] = [];
   let contentChildren: string[] = [];
+  let archived: boolean | undefined;
+  let hidden: boolean | undefined;
+  let indexCardEnabled: boolean | undefined;
+  let clearCompletedDisabled: boolean | undefined;
+  let hideChildBoardNames: boolean | undefined;
+  let shareSettings: Record<string, unknown> | undefined;
 
   if (event.content) {
     try {
@@ -50,6 +62,14 @@ export function extractBoardMetaFromEventLike(event: EventLike, _boardId: string
 
       if (Array.isArray(parsed?.children)) {
         contentChildren = parsed.children.filter((c: unknown): c is string => typeof c === "string");
+      }
+      if (typeof parsed?.archived === "boolean") archived = parsed.archived;
+      if (typeof parsed?.hidden === "boolean") hidden = parsed.hidden;
+      if (typeof parsed?.listIndex === "boolean") indexCardEnabled = parsed.listIndex;
+      if (typeof parsed?.clearCompletedDisabled === "boolean") clearCompletedDisabled = parsed.clearCompletedDisabled;
+      if (typeof parsed?.hideBoardNames === "boolean") hideChildBoardNames = parsed.hideBoardNames;
+      if (parsed?.shareSettings && typeof parsed.shareSettings === "object") {
+        shareSettings = parsed.shareSettings as Record<string, unknown>;
       }
     } catch {
       // content may be encrypted/non-JSON
@@ -71,6 +91,12 @@ export function extractBoardMetaFromEventLike(event: EventLike, _boardId: string
     kind: kind ?? contentKind,
     columns: mergedColumns.length ? mergedColumns : undefined,
     children: mergedChildren.length ? mergedChildren : undefined,
+    archived,
+    hidden,
+    indexCardEnabled,
+    clearCompletedDisabled,
+    hideChildBoardNames,
+    shareSettings,
   };
 }
 
@@ -78,7 +104,18 @@ export function pickBestBoardMeta(events: EventLike[], boardId: string): BoardMe
   const sorted = [...events].sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
   for (const event of sorted) {
     const meta = extractBoardMetaFromEventLike(event, boardId);
-    if (meta.name || meta.kind || (meta.columns?.length ?? 0) > 0 || (meta.children?.length ?? 0) > 0) {
+    if (
+      meta.name ||
+      meta.kind ||
+      (meta.columns?.length ?? 0) > 0 ||
+      (meta.children?.length ?? 0) > 0 ||
+      meta.archived !== undefined ||
+      meta.hidden !== undefined ||
+      meta.indexCardEnabled !== undefined ||
+      meta.clearCompletedDisabled !== undefined ||
+      meta.hideChildBoardNames !== undefined ||
+      meta.shareSettings !== undefined
+    ) {
       return meta;
     }
   }

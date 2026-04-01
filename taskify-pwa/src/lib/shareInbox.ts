@@ -16,8 +16,10 @@ import {
   type SharedTaskPayload,
   type SharedCalendarEventInvitePayload,
   type SharedTaskAssignmentResponsePayload,
+  normalizeRelayList,
+  normalizeCalendarAddress,
 } from "taskify-core";
-import { TASKIFY_CALENDAR_EVENT_KIND, TASKIFY_CALENDAR_VIEW_KIND, parseCalendarAddress } from "./privateCalendar";
+import { TASKIFY_CALENDAR_EVENT_KIND, TASKIFY_CALENDAR_VIEW_KIND } from "./privateCalendar";
 import { NostrSession } from "../nostr/NostrSession";
 import { kvStorage } from "../storage/kvStorage";
 
@@ -125,147 +127,6 @@ function serializeTaskAssignmentShareEnvelope(payload: ShareEnvelope): string {
   return lines.join("\n");
 }
 
-function normalizeRelayList(list?: string[] | null): string[] | undefined {
-  if (!Array.isArray(list)) return undefined;
-  const relays = list
-    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-    .filter(Boolean);
-  return relays.length ? Array.from(new Set(relays)) : undefined;
-}
-
-function normalizeTaskDueISO(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  const parsed = new Date(trimmed);
-  if (Number.isNaN(parsed.getTime())) return undefined;
-  return parsed.toISOString();
-}
-
-function normalizeTaskTimeZone(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: trimmed }).format();
-    return trimmed;
-  } catch {
-    return undefined;
-  }
-}
-
-function normalizeTaskPriority(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const rounded = Math.round(value);
-    if (rounded >= 1 && rounded <= 3) return rounded;
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed === "!" || trimmed === "!!" || trimmed === "!!!") return trimmed.length;
-    const parsed = Number.parseInt(trimmed, 10);
-    if (parsed >= 1 && parsed <= 3) return parsed;
-  }
-  return undefined;
-}
-
-function normalizeTaskReminders(value: unknown): Array<string | number> | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const reminders: Array<string | number> = [];
-  value.forEach((entry) => {
-    if (typeof entry === "string") {
-      const trimmed = entry.trim();
-      if (trimmed) reminders.push(trimmed);
-      return;
-    }
-    if (typeof entry === "number" && Number.isFinite(entry)) {
-      reminders.push(entry);
-    }
-  });
-  return reminders.length ? reminders : undefined;
-}
-
-function normalizeTaskSubtasks(value: unknown): SharedTaskPayload["subtasks"] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const subtasks = value
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") return null;
-      const title = typeof (entry as any).title === "string" ? (entry as any).title.trim() : "";
-      if (!title) return null;
-      const completed = typeof (entry as any).completed === "boolean" ? (entry as any).completed : undefined;
-      return completed === undefined ? { title } : { title, completed };
-    })
-    .filter((entry): entry is { title: string; completed?: boolean } => !!entry);
-  return subtasks.length ? subtasks : undefined;
-}
-
-function normalizeTaskRecurrence(value: unknown): SharedTaskPayload["recurrence"] | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const rawType = (value as any).type;
-  if (typeof rawType !== "string" || !rawType.trim()) return undefined;
-  return { ...(value as any), type: rawType.trim() };
-}
-
-function normalizeTaskId(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
-function normalizeTaskAssignmentStatus(
-  value: unknown,
-): "pending" | "accepted" | "declined" | "tentative" | undefined {
-  if (value === "pending" || value === "accepted" || value === "declined" || value === "tentative") {
-    return value;
-  }
-  if (value === "maybe") return "tentative";
-  return undefined;
-}
-
-function normalizeTaskAssignees(value: unknown): SharedTaskPayload["assignees"] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const assignees: NonNullable<SharedTaskPayload["assignees"]> = [];
-  const seen = new Set<string>();
-  value.forEach((entry) => {
-    if (!entry || typeof entry !== "object") return;
-    const pubkey = toRawHexPubkey(typeof (entry as any).pubkey === "string" ? (entry as any).pubkey : "");
-    if (!pubkey || seen.has(pubkey)) return;
-    seen.add(pubkey);
-    const relay = typeof (entry as any).relay === "string" ? (entry as any).relay.trim() : "";
-    const status = normalizeTaskAssignmentStatus((entry as any).status);
-    const respondedAtRaw = Number((entry as any).respondedAt);
-    const respondedAt = Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
-    assignees.push({
-      pubkey,
-      ...(relay ? { relay } : {}),
-      ...(status ? { status } : {}),
-      ...(respondedAt ? { respondedAt } : {}),
-    });
-  });
-  return assignees.length ? assignees : undefined;
-}
-
-function normalizeTaskAssignmentFlag(value: unknown): boolean | undefined {
-  if (typeof value !== "boolean") return undefined;
-  return value;
-}
-
-function normalizeTaskAssignmentResponseStatus(
-  value: unknown,
-): SharedTaskAssignmentResponsePayload["status"] | undefined {
-  if (value === "accepted" || value === "declined" || value === "tentative") return value;
-  if (value === "maybe") return "tentative";
-  return undefined;
-}
-
-function normalizeTaskAssignmentResponseTime(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  const parsed = new Date(trimmed);
-  if (Number.isNaN(parsed.getTime())) return undefined;
-  return parsed.toISOString();
-}
-
 export function buildBoardShareEnvelope(
   boardId: string,
   boardName?: string,
@@ -291,14 +152,6 @@ export function buildTaskAssignmentResponseEnvelope(
   sender?: { npub?: string; name?: string },
 ): ShareEnvelope {
   return buildTaskAssignmentResponseEnvelopeCore(payload, sender);
-}
-
-function normalizeCalendarAddress(value: unknown, allowedKinds: number[]): string | null {
-  if (typeof value !== "string") return null;
-  const parsed = parseCalendarAddress(value);
-  if (!parsed) return null;
-  if (!allowedKinds.includes(parsed.kind)) return null;
-  return `${parsed.kind}:${parsed.pubkey}:${parsed.d}`;
 }
 
 export function buildCalendarEventInviteEnvelope(
@@ -492,11 +345,5 @@ function toRelayList(input: unknown): string[] {
   } else if (input && typeof input === "object" && (input as any)[Symbol.iterator]) {
     candidates = Array.from(input as Iterable<unknown>);
   }
-  return Array.from(
-    new Set(
-      candidates
-        .map((r) => (typeof r === "string" ? r.trim() : ""))
-        .filter(Boolean),
-    ),
-  );
+  return normalizeRelayList(candidates) ?? [];
 }

@@ -12,6 +12,28 @@ function normalizeStringArray(value) {
         .filter(Boolean);
     return out.length ? out : undefined;
 }
+export function normalizeDelimitedValues(raw, delimiter, options) {
+    const values = (raw || "")
+        .split(delimiter)
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map((value) => {
+        if (options?.stripPrefix && value.startsWith(options.stripPrefix)) {
+            return value.slice(options.stripPrefix.length);
+        }
+        return value;
+    })
+        .filter(Boolean);
+    if (!values.length)
+        return undefined;
+    if (options?.dedupe === false)
+        return values;
+    return Array.from(new Set(values));
+}
+export function normalizeLocationList(list) {
+    const out = (list || []).map((value) => value.trim()).filter(Boolean);
+    return out.length ? out : undefined;
+}
 export function normalizeCalendarEventPayload(raw) {
     if (!raw || typeof raw !== "object")
         return null;

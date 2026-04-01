@@ -1,5 +1,6 @@
 import type { NDKSigner } from "@nostr-dev-kit/ndk";
 import type { EventTemplate, NostrEvent } from "nostr-tools";
+import { normalizeRelayUrls } from "taskify-runtime-nostr";
 import { NostrSession } from "./NostrSession";
 
 export type ProfileMetadataDraft = {
@@ -14,15 +15,6 @@ export type ProfileMetadataDraft = {
   website?: string;
 };
 
-function normalizeRelayList(relays: string[]): string[] {
-  return Array.from(
-    new Set(
-      (Array.isArray(relays) ? relays : [])
-        .map((r) => (typeof r === "string" ? r.trim() : ""))
-        .filter(Boolean),
-    ),
-  );
-}
 
 function buildProfileContent(draft: ProfileMetadataDraft): Record<string, string> {
   const content: Record<string, string> = {};
@@ -53,7 +45,7 @@ export async function loadMyLatestProfileEvent(
   relays: string[],
   opts?: { timeoutMs?: number },
 ): Promise<NostrEvent | null> {
-  const relayList = normalizeRelayList(relays);
+  const relayList = normalizeRelayUrls(relays);
   if (!pubkey || !relayList.length) return null;
   const session = await NostrSession.init(relayList);
   const fetchPromise = session.fetchEvents(
@@ -85,7 +77,7 @@ export async function publishMyProfile(
     reason?: string;
   },
 ): Promise<{ event: NostrEvent; previous?: NostrEvent | null; deletedIds: string[] }> {
-  const relayList = normalizeRelayList(opts.relays);
+  const relayList = normalizeRelayUrls(opts.relays);
   if (!opts.pubkey) {
     throw new Error("Missing Nostr pubkey for profile publish.");
   }
@@ -163,7 +155,7 @@ export async function publishFileServerPreference(
   servers: string[],
   opts: { signer: NDKSigner | Uint8Array | string; relays: string[] },
 ): Promise<NostrEvent | null> {
-  const relayList = normalizeRelayList(opts.relays);
+  const relayList = normalizeRelayUrls(opts.relays);
   if (!relayList.length) {
     throw new Error("Add at least one relay to publish file server preference.");
   }

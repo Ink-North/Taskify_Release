@@ -1,6 +1,8 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 import { nip19 } from "nostr-tools";
+import { normalizeTaskAssignmentStatus } from "taskify-core";
 
 // Sub-sheet components
 import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
@@ -53,6 +55,7 @@ import {
   scheduleWheelSnap,
   parseTimePickerValue,
   formatTimePickerValue,
+  currentTimeValue,
 } from "../../domains/dateTime/dateUtils";
 
 // Timezone utilities
@@ -193,12 +196,6 @@ function normalizeAssigneePubkey(value: string | null | undefined): string | nul
   return /^[0-9a-f]{64}$/.test(raw) ? raw : null;
 }
 
-function normalizeAssigneeStatus(value: unknown): TaskAssignee["status"] | undefined {
-  if (value === "pending" || value === "accepted" || value === "declined" || value === "tentative") return value;
-  if (value === "maybe") return "tentative";
-  return undefined;
-}
-
 function normalizeAssigneeList(value: Task["assignees"] | undefined): TaskAssignee[] {
   if (!Array.isArray(value)) return [];
   const normalized: TaskAssignee[] = [];
@@ -208,7 +205,7 @@ function normalizeAssigneeList(value: Task["assignees"] | undefined): TaskAssign
     if (!pubkey || seen.has(pubkey)) return;
     seen.add(pubkey);
     const relay = typeof assignee?.relay === "string" ? assignee.relay.trim() : "";
-    const status = normalizeAssigneeStatus(assignee?.status);
+    const status = normalizeTaskAssignmentStatus(assignee?.status) as TaskAssignee["status"] | undefined;
     const respondedAtRaw = Number(assignee?.respondedAt);
     const respondedAt = Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
     normalized.push({
@@ -230,7 +227,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
-  onSave: (t: Task)=>void;
+  onSave: (t: Task)=>void | Promise<void>;
   onSwitchToEvent?: (t: Task)=>void;
   weekStart: Weekday;
   boardKind: Board["kind"];
@@ -256,6 +253,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [prioritySheetOpen, setPrioritySheetOpen] = useState(false);
   const [note, setNote] = useState(task.note || "");
   const [images, setImages] = useState<string[]>(task.images || []);
+  const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const [documents, setDocuments] = useState<TaskDocument[]>(task.documents || []);
   // Pending attachment uploads while editing on a shared board (remote-first)
   const [uploadingImages, setUploadingImages] = useState<{ id: string; dataUrl: string }[]>([]);
@@ -282,8 +280,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   );
   const initialDate = initialDateEnabled ? isoDatePart(task.dueISO, initialTimeZone) : "";
   const initialTime = initialDateEnabled ? isoTimePart(task.dueISO, initialTimeZone) : "";
-  const defaultTimeValue = initialTime || "09:00";
   const defaultHasTime = initialDateEnabled && (task.dueTimeEnabled ?? false);
+  // Only use the task's stored time as the default if time was actually enabled.
+  // Otherwise (time disabled / new task) default to current time rounded to next hour,
+  // so the picker opens at "now" instead of a stale or midnight time from dueISO.
+  const defaultTimeValue = defaultHasTime ? initialTime : currentTimeValue(0, initialTimeZone);
   const [scheduledDate, setScheduledDate] = useState(initialDate);
   const [scheduledTime, setScheduledTime] = useState<string>(defaultHasTime ? initialTime : "");
   const [scheduledTimeZone, setScheduledTimeZone] = useState(initialTimeZone);
@@ -921,15 +922,17 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     if ((hasDueTime && !timeDetailsOpen) || (!hasDueTime && !reminderTimeDetailsOpen)) return;
     const hourIndex = HOURS_12.indexOf(timePickerHour);
     if (hourIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex);
+      // Use "instant" to avoid firing scroll events mid-animation, which would
+      // cause the snap handler to read a stale position and re-snap to the wrong item.
+      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex, "instant");
     }
     const minuteIndex = MINUTES.indexOf(timePickerMinute);
     if (minuteIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex);
+      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex, "instant");
     }
     const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
     if (meridiemIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex);
+      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex, "instant");
     }
   }, [timeDetailsOpen, hasDueTime, reminderTimeDetailsOpen, timePickerHour, timePickerMinute, timePickerMeridiem]);
 
@@ -1433,11 +1436,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       const clampedIndex = getWheelNearestIndex(column, HOURS_12.length);
       if (clampedIndex == null) return;
       const nextHour = HOURS_12[clampedIndex];
-      if (typeof nextHour === "number" && timePickerHourValueRef.current !== nextHour) {
-        setTimePickerFromParts(nextHour, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-      }
       if (typeof nextHour === "number") {
-        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex);
+        // Update ref immediately for cross-column coordination; defer state commit to avoid
+        // re-rendering the whole modal during active scroll (which disrupts scroll physics).
+        timePickerHourValueRef.current = nextHour;
+        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -1451,11 +1456,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       const clampedIndex = getWheelNearestIndex(column, MINUTES.length);
       if (clampedIndex == null) return;
       const nextMinute = MINUTES[clampedIndex];
-      if (typeof nextMinute === "number" && timePickerMinuteValueRef.current !== nextMinute) {
-        setTimePickerFromParts(timePickerHourValueRef.current, nextMinute, timePickerMeridiemValueRef.current);
-      }
       if (typeof nextMinute === "number") {
-        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex);
+        timePickerMinuteValueRef.current = nextMinute;
+        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -1469,11 +1474,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       const clampedIndex = getWheelNearestIndex(column, MERIDIEMS.length);
       if (clampedIndex == null) return;
       const nextMeridiem = MERIDIEMS[clampedIndex];
-      if (nextMeridiem && timePickerMeridiemValueRef.current !== nextMeridiem) {
-        setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, nextMeridiem);
-      }
       if (nextMeridiem) {
-        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex);
+        timePickerMeridiemValueRef.current = nextMeridiem;
+        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -1823,7 +1828,14 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
               <div className="edit-media-grid">
                 {images.map((img, i) => (
                   <div key={i} className="relative">
-                    <img src={img} className="max-h-40 rounded-lg" alt="Attachment" />
+                    <img
+                      src={img}
+                      className="max-h-40 rounded-lg cursor-zoom-in"
+                      alt="Attachment"
+                      onClick={() => setPreviewImageSrc(img)}
+                      role="button"
+                      aria-label="View full image"
+                    />
                     <button
                       type="button"
                       className="absolute top-1 right-1 rounded-full bg-black/70 px-1 text-xs"

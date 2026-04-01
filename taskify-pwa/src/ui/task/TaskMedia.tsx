@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import type { Task } from "../../domains/tasks/taskTypes";
 import type { CalendarEvent } from "../../domains/tasks/taskTypes";
 import type { TaskDocument } from "../../lib/documents";
@@ -7,6 +7,8 @@ import type { UrlPreviewData } from "../../lib/urlPreview";
 import { extractFirstUrl, isUrlLike } from "../../lib/urlPreview";
 import { autolink, stripUrlsFromText, fallbackTitleFromUrl, useTaskPreview } from "./TaskTitle";
 import { DocumentThumbnail } from "./DocumentPreviewModal";
+import { ImagePreviewModal } from "./ImagePreviewModal";
+import { decryptAttachment } from "../../lib/attachmentCrypto";
 
 export function UrlPreviewCard({ preview }: { preview: UrlPreviewData; indent?: boolean }) {
   const [imageFailed, setImageFailed] = useState(false);
@@ -62,6 +64,83 @@ export function UrlPreviewCard({ preview }: { preview: UrlPreviewData; indent?: 
   return card;
 }
 
+const decryptedImageCache = new Map<string, string>();
+
+function inferMimeFromUrl(url: string): string {
+  const clean = url.split("?")[0].toLowerCase();
+  if (clean.endsWith(".jpg") || clean.endsWith(".jpeg")) return "image/jpeg";
+  if (clean.endsWith(".png")) return "image/png";
+  if (clean.endsWith(".gif")) return "image/gif";
+  if (clean.endsWith(".webp")) return "image/webp";
+  if (clean.endsWith(".heic")) return "image/heic";
+  return "application/octet-stream";
+}
+
+function useDecryptedSrc(src: string, boardId: string | undefined) {
+  const [decryptedSrc, setDecryptedSrc] = useState<string | null>(() => {
+    if (src.startsWith("data:") || !boardId) return src;
+    return decryptedImageCache.get(`${boardId}::${src}`) || null;
+  });
+  const [decrypting, setDecrypting] = useState<boolean>(!src.startsWith("data:") && !!boardId && !decryptedSrc);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (src.startsWith("data:") || !boardId) {
+      setDecryptedSrc(src);
+      setDecrypting(false);
+      setError(null);
+      return;
+    }
+    const cacheKey = `${boardId}::${src}`;
+    const cached = decryptedImageCache.get(cacheKey);
+    if (cached) {
+      setDecryptedSrc(cached);
+      setDecrypting(false);
+      setError(null);
+      return;
+    }
+    setDecrypting(true);
+    setError(null);
+    decryptAttachment({ boardId, url: src, mimeType: inferMimeFromUrl(src) })
+      .then((next) => {
+        if (cancelled) return;
+        decryptedImageCache.set(cacheKey, next);
+        setDecryptedSrc(next);
+        setDecrypting(false);
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setError(err?.message || "Failed to decrypt image");
+        setDecrypting(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [src, boardId]);
+
+  return { decryptedSrc, decrypting, error };
+}
+
+function DecryptableImage({ src, boardId, onOpen }: { src: string; boardId?: string; onOpen: (src: string, e: React.MouseEvent) => void }) {
+  const { decryptedSrc, decrypting, error } = useDecryptedSrc(src, boardId);
+  if (decrypting) {
+    return <div className="max-h-40 w-full rounded-2xl bg-surface opacity-50" style={{ height: "10rem" }} />;
+  }
+  if (error || !decryptedSrc) {
+    return <div className="max-h-40 w-full rounded-2xl bg-surface text-xs text-secondary flex items-center justify-center" style={{ height: "10rem" }}>⚠ failed</div>;
+  }
+  return (
+    <img
+      src={decryptedSrc}
+      className="max-h-40 w-full rounded-2xl object-contain cursor-zoom-in"
+      onClick={(e) => onOpen(decryptedSrc, e)}
+      role="button"
+      aria-label="View full image"
+    />
+  );
+}
+
 export function TaskMedia({
   task,
   indent = false,
@@ -76,6 +155,11 @@ export function TaskMedia({
   const hasDocuments = Boolean(task.documents && task.documents.length);
   const derivedPreview = useTaskPreview(task);
   const hasPreview = Boolean(derivedPreview);
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const openPreview = useCallback((src: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setPreviewSrc(src);
+  }, []);
 
   if (!noteText && !hasImages && !hasDocuments && !hasPreview) return null;
 
@@ -84,6 +168,9 @@ export function TaskMedia({
 
   return (
     <div className={wrapperClasses}>
+      {previewSrc && (
+        <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />
+      )}
       {noteText && (
         <div
           className={`${noteDetailClass}text-xs text-secondary break-words`}
@@ -95,7 +182,7 @@ export function TaskMedia({
       {hasImages ? (
         <div className="space-y-2">
           {task.images!.map((img, i) => (
-            <img key={i} src={img} className="max-h-40 w-full rounded-2xl object-contain" />
+            <DecryptableImage key={i} src={img} boardId={task.boardId} onOpen={openPreview} />
           ))}
         </div>
       ) : null}

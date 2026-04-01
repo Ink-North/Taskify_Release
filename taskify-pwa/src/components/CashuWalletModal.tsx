@@ -72,7 +72,8 @@ import {
 import { SessionPool } from "../nostr/SessionPool";
 import { NostrSession } from "../nostr/NostrSession";
 import { loadMyLatestProfileEvent, publishMyProfile } from "../nostr/ProfilePublisher";
-import { uploadAvatarToNip96 } from "../nostr/Nip96Client";
+import { uploadAvatarToNip96, uploadAvatar } from "../nostr/Nip96Client";
+import { parseFileServers, findServerEntry, type FileServerType } from "../lib/fileStorage";
 import {
   markHistoryEntrySpentRaw,
   MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
@@ -1747,6 +1748,7 @@ export default function CashuWalletModal({
   mintBackupEnabled: mintBackupEnabledProp,
   contactsSyncEnabled,
   fileStorageServer,
+  fileServers,
   messageItems,
   onAcceptMessage,
   onMaybeMessage,
@@ -1772,6 +1774,7 @@ export default function CashuWalletModal({
   mintBackupEnabled: boolean;
   contactsSyncEnabled: boolean;
   fileStorageServer: string;
+  fileServers?: string;
   messageItems: WalletMessageItem[];
   messagesUnreadCount: number;
   onAcceptMessage: (id: string) => void;
@@ -6317,9 +6320,11 @@ export default function CashuWalletModal({
 
   const profileShareValue = useMemo(() => {
     if (profileSharePayload) return profileSharePayload;
-    const identity = nostrIdentityRef.current;
+    // Read identity directly — not gated by paymentRequestsEnabled so new accounts
+    // without payment requests still get a QR on their contact card.
+    const identity = readNostrIdentity().identity ?? nostrIdentityRef.current;
     return identity ? formatNpub(identity.pubkey) : null;
-  }, [formatNpub, profileSharePayload]);
+  }, [formatNpub, profileSharePayload, readNostrIdentity]);
   const nwcFundInProgress = nwcFundState === "creating" || nwcFundState === "paying" || nwcFundState === "waiting" || nwcFundState === "claiming";
   const nwcWithdrawInProgress = nwcWithdrawState === "requesting" || nwcWithdrawState === "paying";
 
@@ -13054,11 +13059,13 @@ export default function CashuWalletModal({
   }
 
   const contactInitials = (value: string) => {
-    const trimmed = (value || "").trim();
-    if (!trimmed) return "?";
-    const parts = trimmed.split(/\s+/).filter(Boolean);
-    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    const parts = (value || "").trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "?";
+    const cp = parts[0].codePointAt(0) ?? 0;
+    const isEmoji = (cp >= 0x2600 && cp <= 0x27bf) || (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x1f900 && cp <= 0x1f9ff);
+    if (isEmoji) return [...parts[0]][0] ?? "?";
+    if (parts.length === 1) return [...parts[0]].slice(0, 2).join("").toUpperCase();
+    return ([...parts[0]][0] ?? "" + ([...parts[parts.length - 1]][0] ?? "")).toUpperCase();
   };
 
   const contactSubtitle = useCallback(
@@ -13092,7 +13099,11 @@ export default function CashuWalletModal({
   const myCardUsername = formatContactUsername(profileForm.username);
   const myCardName = profileForm.displayName.trim() || myCardUsername || "My Card";
   const myCardLightning = profileForm.lud16.trim() || deriveDefaultLightningAddress();
-  const myCardNpub = nostrIdentityRef.current ? formatNpub(nostrIdentityRef.current.pubkey) : "";
+  const myCardNpub = useMemo(() => {
+    const identity = readNostrIdentity().identity ?? nostrIdentityRef.current;
+    return identity ? formatNpub(identity.pubkey) : "";
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formatNpub, readNostrIdentity, profileSharePayload]);
   const myCardSubtitle =
     myCardLightning || profileForm.nip05.trim() || myCardNpub || "My Card";
   const profileCard = {
@@ -13807,8 +13818,11 @@ export default function CashuWalletModal({
           setProfilePhotoError("");
           setProfileMessage("Uploading profile photo…");
           try {
-            const upload = await uploadAvatarToNip96({
-              serverUrl: preferredFileServer,
+            const servers = parseFileServers(fileServers);
+            const serverEntry = findServerEntry(servers, preferredFileServer)
+              ?? { url: preferredFileServer, type: "nip96" as FileServerType };
+            const upload = await uploadAvatar({
+              serverEntry,
               file: profilePhotoUploadRef.current.blob,
               filename: profilePhotoUploadRef.current.name || "avatar.jpg",
               contentType: profilePhotoUploadRef.current.contentType,
@@ -13898,6 +13912,7 @@ export default function CashuWalletModal({
       ensureNostrIdentity,
       nostrMissingReason,
       preferredFileServer,
+      fileServers,
       profileForm,
       publishContactsToNostr,
       publishProfileMetadata,
@@ -13907,7 +13922,7 @@ export default function CashuWalletModal({
       setProfileStatus,
       setProfileForm,
       upsertContact,
-      uploadAvatarToNip96,
+      uploadAvatar,
     ],
   );
 

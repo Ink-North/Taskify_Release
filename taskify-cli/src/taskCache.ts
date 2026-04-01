@@ -33,12 +33,16 @@ export type CachedTask = {
   bounty?: object;
   reminders?: string[];
   inboxItem?: boolean;
-  assignees?: string[];
+  assignees?: Array<{ pubkey: string; relay?: string; status?: "pending" | "accepted" | "declined" | "tentative"; respondedAt?: number }>;
+  documents?: Record<string, unknown>[];
+  deleted?: boolean;
 };
 
 export type BoardCache = {
   tasks: CachedTask[];
   fetchedAt: number;
+  /** Unix seconds: highest created_at seen from relays. Used as `since` on next incremental fetch. */
+  lastSyncAt?: number;
 };
 
 export type TaskCache = {

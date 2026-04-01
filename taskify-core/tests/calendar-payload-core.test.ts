@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeCalendarEventPayload } from "../src/calendarPayload.ts";
+import { normalizeCalendarEventPayload, normalizeDelimitedValues, normalizeLocationList } from "../src/calendarPayload.ts";
 
 test("normalizeCalendarEventPayload accepts valid time payload", () => {
   const out = normalizeCalendarEventPayload({
@@ -46,4 +46,14 @@ test("normalizeCalendarEventPayload drops non-increasing timed end", () => {
   });
   assert.ok(out);
   assert.equal(out?.endISO, undefined);
+});
+
+test("normalizeDelimitedValues trims, strips prefixes, and dedupes", () => {
+  const out = normalizeDelimitedValues(" #alpha, beta\n#alpha ", /[,\n]+/g, { stripPrefix: "#" });
+  assert.deepEqual(out, ["alpha", "beta"]);
+});
+
+test("normalizeLocationList trims and drops empty entries", () => {
+  assert.deepEqual(normalizeLocationList([" HQ ", "", "  ", "Remote"]), ["HQ", "Remote"]);
+  assert.equal(normalizeLocationList([" ", ""]), undefined);
 });

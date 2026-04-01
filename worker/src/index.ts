@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 import { getPreviewFromContent } from "link-preview-js";
+import { schnorr } from "@noble/curves/secp256k1.js";
 interface R2ObjectBody {
   body: ReadableStream<Uint8Array> | null;
   text(): Promise<string>;
@@ -42,6 +43,15 @@ export interface Env {
   VAPID_PRIVATE_KEY: string | KVNamespace;
   VAPID_SUBJECT: string;
   TASKIFY_BACKUPS?: R2Bucket;
+  GEMINI_API_KEY?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_API_TOKEN?: string;
+  GCAL_CLIENT_ID: string;
+  GCAL_CLIENT_SECRET: string;
+  GCAL_TOKEN_ENC_KEY: string;
+  GCAL_TOKEN_ENC_KEY_PREV?: string;
+  GCAL_WEBHOOK_SECRET: string;
+  GCAL_KEY_VERSION?: string;  // current key version number as string, default "1"
 }
 
 type PushPlatform = "ios" | "android";
@@ -160,6 +170,51 @@ const THREE_MONTHS_MS = 90 * 24 * 60 * MINUTE_MS;
 const ONE_WEEK_MS = 7 * 24 * 60 * MINUTE_MS;
 const BACKUP_CLEANUP_STATE_KEY = "backups-cleanup-state.json";
 
+const VOICE_MAX_SESSIONS_PER_DAY = 10;
+const VOICE_MAX_SECONDS_PER_DAY = 300;
+
+const VOICE_TEST_BYPASS_NPUBS = new Set([
+  "npub13p5mg2wszus5nt7seldn8d6dnppvf3xqe5q2vsq076r2ysvh93eqwhgqdm",
+  "npub1f4t6089m5zhljvrurfuc8ceymlr6yzrdljxz9yaskyj8r8s536ns6rv35g",
+]);
+const GEMINI_MODEL_PRIMARY = "gemini-3.1-flash-lite-preview";
+const GEMINI_MODEL_FALLBACK_1 = "gemini-3-flash-preview";
+const GEMINI_MODEL_FALLBACK_2 = "gemini-2.5-flash";
+
+type TaskCandidate = {
+  id: string;
+  title: string;
+  dueText?: string;
+  boardId?: string;
+  subtasks?: string[];
+  status: "draft" | "confirmed" | "dismissed";
+};
+
+type TaskOperation = {
+  type: "create_task" | "update_task" | "delete_task" | "mark_uncertain";
+  title?: string;
+  dueText?: string;
+  subtasks?: string[];
+  targetRef?: string;
+  changes?: Partial<Pick<TaskCandidate, "title" | "dueText" | "boardId" | "subtasks">>;
+};
+
+type FinalTask = {
+  title: string;
+  dueISO?: string;
+  boardId?: string;
+  notes?: string;
+  subtasks?: string[];
+  priority?: 1 | 2 | 3;
+};
+
+type VoiceQuotaRow = {
+  npub: string;
+  date: string;
+  session_count: number;
+  total_seconds: number;
+};
+
 let cachedPrivateKey: CryptoKey | null = null;
 const PRIVATE_KEY_KV_KEYS = ["VAPID_PRIVATE_KEY", "private-key", "key"] as const;
 let schemaReadyPromise: Promise<void> | null = null;
@@ -226,6 +281,18 @@ async function ensureSchema(env: Env): Promise<void> {
 
     await db.prepare(`CREATE INDEX IF NOT EXISTS idx_reminders_send_at ON reminders(send_at)`).run();
     await db.prepare(`CREATE INDEX IF NOT EXISTS idx_pending_device ON pending_notifications(device_id)`).run();
+
+    await db.prepare(
+      `CREATE TABLE IF NOT EXISTS voice_quota (
+         npub          TEXT    NOT NULL,
+         date          TEXT    NOT NULL,
+         session_count INTEGER NOT NULL DEFAULT 0,
+         total_seconds INTEGER NOT NULL DEFAULT 0,
+         PRIMARY KEY (npub, date)
+       )`,
+    ).run();
+
+    await ensureGcalSchema(env);
   })()
     .catch((err) => {
       schemaReadyPromise = null;
@@ -257,7 +324,7 @@ function parseNip05Address(input: string | null | undefined): { name: string; do
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: SchedulerController): Promise<Response> {
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -306,6 +373,42 @@ export default {
       if (url.pathname === "/api/backups" && request.method === "GET") {
         return await handleLoadBackup(url, env);
       }
+      if (url.pathname === "/api/voice/extract" && request.method === "POST") {
+        return await handleVoiceExtract(request, env);
+      }
+      if (url.pathname === "/api/voice/finalize" && request.method === "POST") {
+        return await handleVoiceFinalize(request, env);
+      }
+      // Google Calendar routes
+      if (url.pathname === "/api/gcal/auth/url" && request.method === "GET") {
+        return await handleGcalAuthUrl(request, env);
+      }
+      if (url.pathname === "/api/gcal/auth/callback" && request.method === "GET") {
+        return await handleGcalAuthCallback(request, env);
+      }
+      if (url.pathname === "/api/gcal/connection" && request.method === "DELETE") {
+        return await handleGcalDisconnect(request, env);
+      }
+      if (url.pathname === "/api/gcal/status" && request.method === "GET") {
+        return await handleGcalStatus(request, env);
+      }
+      if (url.pathname === "/api/gcal/calendars" && request.method === "GET") {
+        return await handleGcalCalendars(request, env);
+      }
+      if (url.pathname.startsWith("/api/gcal/calendars/") && request.method === "PATCH") {
+        const calendarId = decodeURIComponent(url.pathname.substring("/api/gcal/calendars/".length));
+        return await handleGcalToggleCalendar(request, env, calendarId);
+      }
+      if (url.pathname === "/api/gcal/events" && request.method === "GET") {
+        return await handleGcalEvents(request, env);
+      }
+      if (url.pathname === "/api/gcal/sync" && request.method === "POST") {
+        return await handleGcalSync(request, env);
+      }
+      if (url.pathname.startsWith("/api/gcal/webhook/") && request.method === "POST") {
+        const channelId = decodeURIComponent(url.pathname.substring("/api/gcal/webhook/".length));
+        return await handleGcalWebhook(request, env, channelId, ctx);
+      }
     } catch (err) {
       console.error("Worker error", err);
       return jsonResponse({ error: (err as Error).message || "Internal error" }, 500);
@@ -320,6 +423,8 @@ export default {
         await ensureSchema(env);
         await processDueReminders(env);
         await cleanupExpiredBackups(env);
+        await gcalRenewExpiredWatches(env);
+        await gcalRetryFailedSyncs(env);
       } catch (err) {
         console.error('Scheduled task failed', { cron: event?.cron, error: err instanceof Error ? err.message : String(err) });
         throw err;
@@ -2919,6 +3024,589 @@ async function importRawVapidPrivateKey(env: Env, scalar: Uint8Array): Promise<C
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Voice dictation helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function utcDateString(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/**
+ * Rule-based fallback: split transcript on commas / "and" / "also" to produce
+ * create_task operations without any AI. Used when Gemini is unavailable or
+ * quota is exhausted.
+ */
+function ruleBasedOperations(transcript: string): TaskOperation[] {
+  const segments = transcript
+    .split(/,|\band\b|\balso\b/i)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return segments.map((title) => ({ type: "create_task" as const, title }));
+}
+
+function isGarbageTaskTitle(title: string): boolean {
+  const t = title.trim().toLowerCase();
+  if (!t) return true;
+  if (t.length < 4) return true;
+  if (/^(and|also|then|so|i|i\s+need|i\s+have|uh|um|like)$/.test(t)) return true;
+  return false;
+}
+
+function cleanupTaskTitle(raw: string): string {
+  let title = raw.trim();
+  title = title.replace(/^(?:and\s+then|and|then|also)\s+/i, "");
+  title = title.replace(/^(?:i\s+need\s+to|i\s+have\s+to|i(?:'| a)?m\s+going\s+to|i\s+can(?:not|'?t)\s+forget\s+to|there(?:'s|\s+is)\s+|we\s+have\s+(?:a\s+)?)\s*/i, "");
+  title = title.replace(/^to\s+/i, "");
+  title = title.replace(/\s+/g, " ").trim();
+  return title;
+}
+
+function extractPickupItems(title: string): string[] {
+  const m = title.match(/^(?:pick\s+up|get|buy)\s+(?:some\s+)?(.+)$/i);
+  if (!m) return [];
+  const raw = m[1].trim();
+  if (!raw) return [];
+  const splitByDelims = raw.split(/,|\band\b/i).map((v) => v.trim()).filter(Boolean);
+  if (splitByDelims.length > 1) return splitByDelims;
+  return [];
+}
+
+function normalizeSubtasks(input: unknown): string[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const out = input
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .filter((v) => v.length > 0);
+  return out.length ? out : undefined;
+}
+
+function dedupe(values: string[] | undefined): string[] | undefined {
+  if (!values?.length) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of values) {
+    const key = v.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out.length ? out : undefined;
+}
+
+function applyTranscriptCorrections(operations: TaskOperation[], transcript: string): TaskOperation[] {
+  if (!operations.length) return operations;
+  const out = [...operations];
+  const lower = transcript.toLowerCase();
+
+  const correction = lower.match(/actually\s+change\s+the\s+([^.,;]+?)\s+to\s+([^.,;]+)/i);
+  if (correction) {
+    const targetPhrase = correction[1].trim();
+    const newTime = correction[2].trim();
+    const targetIdx = out.findIndex((op) =>
+      op.type === "create_task" &&
+      typeof op.title === "string" &&
+      op.title.toLowerCase().includes(targetPhrase.replace(/\b(noon|midnight|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i, "").trim()),
+    );
+    if (targetIdx >= 0) {
+      const priorDue = out[targetIdx].dueText ?? "";
+      const day = priorDue.match(/\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+sunday|next\s+monday|next\s+tuesday|next\s+wednesday|next\s+thursday|next\s+friday|next\s+saturday)\b/i)?.[0];
+      out[targetIdx] = {
+        ...out[targetIdx],
+        dueText: day ? `${day} at ${newTime}` : newTime,
+      };
+    }
+  }
+
+  return out;
+}
+
+function toOperationsFromStructuredTasks(result: unknown): TaskOperation[] {
+  const tasks = Array.isArray((result as any)?.tasks) ? ((result as any).tasks as any[]) : [];
+  if (!tasks.length) return [];
+  const operations: TaskOperation[] = [];
+
+  for (const t of tasks) {
+    let title = typeof t?.title === "string" ? cleanupTaskTitle(t.title) : "";
+    if (isGarbageTaskTitle(title)) continue;
+
+    let dueText = typeof t?.dueText === "string" && t.dueText.trim() ? t.dueText.trim() : undefined;
+    let subtasks = normalizeSubtasks(t?.subtasks);
+
+    const groceryContext = /grocery|groceries|store|shopping|supermarket/i.test(`${title} ${dueText ?? ""}`);
+    const pickupItems = extractPickupItems(title);
+    if (groceryContext && pickupItems.length) {
+      const prev = operations[operations.length - 1];
+      if (prev?.type === "create_task" && /grocery|store|shopping/i.test(prev.title || "")) {
+        prev.subtasks = dedupe([...(prev.subtasks || []), ...pickupItems]);
+        continue;
+      }
+      title = "Go to the grocery store";
+      subtasks = dedupe([...(subtasks || []), ...pickupItems]);
+    }
+
+    const inlineDue = title.match(/\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+    if (inlineDue && !dueText) {
+      dueText = inlineDue[1];
+      title = title.replace(new RegExp(`\\b${inlineDue[1]}\\b`, "i"), "").replace(/\s+/g, " ").trim();
+    }
+
+    const dayPrefix = title.match(/^(tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b\s*(.*)$/i);
+    if (dayPrefix) {
+      if (!dueText) dueText = dayPrefix[1];
+      if (dayPrefix[2]) title = dayPrefix[2].trim();
+    }
+
+    const birthday = title.match(/^([A-Za-z][A-Za-z' -]{1,40})\s+has\s+a\s+birthday\s+party/i);
+    if (birthday) {
+      const who = birthday[1].trim().replace(/\s+/g, " ");
+      title = `${who}'s birthday party`;
+    }
+    const birthdayFor = title.match(/^birthday\s+party(?:\s+for)?\s+([A-Za-z][A-Za-z' -]{1,40})/i);
+    if (birthdayFor) {
+      const who = birthdayFor[1].trim().replace(/\s+/g, " ");
+      title = `Birthday party for ${who}`;
+    }
+
+    const dinnerAfterChurch = title.match(/dinner\s+after\s+church/i);
+    if (dinnerAfterChurch) {
+      title = "Dinner after church";
+    }
+
+    if (isGarbageTaskTitle(title)) continue;
+    operations.push({ type: "create_task", title, dueText, subtasks });
+  }
+
+  return operations;
+}
+
+function parseTaskPriority(value: unknown): 1 | 2 | 3 | undefined {
+  const n = typeof value === "number" ? Math.round(value) : Number(value);
+  if (n === 1 || n === 2 || n === 3) return n;
+  return undefined;
+}
+
+function parseDueTextFallback(dueText: string, referenceDate: string, referenceOffsetMinutes = 0): string | undefined {
+  const text = dueText.trim().toLowerCase();
+  if (!text) return undefined;
+
+  const refUtcMs = Date.parse(referenceDate);
+  const safeRefUtcMs = Number.isNaN(refUtcMs) ? Date.now() : refUtcMs;
+  const safeOffsetMinutes = Number.isFinite(referenceOffsetMinutes) ? referenceOffsetMinutes : 0;
+
+  // Represent user's local wall-clock time on a UTC-based Date object.
+  const localNow = new Date(safeRefUtcMs - safeOffsetMinutes * 60_000);
+
+  const dayMap: Record<string, number> = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6,
+  };
+
+  const dayMatch = text.match(/\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/);
+  if (!dayMatch) return undefined;
+
+  const targetLocal = new Date(localNow.getTime());
+  const dayWord = dayMatch[1];
+
+  if (dayWord === "tomorrow") {
+    targetLocal.setUTCDate(targetLocal.getUTCDate() + 1);
+  } else if (dayWord !== "today" && dayWord !== "tonight") {
+    const targetDow = dayMap[dayWord];
+    const currentDow = targetLocal.getUTCDay();
+    let delta = (targetDow - currentDow + 7) % 7;
+    if (delta === 0) delta = 7;
+    targetLocal.setUTCDate(targetLocal.getUTCDate() + delta);
+  }
+
+  let hours: number | undefined;
+  let minutes = 0;
+
+  if (/\bnoon\b/.test(text)) {
+    hours = 12;
+  } else if (/\bmidnight\b/.test(text)) {
+    hours = 0;
+  } else {
+    const tm = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
+    if (tm) {
+      const h = Number(tm[1]);
+      const m = tm[2] ? Number(tm[2]) : 0;
+      if (h >= 1 && h <= 12 && m >= 0 && m <= 59) {
+        hours = h % 12;
+        if (tm[3] === "pm") hours += 12;
+        minutes = m;
+      }
+    }
+  }
+
+  if (hours === undefined) return undefined;
+
+  const y = targetLocal.getUTCFullYear();
+  const m = targetLocal.getUTCMonth();
+  const d = targetLocal.getUTCDate();
+
+  // local wall-clock -> UTC
+  const utcMs = Date.UTC(y, m, d, hours, minutes, 0, 0) + safeOffsetMinutes * 60_000;
+  return new Date(utcMs).toISOString();
+}
+
+async function getVoiceQuota(db: D1Database, npub: string, date: string): Promise<VoiceQuotaRow | null> {
+  return db
+    .prepare<VoiceQuotaRow>("SELECT npub, date, session_count, total_seconds FROM voice_quota WHERE npub = ? AND date = ?")
+    .bind(npub, date)
+    .first<VoiceQuotaRow>();
+}
+
+async function incrementVoiceQuota(db: D1Database, npub: string, date: string, addSeconds: number): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO voice_quota (npub, date, session_count, total_seconds)
+       VALUES (?, ?, 1, ?)
+       ON CONFLICT(npub, date) DO UPDATE SET
+         session_count = session_count + 1,
+         total_seconds = total_seconds + ?`,
+    )
+    .bind(npub, date, addSeconds, addSeconds)
+    .run();
+}
+
+/**
+ * Call Gemini 2.0 Flash and parse the JSON embedded in the first candidate's
+ * text part. Returns null on any error (network, parse, unexpected shape).
+ */
+function parseJsonStringSafely(text: unknown): unknown | null {
+  if (typeof text !== "string") return null;
+  const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+  try {
+    return JSON.parse(stripped);
+  } catch {
+    return null;
+  }
+}
+
+async function callGemini(apiKey: string, prompt: string): Promise<unknown | null> {
+  const models = [GEMINI_MODEL_PRIMARY, GEMINI_MODEL_FALLBACK_1, GEMINI_MODEL_FALLBACK_2];
+
+  for (const model of models) {
+    let response: Response;
+    try {
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.1,
+              maxOutputTokens: 1024,
+              responseMimeType: "application/json",
+            },
+          }),
+        },
+      );
+    } catch {
+      continue;
+    }
+
+    if (!response.ok) continue;
+
+    let json: unknown;
+    try {
+      json = await response.json();
+    } catch {
+      continue;
+    }
+    const text = (json as any)?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const parsed = parseJsonStringSafely(text);
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
+
+async function callCloudflareGlmFallback(env: Env, prompt: string): Promise<unknown | null> {
+  const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const apiToken = env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!accountId || !apiToken) return null;
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/zai-org/glm-4.7-flash`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiToken}`,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 1024,
+          temperature: 0.1,
+        }),
+      },
+    );
+  } catch {
+    return null;
+  }
+
+  if (!response.ok) return null;
+
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch {
+    return null;
+  }
+
+  // Workers AI chat responses may place text in result.response or result.output_text
+  const text = (json as any)?.result?.response
+    ?? (json as any)?.result?.output_text
+    ?? (json as any)?.response;
+
+  return parseJsonStringSafely(text);
+}
+
+async function callVoiceModelWithFallback(env: Env, prompt: string): Promise<unknown | null> {
+  if (env.GEMINI_API_KEY) {
+    const gemini = await callGemini(env.GEMINI_API_KEY, prompt);
+    if (gemini) return gemini;
+  }
+  return callCloudflareGlmFallback(env, prompt);
+}
+
+async function handleVoiceExtract(request: Request, env: Env): Promise<Response> {
+  if (!env.GEMINI_API_KEY && !(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN)) {
+    return jsonResponse({ error: "Voice extraction is not configured" }, 501);
+  }
+
+  const body = await parseJson(request);
+  const npub = typeof body?.npub === "string" ? body.npub.trim() : "";
+  const transcript = typeof body?.transcript === "string" ? body.transcript.trim() : "";
+  const candidates: TaskCandidate[] = Array.isArray(body?.candidates) ? body.candidates : [];
+  const sessionDurationSeconds: number =
+    typeof body?.sessionDurationSeconds === "number" && Number.isFinite(body.sessionDurationSeconds)
+      ? Math.max(0, body.sessionDurationSeconds)
+      : 0;
+
+  if (!npub) {
+    return jsonResponse({ error: "npub is required" }, 400);
+  }
+  if (!/^npub1[0-9a-z]+$/i.test(npub)) {
+    return jsonResponse({ error: "npub must be a valid bech32 npub" }, 400);
+  }
+  if (!transcript) {
+    return jsonResponse({ error: "transcript must be a non-empty string" }, 400);
+  }
+
+  const npubNormalized = npub.trim().toLowerCase();
+  const bypassQuota = VOICE_TEST_BYPASS_NPUBS.has(npubNormalized);
+
+  const db = requireDb(env);
+  const today = utcDateString();
+  const quota = await getVoiceQuota(db, npub, today);
+
+  const currentSessions = quota?.session_count ?? 0;
+  const currentSeconds = quota?.total_seconds ?? 0;
+  const projectedSessions = currentSessions + 1;
+  const projectedSeconds = currentSeconds + sessionDurationSeconds;
+
+  const overQuota = !bypassQuota && (
+    projectedSessions > VOICE_MAX_SESSIONS_PER_DAY ||
+    projectedSeconds > VOICE_MAX_SECONDS_PER_DAY
+  );
+
+  if (overQuota) {
+    return jsonResponse(
+      { error: "quota_exceeded", message: "Voice extraction unavailable right now. Please try again later." },
+      429,
+    );
+  }
+
+  const prompt = `Extract actionable tasks from this full voice transcript.
+
+Transcript: "${transcript}"
+
+Return ONLY JSON in this exact shape:
+{
+  "tasks": [
+    { "title": string, "dueText": string|null, "subtasks": string[] }
+  ]
+}
+
+Rules:
+- Prefer fewer, high-quality tasks. Do not split one task into fragments.
+- Never keep leading fragments in titles (drop/clean: "I need to", "then", "and then", "then tomorrow", "then Friday", "we have", "there's").
+- If user says grocery/shopping item lists, keep ONE parent task and put items in subtasks.
+- Keep relative date/time phrases in dueText (e.g. "tomorrow 2:00 PM", "Friday at noon", "today at 5 PM").
+- Apply in-sentence corrections: if user says "actually change X to Y", update the earlier task for X.
+- Keep title nouns concise and board-ready.
+- Good title examples: "Go to the grocery store", "Birthday party for Ashley", "Play date", "Dinner after church", "Get dogs from Gran Gran's".
+- Bad titles: "then I", "also", "and", "next Sunday at 2 PM we have...".
+- If no valid tasks exist, return {"tasks":[]}.
+
+Output JSON only.`;
+
+  const result = await callVoiceModelWithFallback(env, prompt);
+  if (!result) {
+    return jsonResponse({ error: "gemini_unavailable", message: "Voice extraction unavailable right now. Please try again later." }, 503);
+  }
+
+  let operations = toOperationsFromStructuredTasks(result);
+
+  if (!operations.length && Array.isArray((result as any).operations)) {
+    operations = (result as any).operations as TaskOperation[];
+  }
+
+  operations = applyTranscriptCorrections(operations, transcript);
+
+  // Increment quota on successful (non-quota-exceeded) path
+  await incrementVoiceQuota(db, npub, today, sessionDurationSeconds);
+
+  return jsonResponse({ operations });
+}
+
+async function handleVoiceFinalize(request: Request, env: Env): Promise<Response> {
+  if (!env.GEMINI_API_KEY && !(env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN)) {
+    return jsonResponse({ error: "Voice finalization is not configured" }, 501);
+  }
+
+  const body = await parseJson(request);
+  const npub = typeof body?.npub === "string" ? body.npub.trim() : "";
+  const rawCandidates: unknown = body?.candidates;
+  const boardId = typeof body?.boardId === "string" ? body.boardId : undefined;
+  const referenceDate =
+    typeof body?.referenceDate === "string" && body.referenceDate
+      ? body.referenceDate
+      : new Date().toISOString();
+  const referenceTimeZone =
+    typeof body?.referenceTimeZone === "string" && body.referenceTimeZone.trim()
+      ? body.referenceTimeZone.trim()
+      : "UTC";
+  const referenceOffsetMinutes =
+    typeof body?.referenceOffsetMinutes === "number" && Number.isFinite(body.referenceOffsetMinutes)
+      ? body.referenceOffsetMinutes
+      : 0;
+
+  if (!npub) {
+    return jsonResponse({ error: "npub is required" }, 400);
+  }
+  if (!/^npub1[0-9a-z]+$/i.test(npub)) {
+    return jsonResponse({ error: "npub must be a valid bech32 npub" }, 400);
+  }
+  if (!Array.isArray(rawCandidates) || rawCandidates.length === 0) {
+    return jsonResponse({ error: "candidates must be a non-empty array" }, 400);
+  }
+
+  const confirmed = (rawCandidates as TaskCandidate[]).filter(
+    (c) => c && typeof c === "object" && c.status === "confirmed",
+  );
+
+  if (confirmed.length === 0) {
+    return jsonResponse({ error: "No confirmed candidates to finalize" }, 400);
+  }
+
+  const tasks: FinalTask[] = [];
+
+  const batchPrompt = `You are a Taskify task/event finalization assistant.
+
+Reference date (user local now): ${referenceDate}
+User time zone: ${referenceTimeZone}
+User UTC offset minutes (Date.getTimezoneOffset): ${referenceOffsetMinutes}
+
+Candidates:
+${JSON.stringify(
+    confirmed.map((c) => ({
+      id: c.id,
+      title: c.title,
+      dueText: c.dueText ?? null,
+      subtasks: c.subtasks ?? [],
+      boardId: c.boardId ?? boardId ?? null,
+    })),
+  )}
+
+Return ONLY JSON with exact shape:
+{
+  "tasks": [
+    {
+      "id": string,
+      "title": string,
+      "dueISO": string | null,
+      "subtasks": string[],
+      "notes": string | null,
+      "boardId": string | null,
+      "priority": 1 | 2 | 3 | null
+    }
+  ]
+}
+
+Rules:
+- Return one finalized output item for every input candidate id.
+- Fill all fields for each item.
+- If dueText contains a date/time intent (e.g. "tomorrow 2 PM", "Friday at noon"), dueISO MUST be a valid ISO-8601 UTC datetime.
+- Use dueISO null only when there is truly no parseable date/time intent.
+- Priority defaults to null.
+- Only set priority to 1/2/3 when the user language clearly implies urgency/importance.
+- Do NOT infer priority from normal planning language.
+- Keep title clean and action-oriented.
+- Preserve checklist-like nouns as subtasks.
+- No markdown, no prose.`;
+
+  const batchResult = await callVoiceModelWithFallback(env, batchPrompt);
+  if (!batchResult) {
+    return jsonResponse({ error: "gemini_unavailable", message: "Voice finalization unavailable right now. Please try again later." }, 503);
+  }
+  const batchTasks = Array.isArray((batchResult as any)?.tasks) ? (batchResult as any).tasks as any[] : [];
+  const batchById = new Map<string, any>();
+  for (const t of batchTasks) {
+    const id = typeof t?.id === "string" ? t.id : "";
+    if (id) batchById.set(id, t);
+  }
+
+  for (const candidate of confirmed) {
+    const fromBatch = batchById.get(candidate.id);
+    let normalizedTitle = candidate.title;
+    let dueISO: string | undefined;
+    let subtasks = candidate.subtasks;
+    let notes: string | undefined;
+    let normalizedBoardId = candidate.boardId ?? boardId;
+    let priority: 1 | 2 | 3 | undefined;
+
+    if (fromBatch && typeof fromBatch.title === "string" && fromBatch.title.trim()) {
+      normalizedTitle = fromBatch.title.trim();
+    }
+    if (fromBatch && typeof fromBatch.dueISO === "string") {
+      const candidateDue = fromBatch.dueISO.trim();
+      if (candidateDue && !Number.isNaN(Date.parse(candidateDue))) {
+        dueISO = candidateDue;
+      }
+    }
+    if (fromBatch && typeof fromBatch.notes === "string" && fromBatch.notes.trim()) {
+      notes = fromBatch.notes.trim();
+    }
+    if (fromBatch && typeof fromBatch.boardId === "string" && fromBatch.boardId.trim()) {
+      normalizedBoardId = fromBatch.boardId.trim();
+    }
+    priority = parseTaskPriority(fromBatch?.priority);
+    subtasks = normalizeSubtasks(fromBatch?.subtasks) ?? subtasks;
+
+    tasks.push({
+      title: normalizedTitle,
+      dueISO,
+      boardId: normalizedBoardId,
+      notes,
+      subtasks,
+      priority,
+    });
+  }
+
+  return jsonResponse({ tasks });
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -3027,3 +3715,1043 @@ function normalizeVapidSubject(subjectRaw: string): string {
 
   return trimmed;
 }
+
+// =============================================================================
+// Google Calendar Integration
+// =============================================================================
+
+// --- gcalCrypto helpers -------------------------------------------------------
+
+// AES-256-GCM encrypt. Returns { enc, iv, tag } all base64url strings.
+async function gcalEncryptToken(
+  plaintext: string,
+  keyHex: string,
+): Promise<{ enc: string; iv: string; tag: string }> {
+  const keyBytes = hexToBytes(keyHex);
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyBytes,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt"],
+  );
+  const ivBuf = new ArrayBuffer(12);
+  const iv = new Uint8Array(ivBuf);
+  crypto.getRandomValues(iv);
+  const encoded = new TextEncoder().encode(plaintext);
+  // AES-GCM in Web Crypto appends 16-byte tag to ciphertext
+  const cipherWithTag = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: ivBuf, tagLength: 128 },
+    cryptoKey,
+    encoded,
+  );
+  const cipherArr = new Uint8Array(cipherWithTag);
+  const enc = base64UrlEncode(cipherArr.slice(0, cipherArr.length - 16));
+  const tag = base64UrlEncode(cipherArr.slice(cipherArr.length - 16));
+  return { enc, iv: base64UrlEncode(iv), tag };
+}
+
+// AES-256-GCM decrypt. Takes { enc, iv, tag } base64url strings + keyHex.
+async function gcalDecryptToken(
+  enc: string,
+  iv: string,
+  tag: string,
+  keyHex: string,
+): Promise<string> {
+  const keyBytes = hexToBytes(keyHex);
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyBytes,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"],
+  );
+  const encBytes = base64UrlDecode(enc);
+  const tagBytes = base64UrlDecode(tag);
+  const ivBytes = base64UrlDecode(iv);
+  // Web Crypto expects ciphertext + tag concatenated
+  const cipherBuf = new ArrayBuffer(encBytes.length + tagBytes.length);
+  const cipherWithTag = new Uint8Array(cipherBuf);
+  cipherWithTag.set(encBytes);
+  cipherWithTag.set(tagBytes, encBytes.length);
+  const ivBuf = new ArrayBuffer(ivBytes.length);
+  new Uint8Array(ivBuf).set(ivBytes);
+  const plainBuf = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: ivBuf, tagLength: 128 },
+    cryptoKey,
+    cipherBuf,
+  );
+  return new TextDecoder().decode(plainBuf);
+}
+
+// Get the right key hex for a given keyVersion, falling back to PREV during rotation.
+function gcalGetKeyForVersion(version: number, env: Env): string {
+  const current = gcalCurrentKeyVersion(env);
+  if (version === current) {
+    return env.GCAL_TOKEN_ENC_KEY;
+  }
+  if (env.GCAL_TOKEN_ENC_KEY_PREV) {
+    return env.GCAL_TOKEN_ENC_KEY_PREV;
+  }
+  throw new Error(`No key available for version ${version}`);
+}
+
+// Get the current key version number (from env.GCAL_KEY_VERSION, default 1).
+function gcalCurrentKeyVersion(env: Env): number {
+  const v = parseInt(env.GCAL_KEY_VERSION ?? "1", 10);
+  return Number.isFinite(v) && v > 0 ? v : 1;
+}
+
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
+  if (hex.length % 2 !== 0) throw new Error("Invalid hex string");
+  const buf = new ArrayBuffer(hex.length / 2);
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+// --- NIP-01 auth verification helper -----------------------------------------
+
+// Minimal bech32 decode for npub (no checksum verification — sufficient for auth use)
+const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+function bech32Decode(str: string): { hrp: string; data: Uint8Array } | null {
+  const s = str.toLowerCase();
+  const sep = s.lastIndexOf("1");
+  if (sep < 1 || sep + 7 > s.length) return null;
+  const hrp = s.slice(0, sep);
+  const dataPart = s.slice(sep + 1);
+  // Decode 5-bit words (strip 6-char checksum suffix)
+  const words: number[] = [];
+  for (let i = 0; i < dataPart.length - 6; i++) {
+    const idx = BECH32_CHARSET.indexOf(dataPart[i]);
+    if (idx < 0) return null;
+    words.push(idx);
+  }
+  // Convert 5-bit groups → 8-bit bytes
+  let acc = 0, bits = 0;
+  const bytes: number[] = [];
+  for (const w of words) {
+    acc = (acc << 5) | w;
+    bits += 5;
+    while (bits >= 8) {
+      bits -= 8;
+      bytes.push((acc >> bits) & 0xff);
+    }
+  }
+  return { hrp, data: new Uint8Array(bytes) };
+}
+
+// Accept either raw 64-hex pubkey or bech32 "npub1…" string → lowercase hex
+function npubToHex(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) return trimmed.toLowerCase();
+  const decoded = bech32Decode(trimmed);
+  if (!decoded || decoded.hrp !== "npub" || decoded.data.length !== 32) return null;
+  return [...decoded.data].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// NIP-01 Schnorr request authentication
+// Headers: X-Taskify-Npub, X-Taskify-Timestamp, X-Taskify-Sig
+// Sig is a hex Schnorr signature over SHA-256(timestamp + "." + body)
+// GET requests use empty string as body.
+async function verifyGcalAuth(request: Request): Promise<{ npub: string } | null> {
+  const npubHeader = request.headers.get("X-Taskify-Npub");
+  const tsHeader = request.headers.get("X-Taskify-Timestamp");
+  const sigHeader = request.headers.get("X-Taskify-Sig");
+
+  if (!npubHeader || !tsHeader || !sigHeader) return null;
+
+  const ts = parseInt(tsHeader, 10);
+  if (!Number.isFinite(ts)) return null;
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - ts) > 300) return null;
+
+  const pubkeyHex = npubToHex(npubHeader);
+  if (!pubkeyHex) return null;
+
+  // Compute signing payload: SHA-256(timestamp + "." + body)
+  const body = await request.clone().text();
+  const payload = `${ts}.${body}`;
+  const msgHashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
+  const msgHash = new Uint8Array(msgHashBuf);
+
+  try {
+    const valid = schnorr.verify(hexToBytes(sigHeader), msgHash, hexToBytes(pubkeyHex));
+    if (!valid) return null;
+  } catch {
+    return null;
+  }
+
+  return { npub: pubkeyHex };
+}
+
+// --- ensureGcalSchema --------------------------------------------------------
+
+async function ensureGcalSchema(env: Env): Promise<void> {
+  const db = requireDb(env);
+
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS gcal_connections (
+       npub              TEXT    PRIMARY KEY,
+       google_email      TEXT    NOT NULL,
+       access_token_enc  TEXT    NOT NULL,
+       access_token_iv   TEXT    NOT NULL,
+       access_token_tag  TEXT    NOT NULL,
+       refresh_token_enc TEXT    NOT NULL,
+       refresh_token_iv  TEXT    NOT NULL,
+       refresh_token_tag TEXT    NOT NULL,
+       token_expiry      INTEGER NOT NULL,
+       key_version       INTEGER NOT NULL DEFAULT 1,
+       status            TEXT    NOT NULL DEFAULT 'active',
+       last_sync_at      INTEGER,
+       last_error        TEXT,
+       created_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+       updated_at        INTEGER NOT NULL DEFAULT (unixepoch())
+     )`,
+  ).run();
+
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS gcal_calendars (
+       id               TEXT    PRIMARY KEY,
+       npub             TEXT    NOT NULL,
+       provider_cal_id  TEXT    NOT NULL,
+       name             TEXT    NOT NULL,
+       primary_cal      INTEGER NOT NULL DEFAULT 0,
+       selected         INTEGER NOT NULL DEFAULT 1,
+       color            TEXT,
+       timezone         TEXT,
+       sync_token       TEXT,
+       watch_channel_id TEXT,
+       watch_expiry     INTEGER,
+       created_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+       updated_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+       FOREIGN KEY (npub) REFERENCES gcal_connections(npub) ON DELETE CASCADE,
+       UNIQUE (npub, provider_cal_id)
+     )`,
+  ).run();
+
+  await db.prepare(
+    `CREATE INDEX IF NOT EXISTS idx_gcal_calendars_npub ON gcal_calendars(npub)`,
+  ).run();
+  await db.prepare(
+    `CREATE INDEX IF NOT EXISTS idx_gcal_calendars_watch ON gcal_calendars(watch_channel_id)`,
+  ).run();
+  await db.prepare(
+    `CREATE INDEX IF NOT EXISTS idx_gcal_calendars_watch_expiry ON gcal_calendars(watch_expiry)`,
+  ).run();
+
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS gcal_events (
+       id                TEXT    PRIMARY KEY,
+       npub              TEXT    NOT NULL,
+       calendar_id       TEXT    NOT NULL,
+       provider_event_id TEXT    NOT NULL,
+       title             TEXT    NOT NULL DEFAULT '',
+       description       TEXT,
+       location          TEXT,
+       start_iso         TEXT    NOT NULL,
+       end_iso           TEXT    NOT NULL,
+       all_day           INTEGER NOT NULL DEFAULT 0,
+       status            TEXT    NOT NULL DEFAULT 'confirmed',
+       html_link         TEXT,
+       created_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+       updated_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+       FOREIGN KEY (calendar_id) REFERENCES gcal_calendars(id) ON DELETE CASCADE,
+       UNIQUE (npub, calendar_id, provider_event_id)
+     )`,
+  ).run();
+
+  await db.prepare(
+    `CREATE INDEX IF NOT EXISTS idx_gcal_events_npub ON gcal_events(npub)`,
+  ).run();
+  await db.prepare(
+    `CREATE INDEX IF NOT EXISTS idx_gcal_events_calendar ON gcal_events(calendar_id)`,
+  ).run();
+  await db.prepare(
+    `CREATE INDEX IF NOT EXISTS idx_gcal_events_start ON gcal_events(npub, start_iso)`,
+  ).run();
+}
+
+// --- GCal DB row types -------------------------------------------------------
+
+type GcalConnectionRow = {
+  npub: string;
+  google_email: string;
+  access_token_enc: string;
+  access_token_iv: string;
+  access_token_tag: string;
+  refresh_token_enc: string;
+  refresh_token_iv: string;
+  refresh_token_tag: string;
+  token_expiry: number;
+  key_version: number;
+  status: string;
+  last_sync_at: number | null;
+  last_error: string | null;
+};
+
+type GcalCalendarRow = {
+  id: string;
+  npub: string;
+  provider_cal_id: string;
+  name: string;
+  primary_cal: number;
+  selected: number;
+  color: string | null;
+  timezone: string | null;
+  sync_token: string | null;
+  watch_channel_id: string | null;
+  watch_expiry: number | null;
+};
+
+type GcalEventRow = {
+  id: string;
+  npub: string;
+  calendar_id: string;
+  provider_event_id: string;
+  title: string;
+  description: string | null;
+  location: string | null;
+  start_iso: string;
+  end_iso: string;
+  all_day: number;
+  status: string;
+  html_link: string | null;
+  calendar_name?: string | null;
+  calendar_color?: string | null;
+};
+
+// --- Token helpers -----------------------------------------------------------
+
+async function gcalDecryptAccessToken(row: GcalConnectionRow, env: Env): Promise<string> {
+  const keyHex = gcalGetKeyForVersion(row.key_version, env);
+  return gcalDecryptToken(row.access_token_enc, row.access_token_iv, row.access_token_tag, keyHex);
+}
+
+async function gcalDecryptRefreshToken(row: GcalConnectionRow, env: Env): Promise<string> {
+  const keyHex = gcalGetKeyForVersion(row.key_version, env);
+  return gcalDecryptToken(row.refresh_token_enc, row.refresh_token_iv, row.refresh_token_tag, keyHex);
+}
+
+// --- refreshGcalTokenIfNeeded ------------------------------------------------
+
+async function refreshGcalTokenIfNeeded(npub: string, env: Env): Promise<string> {
+  const db = requireDb(env);
+  const row = await db
+    .prepare<GcalConnectionRow>(`SELECT * FROM gcal_connections WHERE npub = ?`)
+    .bind(npub)
+    .first<GcalConnectionRow>();
+  if (!row) throw new Error("No GCal connection for npub");
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (row.token_expiry > nowSec + 300) {
+    return gcalDecryptAccessToken(row, env);
+  }
+
+  // Need to refresh
+  const refreshToken = await gcalDecryptRefreshToken(row, env);
+  const resp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: env.GCAL_CLIENT_ID,
+      client_secret: env.GCAL_CLIENT_SECRET,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token",
+    }),
+  });
+
+  if (resp.status === 400 || resp.status === 401) {
+    await db
+      .prepare(`UPDATE gcal_connections SET status = 'needs_reauth', updated_at = ? WHERE npub = ?`)
+      .bind(nowSec, npub)
+      .run();
+    throw new Error("GCal token refresh failed: needs_reauth");
+  }
+
+  if (!resp.ok) {
+    throw new Error(`GCal token refresh failed: HTTP ${resp.status}`);
+  }
+
+  const data = (await resp.json()) as {
+    access_token: string;
+    expires_in: number;
+  };
+
+  const keyVersion = gcalCurrentKeyVersion(env);
+  const keyHex = env.GCAL_TOKEN_ENC_KEY;
+  const encAcc = await gcalEncryptToken(data.access_token, keyHex);
+  const newExpiry = nowSec + (data.expires_in ?? 3600);
+
+  await db
+    .prepare(
+      `UPDATE gcal_connections
+         SET access_token_enc = ?, access_token_iv = ?, access_token_tag = ?,
+             token_expiry = ?, key_version = ?, status = 'active', updated_at = ?
+       WHERE npub = ?`,
+    )
+    .bind(
+      encAcc.enc, encAcc.iv, encAcc.tag,
+      newExpiry, keyVersion, nowSec,
+      npub,
+    )
+    .run();
+
+  return data.access_token;
+}
+
+// --- registerGcalWatch -------------------------------------------------------
+
+async function registerGcalWatch(
+  npub: string,
+  calendarId: string,
+  providerCalId: string,
+  accessToken: string,
+  env: Env,
+): Promise<void> {
+  const db = requireDb(env);
+  const channelId = crypto.randomUUID();
+  const webhookAddress = `https://taskify.solife.me/api/gcal/webhook/${channelId}`;
+
+  const resp = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(providerCalId)}/events/watch`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        id: channelId,
+        type: "web_hook",
+        address: webhookAddress,
+        token: env.GCAL_WEBHOOK_SECRET,
+      }),
+    },
+  );
+
+  if (!resp.ok) {
+    console.warn("registerGcalWatch failed", { calendarId, status: resp.status });
+    return;
+  }
+
+  const data = (await resp.json()) as { expiration?: string };
+  const watchExpiry = data.expiration ? Math.floor(Number(data.expiration) / 1000) : null;
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  await db
+    .prepare(
+      `UPDATE gcal_calendars
+         SET watch_channel_id = ?, watch_expiry = ?, updated_at = ?
+       WHERE id = ? AND npub = ?`,
+    )
+    .bind(channelId, watchExpiry, nowSec, calendarId, npub)
+    .run();
+}
+
+// --- syncCalendarEvents ------------------------------------------------------
+
+async function syncCalendarEvents(
+  npub: string,
+  calendarId: string,
+  accessToken: string,
+  env: Env,
+): Promise<void> {
+  const db = requireDb(env);
+
+  // Verify calendar belongs to this npub (critical security check)
+  const calRow = await db
+    .prepare<GcalCalendarRow>(`SELECT * FROM gcal_calendars WHERE id = ? AND npub = ?`)
+    .bind(calendarId, npub)
+    .first<GcalCalendarRow>();
+  if (!calRow) throw new Error(`Calendar ${calendarId} not found for npub`);
+
+  const providerCalId = calRow.provider_cal_id;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const sevenDaysAgo = new Date((nowSec - 7 * 86400) * 1000).toISOString();
+  const sixMonthsAhead = new Date((nowSec + 180 * 86400) * 1000).toISOString();
+
+  let pageToken: string | undefined;
+  let syncToken: string | undefined;
+
+  const doSync = async (url: string): Promise<void> => {
+    let nextPageToken: string | undefined;
+    do {
+      const fetchUrl = nextPageToken ? `${url}&pageToken=${encodeURIComponent(nextPageToken)}` : url;
+      const resp = await fetch(fetchUrl, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (resp.status === 410) {
+        // Sync token expired — clear it and do full re-fetch
+        await db
+          .prepare(`UPDATE gcal_calendars SET sync_token = NULL, updated_at = ? WHERE id = ? AND npub = ?`)
+          .bind(nowSec, calendarId, npub)
+          .run();
+        const fullUrl = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(providerCalId)}/events?timeMin=${encodeURIComponent(sevenDaysAgo)}&timeMax=${encodeURIComponent(sixMonthsAhead)}&singleEvents=true`;
+        await doSync(fullUrl);
+        return;
+      }
+
+      if (!resp.ok) {
+        throw new Error(`GCal events fetch failed: HTTP ${resp.status}`);
+      }
+
+      const data = (await resp.json()) as {
+        items?: GoogleCalendarEvent[];
+        nextPageToken?: string;
+        nextSyncToken?: string;
+      };
+
+      for (const item of data.items ?? []) {
+        await upsertGcalEvent(npub, calendarId, item, db);
+      }
+
+      nextPageToken = data.nextPageToken;
+      syncToken = data.nextSyncToken ?? syncToken;
+    } while (nextPageToken);
+  };
+
+  let baseUrl: string;
+  if (calRow.sync_token) {
+    baseUrl = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(providerCalId)}/events?syncToken=${encodeURIComponent(calRow.sync_token)}`;
+  } else {
+    baseUrl = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(providerCalId)}/events?timeMin=${encodeURIComponent(sevenDaysAgo)}&timeMax=${encodeURIComponent(sixMonthsAhead)}&singleEvents=true`;
+  }
+
+  await doSync(baseUrl);
+
+  if (syncToken) {
+    await db
+      .prepare(`UPDATE gcal_calendars SET sync_token = ?, updated_at = ? WHERE id = ? AND npub = ?`)
+      .bind(syncToken, nowSec, calendarId, npub)
+      .run();
+  }
+
+  void pageToken; // suppress unused var warning
+}
+
+type GoogleCalendarEvent = {
+  id: string;
+  summary?: string;
+  description?: string;
+  location?: string;
+  start?: { dateTime?: string; date?: string };
+  end?: { dateTime?: string; date?: string };
+  status?: string;
+  htmlLink?: string;
+};
+
+async function upsertGcalEvent(
+  npub: string,
+  calendarId: string,
+  item: GoogleCalendarEvent,
+  db: D1Database,
+): Promise<void> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const allDay = !item.start?.dateTime ? 1 : 0;
+  const startIso = item.start?.dateTime ?? item.start?.date ?? "";
+  const endIso = item.end?.dateTime ?? item.end?.date ?? "";
+  const eventId = crypto.randomUUID();
+
+  await db
+    .prepare(
+      `INSERT INTO gcal_events
+         (id, npub, calendar_id, provider_event_id, title, description, location,
+          start_iso, end_iso, all_day, status, html_link, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (npub, calendar_id, provider_event_id) DO UPDATE SET
+         title = excluded.title,
+         description = excluded.description,
+         location = excluded.location,
+         start_iso = excluded.start_iso,
+         end_iso = excluded.end_iso,
+         all_day = excluded.all_day,
+         status = excluded.status,
+         html_link = excluded.html_link,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(
+      eventId, npub, calendarId, item.id ?? "",
+      item.summary ?? "", item.description ?? null, item.location ?? null,
+      startIso, endIso, allDay,
+      item.status ?? "confirmed", item.htmlLink ?? null,
+      nowSec, nowSec,
+    )
+    .run();
+}
+
+// --- fetchAndSyncCalendars ---------------------------------------------------
+
+async function fetchAndSyncCalendars(npub: string, accessToken: string, env: Env): Promise<void> {
+  const db = requireDb(env);
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const resp = await fetch(
+    "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!resp.ok) throw new Error(`GCal calendarList fetch failed: HTTP ${resp.status}`);
+
+  const data = (await resp.json()) as {
+    items?: Array<{
+      id: string;
+      summary?: string;
+      primary?: boolean;
+      backgroundColor?: string;
+      timeZone?: string;
+    }>;
+  };
+
+  for (const cal of data.items ?? []) {
+    const calId = crypto.randomUUID();
+
+    await db
+      .prepare(
+        `INSERT INTO gcal_calendars
+           (id, npub, provider_cal_id, name, primary_cal, selected, color, timezone, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (npub, provider_cal_id) DO UPDATE SET
+           name = excluded.name,
+           primary_cal = excluded.primary_cal,
+           color = excluded.color,
+           timezone = excluded.timezone,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(
+        calId, npub, cal.id,
+        cal.summary ?? cal.id,
+        cal.primary ? 1 : 0,
+        1, // default selected
+        cal.backgroundColor ?? null,
+        cal.timeZone ?? null,
+        nowSec, nowSec,
+      )
+      .run();
+
+    // Fetch the actual calendar row to get its id (may differ from calId on conflict)
+    const calRow = await db
+      .prepare<GcalCalendarRow>(`SELECT * FROM gcal_calendars WHERE npub = ? AND provider_cal_id = ?`)
+      .bind(npub, cal.id)
+      .first<GcalCalendarRow>();
+    if (!calRow) continue;
+
+    try {
+      await registerGcalWatch(npub, calRow.id, cal.id, accessToken, env);
+    } catch (err) {
+      console.warn("registerGcalWatch error", { calendarId: calRow.id, error: (err as Error).message });
+    }
+
+    try {
+      await syncCalendarEvents(npub, calRow.id, accessToken, env);
+    } catch (err) {
+      console.warn("syncCalendarEvents error", { calendarId: calRow.id, error: (err as Error).message });
+    }
+  }
+
+  await db
+    .prepare(`UPDATE gcal_connections SET last_sync_at = ?, updated_at = ? WHERE npub = ?`)
+    .bind(nowSec, nowSec, npub)
+    .run();
+}
+
+// --- Route handlers ----------------------------------------------------------
+
+async function handleGcalAuthUrl(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyGcalAuth(request);
+  if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const state = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ npub: auth.npub })));
+  const params = new URLSearchParams({
+    client_id: env.GCAL_CLIENT_ID,
+    redirect_uri: "https://taskify.solife.me/api/gcal/auth/callback",
+    response_type: "code",
+    scope: "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email",
+    access_type: "offline",
+    prompt: "consent",
+    state,
+  });
+  return jsonResponse({ url: `https://accounts.google.com/o/oauth2/v2/auth?${params}` });
+}
+
+async function handleGcalAuthCallback(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const code = url.searchParams.get("code");
+  const stateRaw = url.searchParams.get("state");
+  if (!code || !stateRaw) {
+    return new Response("Missing code or state", { status: 400 });
+  }
+
+  let npub: string;
+  try {
+    const decoded = JSON.parse(new TextDecoder().decode(base64UrlDecode(stateRaw)));
+    npub = decoded.npub;
+    if (!npub) throw new Error("no npub");
+  } catch {
+    return new Response("Invalid state", { status: 400 });
+  }
+
+  // Exchange code for tokens
+  const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: env.GCAL_CLIENT_ID,
+      client_secret: env.GCAL_CLIENT_SECRET,
+      redirect_uri: "https://taskify.solife.me/api/gcal/auth/callback",
+      grant_type: "authorization_code",
+    }),
+  });
+  if (!tokenResp.ok) {
+    return new Response("Token exchange failed", { status: 502 });
+  }
+  const tokens = (await tokenResp.json()) as {
+    access_token: string;
+    refresh_token?: string;
+    expires_in?: number;
+  };
+  if (!tokens.access_token || !tokens.refresh_token) {
+    return new Response("Incomplete token response", { status: 502 });
+  }
+
+  // Get Google email
+  const userResp = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+    headers: { Authorization: `Bearer ${tokens.access_token}` },
+  });
+  if (!userResp.ok) {
+    return new Response("Failed to get userinfo", { status: 502 });
+  }
+  const userInfo = (await userResp.json()) as { email?: string };
+  const googleEmail = userInfo.email ?? "";
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const keyVersion = gcalCurrentKeyVersion(env);
+  const keyHex = env.GCAL_TOKEN_ENC_KEY;
+
+  const encAcc = await gcalEncryptToken(tokens.access_token, keyHex);
+  const encRef = await gcalEncryptToken(tokens.refresh_token, keyHex);
+  const tokenExpiry = nowSec + (tokens.expires_in ?? 3600);
+
+  const db = requireDb(env);
+  await db
+    .prepare(
+      `INSERT INTO gcal_connections
+         (npub, google_email,
+          access_token_enc, access_token_iv, access_token_tag,
+          refresh_token_enc, refresh_token_iv, refresh_token_tag,
+          token_expiry, key_version, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+       ON CONFLICT (npub) DO UPDATE SET
+         google_email = excluded.google_email,
+         access_token_enc = excluded.access_token_enc,
+         access_token_iv = excluded.access_token_iv,
+         access_token_tag = excluded.access_token_tag,
+         refresh_token_enc = excluded.refresh_token_enc,
+         refresh_token_iv = excluded.refresh_token_iv,
+         refresh_token_tag = excluded.refresh_token_tag,
+         token_expiry = excluded.token_expiry,
+         key_version = excluded.key_version,
+         status = 'active',
+         last_error = NULL,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(
+      npub, googleEmail,
+      encAcc.enc, encAcc.iv, encAcc.tag,
+      encRef.enc, encRef.iv, encRef.tag,
+      tokenExpiry, keyVersion,
+      nowSec, nowSec,
+    )
+    .run();
+
+  // Initial calendar sync (best-effort)
+  try {
+    await fetchAndSyncCalendars(npub, tokens.access_token, env);
+  } catch (err) {
+    console.error("Initial GCal sync error", (err as Error).message);
+    await db
+      .prepare(`UPDATE gcal_connections SET status = 'sync_failed', last_error = ?, updated_at = ? WHERE npub = ?`)
+      .bind((err as Error).message, Math.floor(Date.now() / 1000), npub)
+      .run();
+  }
+
+  return Response.redirect("https://taskify.solife.me?gcal=connected", 302);
+}
+
+async function handleGcalDisconnect(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyGcalAuth(request);
+  if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const db = requireDb(env);
+  // CASCADE in schema removes gcal_calendars + gcal_events
+  await db
+    .prepare(`DELETE FROM gcal_connections WHERE npub = ?`)
+    .bind(auth.npub)
+    .run();
+
+  return jsonResponse({ ok: true });
+}
+
+async function handleGcalStatus(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyGcalAuth(request);
+  if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const db = requireDb(env);
+  const row = await db
+    .prepare<GcalConnectionRow>(`SELECT * FROM gcal_connections WHERE npub = ?`)
+    .bind(auth.npub)
+    .first<GcalConnectionRow>();
+
+  if (!row) {
+    return jsonResponse({ connected: false, status: null, googleEmail: null, lastSyncAt: null, lastError: null });
+  }
+
+  return jsonResponse({
+    connected: true,
+    status: row.status,
+    googleEmail: row.google_email,
+    lastSyncAt: row.last_sync_at,
+    lastError: row.last_error,
+  });
+}
+
+async function handleGcalCalendars(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyGcalAuth(request);
+  if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const db = requireDb(env);
+  const result = await db
+    .prepare<GcalCalendarRow>(
+      `SELECT id, name, primary_cal, selected, color, timezone
+         FROM gcal_calendars WHERE npub = ? ORDER BY primary_cal DESC, name ASC`,
+    )
+    .bind(auth.npub)
+    .all<GcalCalendarRow>();
+
+  const calendars = (result.results ?? []).map((r) => ({
+    id: r.id,
+    name: r.name,
+    primary_cal: r.primary_cal === 1,
+    selected: r.selected === 1,
+    color: r.color,
+    timezone: r.timezone,
+  }));
+
+  return jsonResponse(calendars);
+}
+
+async function handleGcalToggleCalendar(
+  request: Request,
+  env: Env,
+  calendarId: string,
+): Promise<Response> {
+  const auth = await verifyGcalAuth(request);
+  if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const body = await parseJson(request);
+  if (typeof body?.selected !== "boolean") {
+    return jsonResponse({ error: "selected (boolean) is required" }, 400);
+  }
+
+  const db = requireDb(env);
+  const nowSec = Math.floor(Date.now() / 1000);
+  // npub scope is mandatory — never just WHERE id = ?
+  await db
+    .prepare(
+      `UPDATE gcal_calendars SET selected = ?, updated_at = ? WHERE id = ? AND npub = ?`,
+    )
+    .bind(body.selected ? 1 : 0, nowSec, calendarId, auth.npub)
+    .run();
+
+  return jsonResponse({ ok: true });
+}
+
+async function handleGcalEvents(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyGcalAuth(request);
+  if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const url = new URL(request.url);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const defaultFrom = new Date((nowSec - 7 * 86400) * 1000).toISOString();
+  const defaultTo = new Date((nowSec + 180 * 86400) * 1000).toISOString();
+  const from = url.searchParams.get("from") ?? defaultFrom;
+  const to = url.searchParams.get("to") ?? defaultTo;
+
+  const db = requireDb(env);
+  // All WHERE clauses include npub = ? — no cross-user leakage possible
+  const result = await db
+    .prepare<GcalEventRow>(
+      `SELECT e.id, e.npub, e.calendar_id, e.provider_event_id,
+              e.title, e.description, e.location,
+              e.start_iso, e.end_iso, e.all_day, e.status, e.html_link,
+              c.name AS calendar_name, c.color AS calendar_color
+         FROM gcal_events e
+         JOIN gcal_calendars c ON c.id = e.calendar_id AND c.npub = e.npub
+        WHERE e.npub = ?
+          AND e.start_iso >= ?
+          AND e.start_iso <= ?
+          AND e.status != 'cancelled'
+        ORDER BY e.start_iso ASC`,
+    )
+    .bind(auth.npub, from, to)
+    .all<GcalEventRow>();
+
+  const events = (result.results ?? []).map((r) => ({
+    id: r.id,
+    calendarId: r.calendar_id,
+    providerEventId: r.provider_event_id,
+    calendarName: r.calendar_name ?? r.calendar_id,
+    calendarColor: r.calendar_color ?? undefined,
+    title: r.title,
+    description: r.description,
+    location: r.location,
+    startISO: r.start_iso,
+    endISO: r.end_iso,
+    allDay: r.all_day === 1,
+    status: r.status,
+    htmlLink: r.html_link,
+    source: "google" as const,
+    kind: "calendar_event" as const,
+  }));
+
+  return jsonResponse(events);
+}
+
+async function handleGcalSync(request: Request, env: Env): Promise<Response> {
+  const auth = await verifyGcalAuth(request);
+  if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
+
+  const db = requireDb(env);
+  const conn = await db
+    .prepare<GcalConnectionRow>(`SELECT * FROM gcal_connections WHERE npub = ?`)
+    .bind(auth.npub)
+    .first<GcalConnectionRow>();
+
+  if (!conn) return jsonResponse({ error: "Not connected" }, 404);
+
+  let accessToken: string;
+  try {
+    accessToken = await refreshGcalTokenIfNeeded(auth.npub, env);
+  } catch (err) {
+    return jsonResponse({ error: (err as Error).message }, 502);
+  }
+
+  const calendarsResult = await db
+    .prepare<GcalCalendarRow>(
+      `SELECT * FROM gcal_calendars WHERE npub = ?`,
+    )
+    .bind(auth.npub)
+    .all<GcalCalendarRow>();
+
+  let synced = 0;
+  const errors: string[] = [];
+
+  for (const cal of calendarsResult.results ?? []) {
+    try {
+      await syncCalendarEvents(auth.npub, cal.id, accessToken, env);
+      synced++;
+    } catch (err) {
+      errors.push(`${cal.name}: ${(err as Error).message}`);
+    }
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(`UPDATE gcal_connections SET last_sync_at = ?, updated_at = ? WHERE npub = ?`)
+    .bind(nowSec, nowSec, auth.npub)
+    .run();
+
+  return jsonResponse({ synced, errors });
+}
+
+async function handleGcalWebhook(
+  request: Request,
+  env: Env,
+  channelId: string,
+  ctx: { waitUntil(p: Promise<unknown>): void },
+): Promise<Response> {
+  // Validate secret before any DB lookup
+  const channelToken = request.headers.get("X-Goog-Channel-Token");
+  if (channelToken !== env.GCAL_WEBHOOK_SECRET) {
+    return new Response("Forbidden", { status: 403 });
+  }
+
+  const db = requireDb(env);
+  const calRow = await db
+    .prepare<GcalCalendarRow>(
+      `SELECT * FROM gcal_calendars WHERE watch_channel_id = ?`,
+    )
+    .bind(channelId)
+    .first<GcalCalendarRow>();
+
+  if (!calRow) return new Response("Not Found", { status: 404 });
+
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const accessToken = await refreshGcalTokenIfNeeded(calRow.npub, env);
+        await syncCalendarEvents(calRow.npub, calRow.id, accessToken, env);
+      } catch (err) {
+        console.error("Webhook sync error", { channelId, error: (err as Error).message });
+      }
+    })(),
+  );
+
+  return new Response(null, { status: 200 });
+}
+
+// --- Cron helpers ------------------------------------------------------------
+
+async function gcalRenewExpiredWatches(env: Env): Promise<void> {
+  const db = requireDb(env);
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const result = await db
+    .prepare<GcalCalendarRow>(
+      `SELECT * FROM gcal_calendars WHERE watch_expiry < ? OR watch_expiry IS NULL`,
+    )
+    .bind(nowSec + 86400)
+    .all<GcalCalendarRow>();
+
+  for (const cal of result.results ?? []) {
+    try {
+      const accessToken = await refreshGcalTokenIfNeeded(cal.npub, env);
+      await registerGcalWatch(cal.npub, cal.id, cal.provider_cal_id, accessToken, env);
+    } catch (err) {
+      console.error("gcalRenewExpiredWatches error", { calId: cal.id, error: (err as Error).message });
+    }
+  }
+}
+
+async function gcalRetryFailedSyncs(env: Env): Promise<void> {
+  const db = requireDb(env);
+
+  const result = await db
+    .prepare<GcalConnectionRow>(
+      `SELECT * FROM gcal_connections WHERE status = 'sync_failed'`,
+    )
+    .all<GcalConnectionRow>();
+
+  for (const conn of result.results ?? []) {
+    try {
+      const accessToken = await refreshGcalTokenIfNeeded(conn.npub, env);
+      await fetchAndSyncCalendars(conn.npub, accessToken, env);
+      await db
+        .prepare(`UPDATE gcal_connections SET status = 'active', last_error = NULL, updated_at = ? WHERE npub = ?`)
+        .bind(Math.floor(Date.now() / 1000), conn.npub)
+        .run();
+    } catch (err) {
+      console.error("gcalRetryFailedSyncs error", { npub: conn.npub, error: (err as Error).message });
+      await db
+        .prepare(`UPDATE gcal_connections SET last_error = ?, updated_at = ? WHERE npub = ?`)
+        .bind((err as Error).message, Math.floor(Date.now() / 1000), conn.npub)
+        .run();
+    }
+  }
+}
+
+// Named exports for unit testing
+export { gcalEncryptToken, gcalDecryptToken, verifyGcalAuth };

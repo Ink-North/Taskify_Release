@@ -103,15 +103,43 @@ function formatRecurrenceFull(task: FullTaskRecord): string {
 function formatAssignee(task: FullTaskRecord): string {
   const assignees = task.assignees;
   if (!Array.isArray(assignees) || assignees.length === 0) return "".padEnd(12);
-  const first = assignees[0];
+  const first = assignees[0]?.pubkey;
+  if (!first) return "".padEnd(12);
   const npub = toNpubSafe(first) ?? first;
   const truncated = npub.length > 12 ? npub.slice(0, 9) + "..." : npub;
   return truncated.padEnd(12);
 }
 
-const COL_HEADER = `${"ID".padEnd(8)}  ${"TITLE".padEnd(40)}  ${"DUE".padEnd(12)}  ${"PRI".padEnd(4)}  ${"REC".padEnd(5)}  ${"BOUNTY".padEnd(8)}  ${"ASSIGN".padEnd(12)}  TRUST`;
+/**
+ * Return a short, human-useful display ID for a task.
+ * For recurring instances (id starts with "recurrence:"), the full ID is
+ * "recurrence:<seriesKey>:<datePart>". We show "~YYYY-MM-DD" (9 chars max)
+ * so agents can clearly distinguish instances.
+ * For regular tasks we use the standard 8-char UUID prefix.
+ */
+export function shortTaskId(id: string): string {
+  if (id.startsWith("recurrence:")) {
+    // Last segment after final ":" is the date/time part
+    const lastColon = id.lastIndexOf(":");
+    const datePart = id.slice(lastColon + 1); // e.g. "2026-03-14"
+    return ("~" + datePart).slice(0, 11).padEnd(11);
+  }
+  return id.slice(0, 8).padEnd(8);
+}
 
-export function renderTable(tasks: FullTaskRecord[], trustedNpubs: string[], columnName?: string): void {
+const COL_HEADER = `${"ID".padEnd(11)}  ${"TITLE".padEnd(40)}  ${"LIST".padEnd(12)}  ${"DUE".padEnd(12)}  ${"PRI".padEnd(4)}  ${"REC".padEnd(5)}  ${"BOUNTY".padEnd(8)}  ${"ASSIGN".padEnd(12)}  TRUST`;
+
+export function renderTable(
+  tasks: FullTaskRecord[],
+  trustedNpubs: string[],
+  columnName?: string,
+  columns?: Array<{ id: string; name: string }>,
+): void {
+  // Build a quick id→name lookup for column resolution
+  const colMap = new Map<string, string>(
+    (columns ?? []).map((c) => [c.id, c.name]),
+  );
+
   const byBoard = new Map<string, FullTaskRecord[]>();
   for (const task of tasks) {
     const group = byBoard.get(task.boardId) ?? [];
@@ -130,15 +158,20 @@ export function renderTable(tasks: FullTaskRecord[], trustedNpubs: string[], col
     console.log("\n" + chalk.bold(boardHeader));
     console.log(chalk.dim(COL_HEADER));
     for (const task of boardTasks) {
-      const id = task.id.slice(0, 8).padEnd(8);
+      const id = shortTaskId(task.id);
       const title = truncateWithSubtasks(task, 40);
+      // Resolve column UUID → name, fall back to short ID, blank if no column
+      const colLabel = task.column
+        ? (colMap.get(task.column) ?? task.column.slice(0, 8))
+        : "";
+      const list = colLabel.slice(0, 12).padEnd(12);
       const due = formatDue(task.dueISO);
       const pri = formatPri(task.priority);
       const rec = formatRec(task);
       const bounty = formatBounty(task).padEnd(8);
       const assign = formatAssignee(task);
       const trust = trustLabel(task.lastEditedBy, trustedNpubs);
-      console.log(`${id}  ${title}  ${due}  ${pri}  ${rec}  ${bounty}  ${assign}  ${trust}`);
+      console.log(`${id}  ${title}  ${list}  ${due}  ${pri}  ${rec}  ${bounty}  ${assign}  ${trust}`);
     }
   }
 }
@@ -179,6 +212,24 @@ export function renderTaskCard(task: FullTaskRecord, trustedNpubs: string[], loc
     task.subtasks.forEach((s, i) => {
       const check = s.completed ? "x" : " ";
       console.log(`  [${i + 1}] [${check}] ${s.title}`);
+    });
+  }
+
+  if (Array.isArray(task.documents) && task.documents.length > 0) {
+    console.log(`${lbl("Documents:")}${task.documents.length}`);
+    task.documents.forEach((doc, idx) => {
+      const name = typeof doc.name === "string" ? doc.name : `document-${idx + 1}`;
+      const url = typeof doc.url === "string" ? doc.url : "";
+      console.log(`  - ${name}${url ? ` (${url})` : ""}`);
+    });
+  }
+
+  if (Array.isArray(task.assignees) && task.assignees.length > 0) {
+    console.log(`${lbl("Assignment states:")}`);
+    task.assignees.forEach((a) => {
+      const short = truncateNpub(a.pubkey);
+      const status = a.status ?? "pending";
+      console.log(`  - ${short}: ${status}`);
     });
   }
 
