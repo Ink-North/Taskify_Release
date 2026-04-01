@@ -23,8 +23,6 @@ export type TaskDocument = {
   createdAt: string;
   preview?: TaskDocumentPreview;
   full?: TaskDocumentFull;
-  remoteUrl?: string;
-  encrypted?: boolean;
 };
 
 const EXTENSION_TO_KIND: Record<string, TaskDocumentKind> = {
@@ -103,7 +101,10 @@ export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined 
     if (!entry || typeof entry !== "object") continue;
     const name = typeof (entry as any).name === "string" ? (entry as any).name : "";
     const dataUrl = typeof (entry as any).dataUrl === "string" ? (entry as any).dataUrl : "";
-    if (!name || !dataUrl) continue;
+    const remoteUrl = typeof (entry as any).remoteUrl === "string" ? (entry as any).remoteUrl.trim() : "";
+    const encrypted = (entry as any).encrypted === true;
+    // Accept legacy inline docs (dataUrl present) and remote-first docs (remoteUrl present)
+    if (!name || (!dataUrl && !remoteUrl)) continue;
     const kindInput = typeof (entry as any).kind === "string" ? (entry as any).kind.toLowerCase() : "";
     const mime = typeof (entry as any).mimeType === "string" ? (entry as any).mimeType : "";
     const kind = (["pdf", "doc", "docx", "xls", "xlsx"] as const).includes(kindInput as TaskDocumentKind)
@@ -127,6 +128,8 @@ export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined 
       createdAt: createdAtRaw && !Number.isNaN(Date.parse(createdAtRaw)) ? createdAtRaw : new Date().toISOString(),
       preview: preview || undefined,
       full: full || undefined,
+      ...(remoteUrl ? { remoteUrl } : {}),
+      ...(encrypted ? { encrypted: true } : {}),
     });
   }
   return normalized.length ? normalized : undefined;
