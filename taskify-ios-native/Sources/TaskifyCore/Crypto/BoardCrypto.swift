@@ -5,9 +5,12 @@
 /// Two distinct schemes are used:
 ///
 /// 1. TASK EVENTS (kind 30301)
-///    Key derivation: SHA-256(UTF8(boardId)) → raw AES-256-GCM key
+///    Key derivation: SHA-256("taskify-board-aes-v1" || UTF8(boardId)) → raw AES-256-GCM key
 ///    Encryption:     AES-256-GCM, random 12-byte IV prepended to ciphertext → base64
 ///    Source:         taskify-core/src/boardCrypto.ts  (encryptToBoard / decryptFromBoard)
+///
+///    Legacy key (pre-fix): SHA-256(UTF8(boardId)) — the same value as the public board tag.
+///    The decryptTaskPayload function falls back to this for events written before the fix.
 ///
 /// 2. CALENDAR EVENTS (kind 30310 / 30311)
 ///    Key derivation: SHA-256("taskify-board-nostr-key-v1" || UTF8(boardId))
@@ -36,8 +39,21 @@ public func boardTagHash(_ boardId: String) -> String {
 // MARK: - Task Event Crypto (AES-256-GCM)
 
 /// Derives the AES-256-GCM key for task events on a given board.
-/// Key = SHA-256(UTF8(boardId))
+/// Key = SHA-256("taskify-board-aes-v1" || UTF8(boardId))
+///
+/// The label ensures this key is cryptographically distinct from the public board tag,
+/// which is SHA-256(UTF8(boardId)) with no label.
 private func deriveBoardAESKey(_ boardId: String) throws -> SymmetricKey {
+    let label = Data("taskify-board-aes-v1".utf8)
+    var material = label
+    material.append(Data(boardId.utf8))
+    let digest = SHA256.hash(data: material)
+    return SymmetricKey(data: digest)
+}
+
+/// Derives the legacy AES-256-GCM key for events written before the key domain-separation fix.
+/// Legacy key = SHA-256(UTF8(boardId)) — identical to the public board tag.
+private func deriveLegacyBoardAESKey(_ boardId: String) throws -> SymmetricKey {
     let data = Data(boardId.utf8)
     let digest = SHA256.hash(data: data)
     return SymmetricKey(data: digest)
@@ -61,6 +77,8 @@ public func encryptTaskPayload(_ plaintext: String, boardId: String) throws -> S
 }
 
 /// Decrypts a base64-encoded AES-GCM ciphertext from a kind-30301 task event.
+/// Tries the secure labeled key first; falls back to the legacy key for events
+/// written before the key domain-separation fix.
 public func decryptTaskPayload(_ base64Ciphertext: String, boardId: String) throws -> String {
     guard let combined = Data(base64Encoded: base64Ciphertext) else {
         throw TaskifyCryptoError.invalidBase64
@@ -68,16 +86,22 @@ public func decryptTaskPayload(_ base64Ciphertext: String, boardId: String) thro
     guard combined.count > 28 else { // 12 IV + 1 data min + 16 tag
         throw TaskifyCryptoError.decryptionFailed
     }
-    let key = try deriveBoardAESKey(boardId)
     let nonceData = combined.prefix(12)
     let ciphertextAndTag = combined.dropFirst(12)
-    // AES.GCM expects ciphertext and tag separately; last 16 bytes are the GCM tag
     guard ciphertextAndTag.count >= 16 else { throw TaskifyCryptoError.decryptionFailed }
     let ciphertext = ciphertextAndTag.dropLast(16)
     let tag = ciphertextAndTag.suffix(16)
     let nonce = try AES.GCM.Nonce(data: nonceData)
     let sealedBox = try AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tag)
-    let plainData = try AES.GCM.open(sealedBox, using: key)
+
+    // Try secure labeled key first.
+    if let plainData = try? AES.GCM.open(sealedBox, using: try deriveBoardAESKey(boardId)),
+       let plaintext = String(data: plainData, encoding: .utf8) {
+        return plaintext
+    }
+    // Fall back to legacy key (SHA-256(boardId) = the public tag).
+    let legacyKey = try deriveLegacyBoardAESKey(boardId)
+    let plainData = try AES.GCM.open(sealedBox, using: legacyKey)
     guard let plaintext = String(data: plainData, encoding: .utf8) else {
         throw TaskifyCryptoError.invalidUTF8
     }
@@ -124,7 +148,8 @@ public func decryptCalendarPayload(_ ciphertext: String, boardId: String) throws
         return json
     }
 
-    // Fallback: AES-GCM (legacy format published by older CLI versions)
+    // Fallback: AES-GCM (legacy format published by older CLI versions).
+    // decryptTaskPayload itself tries the secure key then the legacy key.
     let plaintext = try decryptTaskPayload(ciphertext, boardId: boardId)
     guard let data = plaintext.data(using: .utf8),
           let json = try? JSONSerialization.jsonObject(with: data) else {

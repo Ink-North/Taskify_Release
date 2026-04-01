@@ -34,6 +34,8 @@ public actor RelayPool: RelayPoolProtocol {
     // MARK: Dependencies injected at init
 
     private let relayURLs: [String]
+    private let onConnectionSummaryChange: (@Sendable (ConnectionSummary) -> Void)?
+    private let onPermanentFailure: (@Sendable (String, NSError?) -> Void)?
 
     // MARK: State
 
@@ -42,8 +44,14 @@ public actor RelayPool: RelayPoolProtocol {
     private var cursorStore = CursorStore()
     private var eventCache = EventCache()
 
-    public init(relayURLs: [String]) {
+    public init(
+        relayURLs: [String],
+        onConnectionSummaryChange: (@Sendable (ConnectionSummary) -> Void)? = nil,
+        onPermanentFailure: (@Sendable (String, NSError?) -> Void)? = nil
+    ) {
         self.relayURLs = relayURLs
+        self.onConnectionSummaryChange = onConnectionSummaryChange
+        self.onPermanentFailure = onPermanentFailure
     }
 
     // MARK: Connect
@@ -55,12 +63,14 @@ public actor RelayPool: RelayPoolProtocol {
             connections[url] = conn
             await conn.connect()
         }
+        await publishConnectionSummary()
     }
 
     public func disconnect() async {
-        for (_, conn) in connections { await conn.disconnect() }
+        for (_, conn) in connections { await conn.disconnect(notifyPool: false) }
         connections.removeAll()
         subscriptions.removeAll()
+        await publishConnectionSummary()
     }
 
     public func connectedCount() async -> Int {
@@ -109,6 +119,15 @@ public actor RelayPool: RelayPoolProtocol {
             let req = buildREQ(id: state.key, filters: state.filters)
             await connection.send(req)
         }
+        await publishConnectionSummary()
+    }
+
+    public func relayDidDisconnect(url _: String) async {
+        await publishConnectionSummary()
+    }
+
+    public func relayDidFailPermanently(url: String, error: NSError?) async {
+        onPermanentFailure?(url, error)
     }
 
     // MARK: Subscribe
@@ -316,6 +335,11 @@ public actor RelayPool: RelayPoolProtocol {
             return String(data: data, encoding: .utf8) ?? ""
         }.sorted().joined(separator: "|")
         return parts
+    }
+
+    private func publishConnectionSummary() async {
+        guard let onConnectionSummaryChange else { return }
+        onConnectionSummaryChange(await connectionSummary())
     }
 }
 

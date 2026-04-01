@@ -59,17 +59,7 @@ public enum TaskifyBackupRestoreParser {
     }
 
     private static func normalizedRelays(_ values: [Any]) -> [String] {
-        var seen = Set<String>()
-        var ordered: [String] = []
-
-        for value in values {
-            guard let relay = value as? String else { continue }
-            let trimmed = relay.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { continue }
-            ordered.append(trimmed)
-        }
-
-        return ordered
+        normalizeRelayList(values.compactMap { $0 as? String })
     }
 
     private static func decodedSettings(from value: Any?) -> UserSettings? {

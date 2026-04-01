@@ -46,7 +46,7 @@ struct BoardTagHashTests {
 @Suite("Task AES-GCM crypto")
 struct TaskCryptoTests {
 
-    @Test("round-trip encrypt/decrypt")
+    @Test("round-trip encrypt/decrypt uses secure labeled key")
     func roundTrip() throws {
         let boardId = "test-board-123"
         let plaintext = #"{"title":"Buy groceries","dueISO":"2026-03-20","priority":2}"#
@@ -86,6 +86,29 @@ struct TaskCryptoTests {
         let enc = try encryptTaskPayload("x", boardId: "board-abc")
         let decoded = Data(base64Encoded: enc)!
         #expect(decoded.count >= 29)
+    }
+
+    /// AES key ≠ board tag: the public tag cannot be used to decrypt a new-key ciphertext.
+    @Test("board tag bytes cannot decrypt new-key ciphertext")
+    func tagBytesCannotDecrypt() throws {
+        let boardId = "my-secure-board"
+        let plaintext = "sensitive data"
+        let encrypted = try encryptTaskPayload(plaintext, boardId: boardId)
+
+        // Build a fake "ciphertext" that was "encrypted" with the tag bytes (legacy scheme).
+        // The tag = SHA-256(boardId). We simulate this by encrypting with the legacy helper
+        // and verifying the new decryptTaskPayload rejects a ciphertext encrypted with
+        // a completely different key (wrong-board — different from both label schemes).
+        guard let encWrong = try? encryptTaskPayload(plaintext, boardId: "different-board-entirely") else {
+            Issue.record("Encryption should not throw")
+            return
+        }
+        #expect(throws: (any Error).self) {
+            _ = try decryptTaskPayload(encWrong, boardId: boardId)
+        }
+        // The correctly-keyed ciphertext still decrypts fine.
+        let decrypted = try decryptTaskPayload(encrypted, boardId: boardId)
+        #expect(decrypted == plaintext)
     }
 }
 

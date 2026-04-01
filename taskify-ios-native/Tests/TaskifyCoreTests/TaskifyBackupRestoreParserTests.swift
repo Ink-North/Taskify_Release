@@ -31,6 +31,21 @@ struct TaskifyBackupRestoreParserTests {
         #expect(payload.settings?.pushNotifications.permission == .granted)
     }
 
+    @Test("parser filters ATS-blocked relays from backups")
+    func parseBackupFiltersBlockedRelays() throws {
+        let data = Data(
+            """
+            {
+              "nostrSk": "nsec1abc",
+              "defaultRelays": ["wss://relay.primal.net", "wss://relay.two"]
+            }
+            """.utf8
+        )
+
+        let payload = try TaskifyBackupRestoreParser.parse(data: data)
+        #expect(payload.relays == ["wss://relay.two"])
+    }
+
     @Test("parser rejects backup files without a nostr key")
     func parseBackupMissingPrivateKey() {
         let data = Data(#"{"settings":{"accent":"blue"}}"#.utf8)
