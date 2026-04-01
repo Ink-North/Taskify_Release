@@ -178,7 +178,15 @@ import {
   MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
   type HistoryEntryRaw,
 } from "./lib/walletHistory";
-import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl } from "./lib/fileStorage";
+import {
+  DEFAULT_FILE_STORAGE_SERVER,
+  DEFAULT_FILE_SERVERS,
+  normalizeFileServerUrl,
+  parseFileServers,
+  serializeFileServers,
+  findServerEntry,
+} from "./lib/fileStorage";
+import { encryptAndUploadAttachment, parseDataUrl } from "./lib/attachmentCrypto";
 import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
@@ -1569,6 +1577,7 @@ type Settings = {
   walletMintBackupEnabled: boolean;
   walletContactsSyncEnabled: boolean;
   fileStorageServer: string;
+  fileServers: string; // JSON-serialized FileServerEntry[]
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
   cloudBackupsEnabled: boolean;
@@ -3924,6 +3933,18 @@ function useSettings() {
             ? parsed.fileStorageServer.trim()
             : DEFAULT_FILE_STORAGE_SERVER,
         ) || DEFAULT_FILE_STORAGE_SERVER;
+      const fileServers = (() => {
+        if (typeof parsed?.fileServers === "string" && parsed.fileServers.trim()) {
+          return parsed.fileServers.trim();
+        }
+        // Migrate from legacy single-server setting: build server list seeded with the saved server
+        const servers = DEFAULT_FILE_SERVERS.slice();
+        const existingEntry = findServerEntry(servers, fileStorageServer);
+        if (!existingEntry) {
+          servers.unshift({ url: fileStorageServer, type: "nip96" });
+        }
+        return serializeFileServers(servers);
+      })();
       const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
       const nostrBackupMetadataEnabled = nostrBackupEnabled;
       const pushRaw = parsed?.pushNotifications;
@@ -4020,6 +4041,7 @@ function useSettings() {
           : false,
         walletContactsSyncEnabled,
         fileStorageServer,
+        fileServers,
         walletMintBackupEnabled,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
@@ -4054,6 +4076,7 @@ function useSettings() {
         walletPaymentRequestsBackgroundChecksEnabled: true,
         walletContactsSyncEnabled: true,
         fileStorageServer: DEFAULT_FILE_STORAGE_SERVER,
+        fileServers: serializeFileServers(DEFAULT_FILE_SERVERS),
         npubCashLightningAddressEnabled: true,
         npubCashAutoClaim: true,
         cloudBackupsEnabled: false,
@@ -4082,6 +4105,15 @@ function useSettings() {
           ? 'android'
           : detectedPlatform;
       }
+      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
+        // fileServers changed: keep fileStorageServer in sync with selected server
+        const servers = parseFileServers((s as any).fileServers);
+        const currentSelected = normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
+        const entry = findServerEntry(servers, currentSelected);
+        if (!entry && servers.length > 0) {
+          next.fileStorageServer = normalizeFileServerUrl(servers[0].url) || DEFAULT_FILE_STORAGE_SERVER;
+        }
+      }
       if (Object.prototype.hasOwnProperty.call(s, "fileStorageServer")) {
         const rawServer = (s as any).fileStorageServer;
         const normalizedServer =
@@ -4094,6 +4126,9 @@ function useSettings() {
       } else {
         next.fileStorageServer =
           normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
+      }
+      if (!next.fileServers) {
+        next.fileServers = serializeFileServers(DEFAULT_FILE_SERVERS);
       }
       if (!next.backgroundImage) {
         next.backgroundImage = null;
@@ -8902,6 +8937,7 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [renamingColumnId]);
   const [previewDocument, setPreviewDocument] = useState<TaskDocument | null>(null);
+  const [previewDocumentBoardId, setPreviewDocumentBoardId] = useState<string | undefined>(undefined);
   const handleDownloadDocument = useCallback(async (doc: TaskDocument) => {
     if (typeof window === "undefined") return;
     try {
@@ -8927,21 +8963,22 @@ export default function App() {
 
   const openDocumentExternally = useCallback((doc: TaskDocument) => {
     if (typeof window === "undefined") return;
-    window.location.assign(doc.dataUrl);
+    window.location.assign(doc.dataUrl || doc.remoteUrl || "");
   }, []);
 
-  const openDocumentPreview = useCallback((doc: TaskDocument) => {
+  const openDocumentPreview = useCallback((doc: TaskDocument, boardId?: string) => {
     if (doc.kind === "pdf") {
       handleDownloadDocument(doc);
       return;
     }
     setPreviewDocument(doc);
+    setPreviewDocumentBoardId(boardId);
   }, [handleDownloadDocument]);
-  const handleOpenDocument = useCallback((_task: Task, doc: TaskDocument) => {
-    openDocumentPreview(doc);
+  const handleOpenDocument = useCallback((task: Task, doc: TaskDocument) => {
+    openDocumentPreview(doc, task.boardId);
   }, [openDocumentPreview]);
-  const handleOpenEventDocument = useCallback((doc: TaskDocument) => {
-    openDocumentPreview(doc);
+  const handleOpenEventDocument = useCallback((doc: TaskDocument, boardId?: string) => {
+    openDocumentPreview(doc, boardId);
   }, [openDocumentPreview]);
 
   function handleBoardChanged(boardId: string, options?: { board?: Board; republishTasks?: boolean }) {
@@ -11465,7 +11502,7 @@ export default function App() {
 	          showDate={false}
 	          meta={meta}
 	          trailing={revealAction}
-	          onOpenDocument={(_event, doc) => handleOpenEventDocument(doc)}
+	          onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 	          onEdit={isUsHoliday ? undefined : () => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 	          onDragStart={isUsHoliday ? undefined : (id) => setDraggingEventId(id)}
 	          onDragEnd={handleDragEnd}
@@ -12144,6 +12181,56 @@ export default function App() {
       pendingNostrTasksRef.current.delete(pendingKey);
     }
   }
+  async function prepareAttachmentsForPublish(
+    params: { images?: string[]; documents?: TaskDocument[]; boardId: string }
+  ): Promise<{ images: string[] | null; documents: any[] | null }> {
+    const servers = parseFileServers(settings.fileServers);
+    const serverEntry = findServerEntry(servers, settings.fileStorageServer)
+      ?? { url: settings.fileStorageServer, type: "nip96" as const };
+
+    const nextImages = typeof params.images === "undefined" ? null : await Promise.all((params.images || []).map(async (img, index) => {
+      if (!img || !img.startsWith("data:")) return img;
+      try {
+        const { mimeType, bytes } = parseDataUrl(img);
+        return await encryptAndUploadAttachment({
+          boardId: params.boardId,
+          data: bytes,
+          mimeType,
+          filename: `task-image-${index + 1}`,
+          serverEntry,
+          nostrSkHex,
+        });
+      } catch (err) {
+        console.warn("[attachments] Failed to encrypt/upload image; falling back to inline payload", err);
+        return img;
+      }
+    }));
+
+    const nextDocuments = typeof params.documents === "undefined" ? null : await Promise.all((params.documents || []).map(async (doc) => {
+      if (!doc?.dataUrl || !doc.dataUrl.startsWith("data:") || doc.remoteUrl) {
+        return doc;
+      }
+      try {
+        const { mimeType, bytes } = parseDataUrl(doc.dataUrl);
+        const remoteUrl = await encryptAndUploadAttachment({
+          boardId: params.boardId,
+          data: bytes,
+          mimeType: doc.mimeType || mimeType,
+          filename: doc.name || doc.id || "document",
+          serverEntry,
+          nostrSkHex,
+        });
+        const { dataUrl, preview, full, ...rest } = doc as any;
+        return { ...rest, remoteUrl, encrypted: true };
+      } catch (err) {
+        console.warn("[attachments] Failed to encrypt/upload document; falling back to inline payload", err);
+        return doc;
+      }
+    }));
+
+    return { images: nextImages, documents: nextDocuments };
+  }
+
   async function maybePublishTask(
     t: Task,
     boardOverride?: Board,
@@ -12184,8 +12271,13 @@ export default function App() {
     body.dueTimeZone = typeof t.dueTimeZone === "string" ? t.dueTimeZone : null;
     // Reminders are device-specific and should not be published to shared boards.
     // Include explicit nulls to signal removals when undefined
-    body.images = (typeof t.images === 'undefined') ? null : t.images;
-    body.documents = (typeof t.documents === 'undefined') ? null : t.documents;
+    const preparedAttachments = await prepareAttachmentsForPublish({
+      images: t.images,
+      documents: t.documents,
+      boardId,
+    });
+    body.images = preparedAttachments.images;
+    body.documents = preparedAttachments.documents;
     body.bounty = (typeof t.bounty === 'undefined') ? null : (normalizedBounty ?? null);
     body.subtasks = (typeof t.subtasks === 'undefined') ? null : t.subtasks;
     body.assignees = (typeof t.assignees === "undefined") ? null : t.assignees;
@@ -12273,7 +12365,7 @@ export default function App() {
     };
   };
 
-  const buildCanonicalCalendarPayload = (event: CalendarEvent, options?: { deleted?: boolean }) => {
+  const buildCanonicalCalendarPayload = async (event: CalendarEvent, options?: { deleted?: boolean; boardId?: string }) => {
     const eventKey = event.eventKey || generateEventKey();
     const deleted = !!options?.deleted;
     const createdBy = normalizeAgentPubkey(event.createdBy || nostrPK) ?? undefined;
@@ -12322,7 +12414,12 @@ export default function App() {
     base.title = normalized.title || "Untitled";
     if (event.summary) base.summary = event.summary;
     if (event.description) base.description = event.description;
-    if (event.documents?.length) base.documents = event.documents;
+    if (event.documents?.length) {
+      const prepared = options?.boardId
+        ? await prepareAttachmentsForPublish({ boardId: options.boardId, documents: event.documents })
+        : { documents: event.documents };
+      if (prepared.documents?.length) base.documents = prepared.documents;
+    }
     if (event.image) base.image = event.image;
     if (event.locations?.length) base.locations = event.locations;
     if (event.geohash) base.geohash = event.geohash;
@@ -12346,7 +12443,7 @@ export default function App() {
     return base;
   };
 
-  const buildViewCalendarPayload = (event: CalendarEvent, options?: { deleted?: boolean }) => {
+  const buildViewCalendarPayload = async (event: CalendarEvent, options?: { deleted?: boolean; boardId?: string }) => {
     const deleted = !!options?.deleted;
     const createdBy = normalizeAgentPubkey(event.createdBy || nostrPK) ?? undefined;
     const lastEditedBy = normalizeAgentPubkey(event.lastEditedBy || nostrPK || createdBy) ?? createdBy;
@@ -12393,7 +12490,12 @@ export default function App() {
     base.title = normalized.title || "Untitled";
     if (event.summary) base.summary = event.summary;
     if (event.description) base.description = event.description;
-    if (event.documents?.length) base.documents = event.documents;
+    if (event.documents?.length) {
+      const prepared = options?.boardId
+        ? await prepareAttachmentsForPublish({ boardId: options.boardId, documents: event.documents })
+        : { documents: event.documents };
+      if (prepared.documents?.length) base.documents = prepared.documents;
+    }
     if (event.image) base.image = event.image;
     if (event.locations?.length) base.locations = event.locations;
     if (event.geohash) base.geohash = event.geohash;
@@ -12439,8 +12541,8 @@ export default function App() {
       if (changed) {
         setCalendarEvents((prev) => prev.map((ev) => (ev.id === event.id ? updatedEvent : ev)));
       }
-      const canonicalPayload = buildCanonicalCalendarPayload(updatedEvent, { deleted: true });
-      const viewPayload = buildViewCalendarPayload(updatedEvent, { deleted: true });
+      const canonicalPayload = await buildCanonicalCalendarPayload(updatedEvent, { deleted: true, boardId });
+      const viewPayload = await buildViewCalendarPayload(updatedEvent, { deleted: true, boardId });
       if (!canonicalPayload || !viewPayload) return;
       const canonicalContent = await encryptCalendarPayloadForBoard(
         canonicalPayload,
@@ -12510,9 +12612,9 @@ export default function App() {
         setCalendarEvents((prev) => prev.map((ev) => (ev.id === event.id ? updatedEvent : ev)));
       }
 
-      const canonicalPayload = buildCanonicalCalendarPayload(updatedEvent);
+      const canonicalPayload = await buildCanonicalCalendarPayload(updatedEvent, { boardId });
       if (!canonicalPayload) return;
-      const viewPayload = buildViewCalendarPayload(updatedEvent);
+      const viewPayload = await buildViewCalendarPayload(updatedEvent, { boardId });
       if (!viewPayload) return;
       const canonicalContent = await encryptCalendarPayloadForBoard(
         canonicalPayload,
@@ -18075,7 +18177,7 @@ export default function App() {
 		                            key={`${ev.id}-${day}`}
 		                            event={ev}
 		                            showDate={false}
-		                            onOpenDocument={(_event, doc) => handleOpenEventDocument(doc)}
+		                            onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 		                            onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 		                            onDragStart={(id) => setDraggingEventId(id)}
 		                            onDragEnd={handleDragEnd}
@@ -18313,7 +18415,7 @@ export default function App() {
 		                          key={ev.id}
 		                          event={ev}
 		                          showDate
-		                          onOpenDocument={(_event, doc) => handleOpenEventDocument(doc)}
+		                          onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 		                          onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 		                          onDragStart={(id) => setDraggingEventId(id)}
 		                          onDragEnd={handleDragEnd}
@@ -19772,7 +19874,7 @@ export default function App() {
           nostrPK={nostrPK}
           nostrSkHex={nostrSkHex}
 	          defaultRelays={defaultRelays}
-	          onPreviewDocument={(_event, doc) => handleOpenEventDocument(doc)}
+	          onPreviewDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 		          onRsvp={
 	            activeEventRsvpCoord
 	              ? async (status, options) => {
@@ -19820,7 +19922,8 @@ export default function App() {
       {previewDocument && (
         <DocumentPreviewModal
           document={previewDocument}
-          onClose={() => setPreviewDocument(null)}
+          boardId={previewDocumentBoardId}
+          onClose={() => { setPreviewDocument(null); setPreviewDocumentBoardId(undefined); }}
           onDownloadDocument={handleDownloadDocument}
           onOpenExternal={openDocumentExternally}
         />
@@ -20187,6 +20290,7 @@ export default function App() {
             mintBackupEnabled={settings.walletMintBackupEnabled}
             contactsSyncEnabled={settings.walletContactsSyncEnabled}
             fileStorageServer={settings.fileStorageServer}
+            fileServers={settings.fileServers}
             messageItems={walletMessageItems}
             messagesUnreadCount={messagesUnreadCount}
             onAcceptMessage={acceptInboxMessage}
