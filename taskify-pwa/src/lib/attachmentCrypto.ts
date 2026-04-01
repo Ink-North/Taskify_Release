@@ -1,0 +1,92 @@
+import { uploadAvatar } from "../nostr/Nip96Client";
+import type { FileServerEntry } from "./fileStorage";
+
+const aesKeyCache = new Map<string, Promise<CryptoKey>>();
+const decryptDataUrlCache = new Map<string, Promise<string>>();
+
+async function deriveBoardAesKey(boardId: string): Promise<CryptoKey> {
+  const cached = aesKeyCache.get(boardId);
+  if (cached) return cached;
+  const promise = (async () => {
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(boardId));
+    return crypto.subtle.importKey("raw", hash, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  })();
+  aesKeyCache.set(boardId, promise);
+  return promise;
+}
+
+export function parseDataUrl(dataUrl: string): { mimeType: string; bytes: Uint8Array } {
+  const match = dataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
+  if (!match) throw new Error("Invalid data URL");
+  const mimeType = match[1] || "application/octet-stream";
+  const isBase64 = Boolean(match[2]);
+  const payload = match[3] || "";
+  if (isBase64) {
+    const binary = atob(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return { mimeType, bytes };
+  }
+  return { mimeType, bytes: new TextEncoder().encode(decodeURIComponent(payload)) };
+}
+
+export function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  return `data:${mimeType};base64,${btoa(binary)}`;
+}
+
+export async function encryptAndUploadAttachment(opts: {
+  boardId: string;
+  data: Uint8Array;
+  mimeType: string;
+  filename: string;
+  serverEntry: FileServerEntry;
+  nostrSkHex: string;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const key = await deriveBoardAesKey(opts.boardId);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ctBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, opts.data);
+  const combined = new Uint8Array(iv.length + ctBuf.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(ctBuf), iv.length);
+  const blob = new Blob([combined], { type: "application/octet-stream" });
+  const upload = await uploadAvatar({
+    serverEntry: opts.serverEntry,
+    file: blob,
+    filename: `${opts.filename}.enc`,
+    contentType: "application/octet-stream",
+    signer: opts.nostrSkHex,
+    signal: opts.signal,
+  });
+  return upload.url;
+}
+
+export async function decryptAttachment(opts: {
+  boardId: string;
+  url: string;
+  mimeType: string;
+}): Promise<string> {
+  const cacheKey = `${opts.boardId}::${opts.url}::${opts.mimeType}`;
+  const cached = decryptDataUrlCache.get(cacheKey);
+  if (cached) return cached;
+  const promise = (async () => {
+    const res = await fetch(opts.url);
+    if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length < 13) throw new Error("Encrypted attachment too small");
+    const iv = bytes.slice(0, 12);
+    const ct = bytes.slice(12);
+    const key = await deriveBoardAesKey(opts.boardId);
+    const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+    return bytesToDataUrl(new Uint8Array(ptBuf), opts.mimeType || "application/octet-stream");
+  })();
+  decryptDataUrlCache.set(cacheKey, promise);
+  try {
+    return await promise;
+  } catch (err) {
+    decryptDataUrlCache.delete(cacheKey);
+    throw err;
+  }
+}
