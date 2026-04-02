@@ -1186,19 +1186,31 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     try {
       setSaveError(null);
       setUploadingCount((prev) => prev + fileList.length);
-      setUploadingLabel(`Uploading ${fileList.length === 1 ? "attachment" : "attachments"}…`);
-      const docs = await readDocumentsFromFiles(files);
-      const nextDocs = isSharedBoard
-        ? await Promise.all(docs.map((doc, index) => uploadSharedDocument(fileList[index], doc)))
-        : docs;
+      const nextDocs: TaskDocument[] = [];
+      for (let index = 0; index < fileList.length; index += 1) {
+        const file = fileList[index];
+        const label = file.name || 'attachment';
+        setUploadingLabel(`Preparing ${label}…`);
+        const docs = await readDocumentsFromFiles([file] as any);
+        const doc = docs[0];
+        if (!doc) {
+          throw new Error(`Could not read ${label}. The selected file may not be supported.`);
+        }
+        if (isSharedBoard) {
+          setUploadingLabel(`Uploading ${label}…`);
+          nextDocs.push(await uploadSharedDocument(file, doc));
+        } else {
+          nextDocs.push(doc);
+        }
+      }
       setDocuments((prev) => [...prev, ...nextDocs]);
     } catch (err: any) {
-      console.error("Failed to attach document", err);
-      setSaveError(err?.message || "Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
+      console.error('Failed to attach document', err);
+      setSaveError(err?.message || 'Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.');
     } finally {
       setUploadingCount((prev) => Math.max(0, prev - fileList.length));
       setUploadingLabel(null);
-      e.target.value = "";
+      e.target.value = '';
     }
   }
 
@@ -1754,7 +1766,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 <input
                   ref={documentInputRef}
                   type="file"
-                  accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.md,.json,.csv,.png,.jpg,.jpeg,.webp,.gif,.mp3,.aac,.m4a,.wav,.mp4,.mov,.webm,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/markdown,application/json,text/csv,image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/aac,audio/mp4,audio/wav,video/mp4,video/quicktime,video/webm"
                   className="hidden"
                   multiple
                   onChange={handleDocumentAttach}

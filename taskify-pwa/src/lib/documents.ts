@@ -1,7 +1,7 @@
 import JSZip from "jszip";
 import readXlsxFile from "read-excel-file/browser";
 
-export type TaskDocumentKind = "pdf" | "doc" | "docx" | "xls" | "xlsx";
+export type TaskDocumentKind = "pdf" | "doc" | "docx" | "xls" | "xlsx" | "txt" | "md" | "json" | "csv" | "png" | "jpg" | "jpeg" | "webp" | "gif" | "mp3" | "aac" | "m4a" | "wav" | "mp4" | "mov" | "webm";
 
 export type TaskDocumentPreview =
   | { type: "image"; data: string }
@@ -11,7 +11,10 @@ export type TaskDocumentPreview =
 export type TaskDocumentFull =
   | { type: "pdf"; data: string }
   | { type: "html"; data: string }
-  | { type: "text"; data: string };
+  | { type: "text"; data: string }
+  | { type: "image"; data: string }
+  | { type: "audio"; data: string }
+  | { type: "video"; data: string };
 
 export type TaskDocument = {
   id: string;
@@ -31,6 +34,22 @@ const EXTENSION_TO_KIND: Record<string, TaskDocumentKind> = {
   ".docx": "docx",
   ".xls": "xls",
   ".xlsx": "xlsx",
+  ".txt": "txt",
+  ".md": "md",
+  ".json": "json",
+  ".csv": "csv",
+  ".png": "png",
+  ".jpg": "jpg",
+  ".jpeg": "jpeg",
+  ".webp": "webp",
+  ".gif": "gif",
+  ".mp3": "mp3",
+  ".aac": "aac",
+  ".m4a": "m4a",
+  ".wav": "wav",
+  ".mp4": "mp4",
+  ".mov": "mov",
+  ".webm": "webm",
 };
 
 const MIME_TO_KIND: Record<string, TaskDocumentKind> = {
@@ -40,6 +59,28 @@ const MIME_TO_KIND: Record<string, TaskDocumentKind> = {
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
   "application/vnd.ms-excel": "xls",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "text/plain": "txt",
+  "text/markdown": "md",
+  "application/json": "json",
+  "text/json": "json",
+  "text/csv": "csv",
+  "image/png": "png",
+  "image/jpeg": "jpeg",
+  "image/jpg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/aac": "aac",
+  "audio/x-aac": "aac",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/wav": "wav",
+  "audio/wave": "wav",
+  "audio/x-wav": "wav",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
 };
 
 const KIND_MIME_FALLBACK: Record<TaskDocumentKind, string> = {
@@ -48,6 +89,22 @@ const KIND_MIME_FALLBACK: Record<TaskDocumentKind, string> = {
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xls: "application/vnd.ms-excel",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  txt: "text/plain",
+  md: "text/markdown",
+  json: "application/json",
+  csv: "text/csv",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  mp3: "audio/mpeg",
+  aac: "audio/aac",
+  m4a: "audio/mp4",
+  wav: "audio/wav",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
 };
 
 function isPrintableTextChar(ch: string): boolean {
@@ -165,7 +222,7 @@ function normalizeFull(raw: unknown, fallbackKind: TaskDocumentKind): TaskDocume
   const type = typeof (raw as any).type === "string" ? (raw as any).type : "";
   const data = typeof (raw as any).data === "string" ? (raw as any).data : "";
   if (!data) return null;
-  if (type === "pdf" || type === "html" || type === "text") {
+  if (type === "pdf" || type === "html" || type === "text" || type === "image" || type === "audio" || type === "video") {
     return { type, data } as TaskDocumentFull;
   }
   return null;
@@ -399,6 +456,33 @@ function wrapDocHtml(html: string): string {
   return `<div class="doc-fragment">${html}</div>`;
 }
 
+function isTextKind(kind: TaskDocumentKind): boolean {
+  return kind === "txt" || kind === "md" || kind === "json" || kind === "csv";
+}
+
+function isImageKind(kind: TaskDocumentKind): boolean {
+  return kind === "png" || kind === "jpg" || kind === "jpeg" || kind === "webp" || kind === "gif";
+}
+
+function isAudioKind(kind: TaskDocumentKind): boolean {
+  return kind === "mp3" || kind === "aac" || kind === "m4a" || kind === "wav";
+}
+
+function isVideoKind(kind: TaskDocumentKind): boolean {
+  return kind === "mp4" || kind === "mov" || kind === "webm";
+}
+
+async function generateTextDocument(buffer: ArrayBuffer): Promise<{ previewText?: string; fullText?: string }> {
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    const text = cleanDocText(decoder.decode(new Uint8Array(buffer)));
+    if (!text) return {};
+    return { previewText: text.slice(0, 2000), fullText: text };
+  } catch {
+    return {};
+  }
+}
+
 function cleanDocText(value: string): string {
   return value
     .replace(/\r\n/g, "\n")
@@ -501,10 +585,25 @@ export async function createDocumentAttachment(file: File): Promise<TaskDocument
     const { previewText, fullText } = generateDocBinary(buffer);
     if (previewText) base.preview = { type: "text", data: previewText };
     if (fullText) base.full = { type: "text", data: fullText };
-  } else {
+  } else if (kind === "doc") {
+    const { previewText, fullText } = generateDocBinary(buffer);
+    if (previewText) base.preview = { type: "text", data: previewText };
+    if (fullText) base.full = { type: "text", data: fullText };
+  } else if (kind === "xls" || kind === "xlsx") {
     const { previewHtml, fullHtml } = await generateSpreadsheetMarkup(buffer, kind);
     if (previewHtml) base.preview = { type: "html", data: previewHtml };
     if (fullHtml) base.full = { type: "html", data: fullHtml };
+  } else if (isTextKind(kind)) {
+    const { previewText, fullText } = await generateTextDocument(buffer);
+    if (previewText) base.preview = { type: "text", data: previewText };
+    if (fullText) base.full = { type: "text", data: fullText };
+  } else if (isImageKind(kind)) {
+    base.preview = { type: "image", data: dataUrl };
+    base.full = { type: "image", data: dataUrl };
+  } else if (isAudioKind(kind)) {
+    base.full = { type: "audio", data: dataUrl };
+  } else if (isVideoKind(kind)) {
+    base.full = { type: "video", data: dataUrl };
   }
 
   return base;
@@ -527,6 +626,21 @@ export function ensureDocumentPreview(doc: TaskDocument): TaskDocument {
     };
   }
   if (next.full?.type === "text") {
+    return {
+      ...next,
+      preview: { type: "text", data: next.full.data },
+    };
+  }
+  if (next.full?.type === "image") {
+    return {
+      ...next,
+      preview: { type: "image", data: next.full.data },
+    };
+  }
+  if (next.full?.type === "audio") {
+    return next;
+  }
+  if (next.full?.type === "video") {
     return {
       ...next,
       preview: { type: "text", data: next.full.data },
@@ -561,8 +675,19 @@ async function buildPreviewFromDocument(doc: TaskDocument): Promise<TaskDocument
     return null;
   }
 
-  const { previewHtml } = await generateSpreadsheetMarkup(buffer, ensured.kind);
-  if (previewHtml) return { type: "html", data: previewHtml };
+  if (ensured.kind === "xls" || ensured.kind === "xlsx") {
+    const { previewHtml } = await generateSpreadsheetMarkup(buffer, ensured.kind);
+    if (previewHtml) return { type: "html", data: previewHtml };
+    return null;
+  }
+
+  if (isTextKind(ensured.kind)) {
+    const { previewText } = await generateTextDocument(buffer);
+    if (previewText) return { type: "text", data: previewText };
+    return null;
+  }
+
+  if (isImageKind(ensured.kind)) return { type: "image", data: ensured.dataUrl };
   return null;
 }
 
