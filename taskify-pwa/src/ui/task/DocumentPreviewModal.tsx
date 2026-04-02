@@ -68,38 +68,47 @@ function ViewerShell({ title, subtitle, actions, children, onClose }: { title: s
 
 function ZoomPane({ children, pageClassName = "", zoomable = true }: { children: React.ReactNode; pageClassName?: string; zoomable?: boolean }) {
   const [scale, setScale] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const draggingRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const applyScale = (next: number) => {
     const clamped = Math.max(1, Math.min(4, next));
     setScale(clamped);
-    if (clamped === 1) setOffset({ x: 0, y: 0 });
   };
   return (
     <div className="relative h-full overflow-hidden">
       {zoomable ? (
-        <div className="absolute right-3 top-3 z-10 flex gap-2">
+        <div className="absolute right-3 top-3 z-[30] flex gap-2 rounded-full bg-black/45 p-1 backdrop-blur">
           <button type="button" className="ghost-button button-sm pressable" onClick={() => applyScale(scale - 0.25)}>−</button>
-          <button type="button" className="ghost-button button-sm pressable" onClick={() => applyScale(1)}>100%</button>
+          <button type="button" className="ghost-button button-sm pressable" onClick={() => applyScale(1)}>{Math.round(scale * 100)}%</button>
           <button type="button" className="ghost-button button-sm pressable" onClick={() => applyScale(scale + 0.25)}>+</button>
         </div>
       ) : null}
-      <div className="h-full overflow-auto">
-        <div
-          className="flex min-h-full items-center justify-center py-4"
-          onPointerDown={(e) => {
-            if (scale <= 1) return;
-            dragRef.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
-          }}
-          onPointerMove={(e) => {
-            if (!dragRef.current || scale <= 1) return;
-            e.preventDefault();
-            setOffset({ x: dragRef.current.ox + (e.clientX - dragRef.current.x), y: dragRef.current.oy + (e.clientY - dragRef.current.y) });
-          }}
-          onPointerUp={() => { dragRef.current = null; }}
-          onPointerCancel={() => { dragRef.current = null; }}
-        >
-          <div className={pageClassName} style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`, transformOrigin: "center center", touchAction: scale > 1 ? "none" : "auto" }}>
+      <div
+        ref={viewportRef}
+        className="h-full overflow-auto"
+        style={{ touchAction: scale > 1 ? 'none' : 'auto', cursor: scale > 1 ? 'grab' : 'auto' }}
+        onPointerDown={(e) => {
+          if (scale <= 1 || !viewportRef.current) return;
+          draggingRef.current = { x: e.clientX, y: e.clientY, left: viewportRef.current.scrollLeft, top: viewportRef.current.scrollTop };
+          (e.currentTarget as HTMLDivElement).setPointerCapture?.(e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          if (!draggingRef.current || !viewportRef.current || scale <= 1) return;
+          e.preventDefault();
+          viewportRef.current.scrollLeft = draggingRef.current.left - (e.clientX - draggingRef.current.x);
+          viewportRef.current.scrollTop = draggingRef.current.top - (e.clientY - draggingRef.current.y);
+        }}
+        onPointerUp={(e) => {
+          draggingRef.current = null;
+          (e.currentTarget as HTMLDivElement).releasePointerCapture?.(e.pointerId);
+        }}
+        onPointerCancel={(e) => {
+          draggingRef.current = null;
+          (e.currentTarget as HTMLDivElement).releasePointerCapture?.(e.pointerId);
+        }}
+      >
+        <div className="flex min-h-full min-w-full items-start justify-center p-4">
+          <div className={pageClassName} style={{ transform: `scale(${scale})`, transformOrigin: 'top center', width: scale > 1 ? `${100 / scale}%` : 'auto' }}>
             {children}
           </div>
         </div>
@@ -159,7 +168,7 @@ export function DocumentPreviewModal({ document, boardId, onClose, onDownloadDoc
   let content: React.ReactNode;
   if (loadingRemote) content = <div className="flex h-full items-center justify-center text-white/70">Decrypting document…</div>;
   else if (remoteError) content = <div className="flex h-full items-center justify-center text-center text-white/70">{remoteError}</div>;
-  else if (effectiveDocument.kind === "pdf") content = <div className="relative h-full overflow-auto"><div className="absolute right-3 top-3 z-10 flex gap-2"><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale((s) => Math.max(0.75, s - 0.15))}>−</button><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale(1.15)}>{Math.round((pdfScale / 1.15) * 100)}%</button><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale((s) => Math.min(2.5, s + 0.15))}>+</button></div><div className="pt-14 pb-6"><PdfPages dataUrl={effectiveDocument.dataUrl} scale={pdfScale} /></div></div>;
+  else if (effectiveDocument.kind === "pdf") content = <div className="relative h-full overflow-auto"><div className="absolute right-3 top-3 z-[30] flex gap-2 rounded-full bg-black/45 p-1 backdrop-blur"><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale((s) => Math.max(0.75, s - 0.15))}>−</button><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale(1.15)}>{Math.round((pdfScale / 1.15) * 100)}%</button><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale((s) => Math.min(2.5, s + 0.15))}>+</button></div><div className="px-4 pb-6 pt-14"><PdfPages dataUrl={effectiveDocument.dataUrl} scale={pdfScale} /></div></div>;
   else if (full?.type === "image") content = <ZoomPane><img src={full.data} alt={label} className="max-h-full max-w-full object-contain" /></ZoomPane>;
   else if (full?.type === "video") content = <div className="flex h-full items-center justify-center rounded-[28px] bg-black p-2 shadow-2xl"><video controls autoPlay poster={effectiveDocument.preview?.type === "image" ? effectiveDocument.preview.data : undefined} src={full.data} className="max-h-full w-full rounded-[22px] bg-black" /></div>;
   else if (full?.type === "audio") content = <div className="flex h-full items-center justify-center"><div className="w-full max-w-xl rounded-[28px] bg-[#1b1c20] p-6 shadow-2xl"><div className="mb-4 text-center text-sm text-white/70">Audio attachment</div><audio controls src={full.data} className="w-full" /></div></div>;
