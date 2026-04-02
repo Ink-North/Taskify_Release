@@ -1762,7 +1762,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
             disabled={saving || uploadingCount > 0}
           >
             {saving || uploadingCount > 0 ? (
-              <span className="text-xs px-1">{uploadingLabel || "Uploading…"}</span>
+              <span className="text-xs px-1">…</span>
             ) : (
               <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2}>
                 <path d="M5 12l4 4 10-10" strokeLinecap="round" strokeLinejoin="round" />
@@ -1777,11 +1777,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           </div>
         )}
 
-        {(saving || uploadingCount > 0) && (
-          <div className="px-4 pt-2 text-xs text-secondary">
-            {uploadingLabel || "Uploading encrypted attachments to your selected file server."} Please keep Taskify open until this finishes.
-          </div>
-        )}
 
         {onSwitchToEvent && (
           <div className="mt-[-1rem] mb-[-1rem] w-full pb-[0.1rem]">
