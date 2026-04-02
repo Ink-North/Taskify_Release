@@ -9009,7 +9009,9 @@ export default function App() {
         ? await decryptAttachment({ boardId, url: doc.remoteUrl, mimeType: doc.mimeType })
         : doc.remoteUrl)
       : "");
-    if (sourceUrl) {
+    if (!sourceUrl) return;
+    const popup = window.open(sourceUrl, "_blank", "noopener,noreferrer");
+    if (!popup) {
       window.location.assign(sourceUrl);
     }
   }, []);
