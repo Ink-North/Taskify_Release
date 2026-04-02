@@ -6558,3 +6558,55 @@ html.light .wallet-modal__unit {
     flex-direction: column;
   }
 }
+
+
+.doc-modal__markup--rich,
+.doc-modal__markup--rich * {
+  color: #111827;
+}
+.doc-modal__markup--rich {
+  font-size: 15px;
+  line-height: 1.75;
+}
+.doc-modal__markup--rich h1,
+.doc-modal__markup--rich h2,
+.doc-modal__markup--rich h3,
+.doc-modal__markup--rich h4 {
+  color: #0f172a;
+  font-weight: 700;
+  line-height: 1.25;
+  margin: 1.25rem 0 0.75rem;
+}
+.doc-modal__markup--rich h1 { font-size: 2rem; }
+.doc-modal__markup--rich h2 { font-size: 1.5rem; }
+.doc-modal__markup--rich h3 { font-size: 1.2rem; }
+.doc-modal__markup--rich p,
+.doc-modal__markup--rich li {
+  margin: 0.65rem 0;
+}
+.doc-modal__markup--rich table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 14px;
+}
+.doc-modal__markup--rich th,
+.doc-modal__markup--rich td {
+  border: 1px solid #d1d5db;
+  padding: 0.5rem 0.625rem;
+  vertical-align: top;
+}
+.doc-modal__markup--rich th {
+  background: #f3f4f6;
+  font-weight: 600;
+}
+.doc-modal__markup--rich .doc-sheet__tab {
+  display: inline-block;
+  margin-bottom: 0.75rem;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #3730a3;
+  padding: 0.25rem 0.75rem;
+  font-size: 12px;
+  font-weight: 600;
+}

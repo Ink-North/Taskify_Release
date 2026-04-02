@@ -9003,17 +9003,20 @@ export default function App() {
   }, [showToast]);
 
   const openDocumentExternally = useCallback(async (doc: TaskDocument, boardId?: string) => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || typeof document === "undefined") return;
     const sourceUrl = doc.dataUrl || (doc.remoteUrl
       ? (doc.encrypted && boardId
         ? await decryptAttachment({ boardId, url: doc.remoteUrl, mimeType: doc.mimeType })
         : doc.remoteUrl)
       : "");
     if (!sourceUrl) return;
-    const popup = window.open(sourceUrl, "_blank", "noopener,noreferrer");
-    if (!popup) {
-      window.location.assign(sourceUrl);
-    }
+    const link = document.createElement("a");
+    link.href = sourceUrl;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    document.body.appendChild(link);
+    link.click();
+    requestAnimationFrame(() => link.remove());
   }, []);
 
   const openDocumentPreview = useCallback((doc: TaskDocument, boardId?: string) => {
