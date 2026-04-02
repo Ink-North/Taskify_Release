@@ -6,7 +6,17 @@ import { createPortal } from "react-dom";
 import { QRCodeCanvas } from "qrcode.react";
 import QrScannerLib from "qr-scanner";
 import { finalizeEvent, getPublicKey, generateSecretKey, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
-import { normalizeCalendarDeleteMutationPayload, normalizeCalendarMutationPayload } from "taskify-core";
+import {
+  normalizeCalendarDeleteMutationPayload,
+  normalizeCalendarMutationPayload,
+  normalizeRelayListSorted,
+  parseBoardSharePayload,
+  normalizeNip05,
+  compressedToRawHex,
+  contactInitials,
+  contactVerifiedNip05 as contactVerifiedNip05Core,
+  normalizeTaskAssignmentStatus,
+} from "taskify-core";
 const loadCashuWalletModal = () => import("./components/CashuWalletModal");
 const CashuWalletModal = lazy(loadCashuWalletModal);
 import {
@@ -150,6 +160,8 @@ import {
 } from "./lib/privateCalendar";
 import { DEFAULT_NOSTR_RELAYS } from "./lib/relays";
 import { ActionSheet } from "./components/ActionSheet";
+import { VoiceDictationModal } from "./components/VoiceDictationModal";
+import type { FinalTask } from "./nostr/useVoiceSession";
 import type { Contact } from "./lib/contacts";
 import {
   contactPrimaryName,
@@ -166,7 +178,14 @@ import {
   MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
   type HistoryEntryRaw,
 } from "./lib/walletHistory";
-import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, parseFileServers, findServerEntry, serializeFileServers, DEFAULT_FILE_SERVERS } from "./lib/fileStorage";
+import {
+  DEFAULT_FILE_STORAGE_SERVER,
+  DEFAULT_FILE_SERVERS,
+  normalizeFileServerUrl,
+  parseFileServers,
+  serializeFileServers,
+  findServerEntry,
+} from "./lib/fileStorage";
 import { encryptAndUploadAttachment, parseDataUrl } from "./lib/attachmentCrypto";
 import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
@@ -174,7 +193,7 @@ import { BoardKeyManager } from "./nostr/BoardKeyManager";
 import { publishFileServerPreference } from "./nostr/ProfilePublisher";
 import { EcashGlyph } from "./components/EcashGlyph";
 import { FirstRunOnboarding } from "./onboarding/FirstRunOnboarding";
-const AgentModeOnboarding = lazy(() => import("./onboarding/AgentModeOnboarding").then(m => ({ default: m.AgentModeOnboarding })));
+
 import {
   buildBoardShareEnvelope,
   buildCalendarEventInviteEnvelope,
@@ -200,7 +219,7 @@ import { EditModal } from "./ui/task/EditModal";
 import EventEditModal from "./ui/calendar/EventEditModal";
 import { AddBoardModal } from "./ui/board/AddBoardModal";
 import { SettingsModal } from "./ui/board/SettingsModal";
-const AgentModePanel = lazy(() => import("./ui/agent/AgentModePanel").then(m => ({ default: m.AgentModePanel })));
+
 import { Modal } from "./ui/Modal";
 import { CustomReminderSheet } from "./ui/reminders/CustomReminderSheet";
 import { RecurrencePicker, RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "./ui/recurrence/RecurrencePicker";
@@ -208,18 +227,8 @@ import { BoardQrScanner } from "./ui/board/BoardQrScanner";
 import { BountyAttachSheet, normalizeMintUrlLite, formatMintLabel, sumMintProofs } from "./ui/bounty/BountyAttachSheet";
 import { LockToNpubSheet } from "./ui/bounty/LockToNpubSheet";
 import { TimeZoneSheet } from "./ui/reminders/TimeZoneSheet";
-// agentDispatcher is loaded dynamically inside the agent runtime effect to keep it out of the main bundle
-import {
-  addTrustedNpub as addTrustedNpubToConfig,
-  clearTrustedNpubs,
-  defaultAgentSecurityConfig,
-  loadAgentSecurityConfig,
-  normalizeAgentSecurityConfig,
-  removeTrustedNpub as removeTrustedNpubFromConfig,
-  saveAgentSecurityConfig,
-  type AgentSecurityConfig,
-} from "./agent/agentSecurity";
-import { setAgentRuntime } from "./agent/agentRuntime";
+
+import { useGoogleCalendar, isGcalBoardId } from "./hooks/useGoogleCalendar";
 
 
 const DEBUG_CONSOLE_STORAGE_KEY = "taskify.debugConsole.enabled";
@@ -231,28 +240,6 @@ const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS = 1;
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
 
 type ScanResult = QrScannerLib.ScanResult;
-
-type BoardSharePayload = {
-  boardId: string;
-  boardName?: string;
-  relaysCsv?: string;
-};
-
-function parseBoardSharePayload(raw: string): BoardSharePayload | null {
-  const trimmed = (raw || "").trim();
-  if (!trimmed) return null;
-  const envelope = parseShareEnvelope(trimmed);
-  if (envelope?.item?.type === "board") {
-    const relaysCsv = envelope.item.relays?.length ? envelope.item.relays.join(",") : undefined;
-    return {
-      boardId: envelope.item.boardId,
-      boardName: envelope.item.boardName || undefined,
-      relaysCsv,
-    };
-  }
-  if (!BOARD_ID_REGEX.test(trimmed)) return null;
-  return { boardId: trimmed };
-}
 
 /* ================= Types ================= */
 type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6; // 0=Sun
@@ -402,25 +389,6 @@ type CalendarRsvpEnvelope = {
   inviteToken?: string;
 };
 
-function normalizeNip05(value?: string | null): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-  const atIndex = trimmed.indexOf("@");
-  if (atIndex <= 0 || atIndex === trimmed.length - 1) return null;
-  const name = trimmed.slice(0, atIndex).trim().toLowerCase();
-  const domain = trimmed.slice(atIndex + 1).trim().toLowerCase();
-  if (!name || !domain) return null;
-  return `${name}@${domain}`;
-}
-
-function compressedToRawHex(value: string): string {
-  if (typeof value !== "string") return value;
-  if (/^(02|03)[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
-  if (/^0x[0-9a-fA-F]{64}$/.test(value)) return value.slice(-64);
-  if (/^[0-9a-fA-F]{64}$/.test(value)) return value.toLowerCase();
-  return value;
-}
-
 function normalizeNostrPubkeyHex(value: string | null | undefined): string | null {
   const trimmed = (value || "").trim();
   if (!trimmed) return null;
@@ -434,14 +402,6 @@ function normalizeAgentPubkey(value: unknown): string | undefined {
   return normalizeNostrPubkeyHex(value) ?? undefined;
 }
 
-function normalizeTaskAssigneeStatus(value: unknown): TaskAssigneeStatus | undefined {
-  if (value === "pending" || value === "accepted" || value === "declined" || value === "tentative") {
-    return value;
-  }
-  if (value === "maybe") return "tentative";
-  return undefined;
-}
-
 function normalizeTaskAssignees(value: unknown): TaskAssignee[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const normalized: TaskAssignee[] = [];
@@ -452,7 +412,7 @@ function normalizeTaskAssignees(value: unknown): TaskAssignee[] | undefined {
     if (!pubkey || seen.has(pubkey)) return;
     seen.add(pubkey);
     const relay = typeof (entry as any).relay === "string" ? (entry as any).relay.trim() : "";
-    const status = normalizeTaskAssigneeStatus((entry as any).status);
+    const status = normalizeTaskAssignmentStatus((entry as any).status) as TaskAssigneeStatus | undefined;
     const respondedAtRaw = Number((entry as any).respondedAt);
     const respondedAt =
       Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
@@ -528,29 +488,15 @@ function loadNip05Cache(): Record<string, Nip05CheckState> {
 }
 
 function contactVerifiedNip05(contact: Contact, cache: Record<string, Nip05CheckState>): string | null {
-  if (!contact?.id) return null;
-  const nip05 = contact.nip05?.trim();
-  const npub = contact.npub?.trim();
-  if (!nip05 || !npub) return null;
-  const normalizedNip05 = normalizeNip05(nip05);
-  const normalizedNpub = normalizeNostrPubkey(npub);
-  if (!normalizedNip05 || !normalizedNpub) return null;
-  const entry = cache[contact.id];
-  if (!entry || entry.status !== "valid") return null;
-  const cachedNip05 = normalizeNip05(entry.nip05);
-  const cachedHex = (entry.npub || "").toLowerCase();
-  const contactHex = compressedToRawHex(normalizedNpub).toLowerCase();
-  if (!cachedNip05 || cachedNip05 !== normalizedNip05) return null;
-  if (!cachedHex || cachedHex !== contactHex) return null;
-  return nip05 || entry.nip05;
-}
-
-function contactInitials(value: string): string {
-  const trimmed = (value || "").trim();
-  if (!trimmed) return "?";
-  const parts = trimmed.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  const normalizedNpub = normalizeNostrPubkey(contact.npub || "");
+  return contactVerifiedNip05Core(
+    {
+      id: contact.id,
+      nip05: contact.nip05,
+      npub: normalizedNpub || contact.npub,
+    },
+    cache,
+  );
 }
 
 function VerifiedBadgeIcon(props: React.SVGProps<SVGSVGElement>) {
@@ -592,6 +538,7 @@ type Task = {
   lastEditedBy?: string;          // nostr pubkey of latest task editor
   createdAt?: number;             // unix ms timestamp (local)
   updatedAt?: string;             // iso timestamp of latest local edit when known
+  _nostrAt?: number;              // unix seconds of the Nostr event that last wrote this task (not persisted to IDB in old data)
   title: string;
   priority?: TaskPriority;        // 1-3 exclamation marks
   note?: string;
@@ -1719,6 +1666,7 @@ function isSameLocalDate(aMs: number, bMs: number): boolean {
 
 const R_NONE: Recurrence = { type: "none" };
 const LS_TASKS = "taskify_tasks_v5";
+const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
 const LS_CALENDAR_EVENTS = "taskify_calendar_events_v1";
 const LS_EXTERNAL_CALENDAR_EVENTS = "taskify_calendar_external_events_v1";
 const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
@@ -1732,7 +1680,7 @@ const LS_UPCOMING_SORT = "taskify_upcoming_sort_v1";
 const LS_UPCOMING_BOARD_GROUPING = "taskify_upcoming_board_grouping_v1";
 const LS_UPCOMING_FILTER_PRESETS = "taskify_upcoming_filter_presets_v1";
 const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
-const LS_AGENT_MODE_ONBOARDING_DONE = "taskify_agent_onboarding_done_v1";
+
 const LS_BIBLE_TRACKER = "taskify_bible_tracker_v1";
 const LS_BIBLE_PRINT_PAPER = "taskify_bible_print_paper_v1";
 const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
@@ -1784,6 +1732,47 @@ function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
   if (!data || typeof data !== "object") {
     throw new Error("Invalid backup data");
   }
+  // Derive per-board sync cursors from the max task timestamp in the backup instead
+  // of clearing them to {}. Clearing to {} caused limit:500 on the next open which
+  // fetched all recent events including old CREATE events whose DELETE events were
+  // beyond the 500 limit — those old tasks would reappear temporarily.
+  //
+  // By seeding the cursor from the backup's task timestamps, the post-restore sync
+  // uses since:(max_task_time - lookback) and only fetches events newer than the
+  // backup, which are exactly the changes the user missed while offline.
+  const RESTORE_LOOKBACK_SECS = 3600; // 1 hour buffer for clock skew / in-flight events
+  // Build a map from local boardId → max task timestamp (to avoid iterating boards twice)
+  const boardLocalMaxSecs = new Map<string, number>();
+  if (Array.isArray(data.tasks)) {
+    for (const task of data.tasks as Array<{ boardId?: string; createdAt?: number; updatedAt?: string }>) {
+      if (!task.boardId) continue;
+      let secs = 0;
+      if (typeof task.createdAt === "number" && task.createdAt > 0) {
+        secs = Math.max(secs, Math.floor(task.createdAt / 1000));
+      }
+      if (typeof task.updatedAt === "string") {
+        const ms = Date.parse(task.updatedAt);
+        if (!isNaN(ms) && ms > 0) secs = Math.max(secs, Math.floor(ms / 1000));
+      }
+      boardLocalMaxSecs.set(task.boardId, Math.max(boardLocalMaxSecs.get(task.boardId) ?? 0, secs));
+    }
+  }
+  // Cursors must be keyed by bTag = boardTag(b.nostr!.boardId) — this is how the
+  // subscription loop reads them (it.id = boardTag(b.nostr!.boardId)).
+  const cursors: Record<string, number> = {};
+  if (Array.isArray(data.boards)) {
+    for (const board of data.boards as Array<{ id?: string; nostr?: { boardId?: string } }>) {
+      const localId = board.id;
+      const nostrBoardId = board.nostr?.boardId;
+      if (!localId || !nostrBoardId) continue;
+      const maxSecs = boardLocalMaxSecs.get(localId) ?? 0;
+      if (maxSecs > 0) {
+        const bTag = boardTag(nostrBoardId);
+        cursors[bTag] = Math.max(0, maxSecs - RESTORE_LOOKBACK_SECS);
+      }
+    }
+  }
+  idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(cursors));
   if ("tasks" in data && data.tasks !== undefined) {
     idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(data.tasks));
   }
@@ -2062,7 +2051,11 @@ declare global {
 
 const NOSTR_MIN_EVENT_INTERVAL_MS = 200;
 const NOSTR_MIGRATION_BUFFER_MS = 15000;
-const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 8000;
+const NOSTR_INITIAL_SYNC_TIMEOUT_MS = 25000; // absolute fallback — must exceed typical sync time
+const NOSTR_EOSE_GRACE_MS = 200; // inactivity window after first relay EOSE before flushing
+// How many seconds to look back before the stored cursor to guard against
+// clock skew and events that arrived slightly out of order across relays.
+const NOSTR_CURSOR_LOOKBACK_SECS = 300;
 
 function loadDefaultRelays(): string[] {
   try {
@@ -3940,6 +3933,18 @@ function useSettings() {
             ? parsed.fileStorageServer.trim()
             : DEFAULT_FILE_STORAGE_SERVER,
         ) || DEFAULT_FILE_STORAGE_SERVER;
+      const fileServers = (() => {
+        if (typeof parsed?.fileServers === "string" && parsed.fileServers.trim()) {
+          return parsed.fileServers.trim();
+        }
+        // Migrate from legacy single-server setting: build server list seeded with the saved server
+        const servers = DEFAULT_FILE_SERVERS.slice();
+        const existingEntry = findServerEntry(servers, fileStorageServer);
+        if (!existingEntry) {
+          servers.unshift({ url: fileStorageServer, type: "nip96" });
+        }
+        return serializeFileServers(servers);
+      })();
       const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
       const nostrBackupMetadataEnabled = nostrBackupEnabled;
       const pushRaw = parsed?.pushNotifications;
@@ -4036,9 +4041,7 @@ function useSettings() {
           : false,
         walletContactsSyncEnabled,
         fileStorageServer,
-        fileServers: typeof parsed?.fileServers === "string" && parsed.fileServers.trim()
-          ? parsed.fileServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS),
+        fileServers,
         walletMintBackupEnabled,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
@@ -4102,6 +4105,15 @@ function useSettings() {
           ? 'android'
           : detectedPlatform;
       }
+      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
+        // fileServers changed: keep fileStorageServer in sync with selected server
+        const servers = parseFileServers((s as any).fileServers);
+        const currentSelected = normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
+        const entry = findServerEntry(servers, currentSelected);
+        if (!entry && servers.length > 0) {
+          next.fileStorageServer = normalizeFileServerUrl(servers[0].url) || DEFAULT_FILE_STORAGE_SERVER;
+        }
+      }
       if (Object.prototype.hasOwnProperty.call(s, "fileStorageServer")) {
         const rawServer = (s as any).fileStorageServer;
         const normalizedServer =
@@ -4115,13 +4127,7 @@ function useSettings() {
         next.fileStorageServer =
           normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
       }
-      if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
-        // fileServers changed: validate and keep in sync
-        const rawServers = (s as any).fileServers;
-        next.fileServers = typeof rawServers === "string" && rawServers.trim()
-          ? rawServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS);
-      } else if (!next.fileServers) {
+      if (!next.fileServers) {
         next.fileServers = serializeFileServers(DEFAULT_FILE_SERVERS);
       }
       if (!next.backgroundImage) {
@@ -4484,13 +4490,23 @@ function useTasks() {
     return dedupeRecurringInstances(normalized);
   });
   const tasksFirstRun = useRef(true);
+  // Keep a ref so the debounce callback always serializes the latest tasks value.
+  const tasksForSaveRef = useRef(tasks);
+  tasksForSaveRef.current = tasks;
+  const tasksSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (tasksFirstRun.current) { tasksFirstRun.current = false; return; }
-    try {
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(tasks));
-    } catch (err) {
-      console.error('Failed to save tasks', err);
-    }
+    // Debounce the heavy JSON.stringify so it runs AFTER the browser has painted
+    // and GC has had a chance to run. Without this, a large batch flush triggers
+    // a render + JSON.stringify(1000 tasks) back-to-back, spiking memory on mobile.
+    if (tasksSaveTimerRef.current) clearTimeout(tasksSaveTimerRef.current);
+    tasksSaveTimerRef.current = setTimeout(() => {
+      try {
+        idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASKS, JSON.stringify(tasksForSaveRef.current));
+      } catch (err) {
+        console.error('Failed to save tasks', err);
+      }
+    }, 500);
   }, [tasks]);
   return [tasks, setTasks] as const;
 }
@@ -5070,18 +5086,7 @@ export default function App() {
   });
   const [boards, setBoards] = useBoards();
   const [settings, setSettings] = useSettings();
-  const [agentSecurityConfig, setAgentSecurityConfigState] = useState<AgentSecurityConfig>(() => {
-    try {
-      if (new URLSearchParams(window.location.search).get("agent") === "1") {
-        return loadAgentSecurityConfig();
-      }
-    } catch {}
-    return defaultAgentSecurityConfig();
-  });
-  const agentSecurityConfigRef = useRef(agentSecurityConfig);
-  useEffect(() => {
-    agentSecurityConfigRef.current = agentSecurityConfig;
-  }, [agentSecurityConfig]);
+
   useEffect(() => {
     try {
       kvStorage.setItem(LS_MINT_BACKUP_ENABLED, settings.walletMintBackupEnabled ? "1" : "0");
@@ -6270,8 +6275,45 @@ export default function App() {
   const boardMigrationRef = useRef<Map<string, BoardMigrationState>>(new Map());
   const pendingNostrTasksRef = useRef<Set<string>>(new Set());
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
+  // Set of bTags where all relays have fired EOSE — used to determine live vs batch mode.
   const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
   const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
+  // In-memory cursor: tracks the highest created_at seen per board tag this session.
+  // Persisted to IDB after EOSE so subsequent opens only fetch new events.
+  const boardSyncCursorsRef = useRef<Record<string, number>>(() => {
+    try {
+      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  // Per-relay batch accumulator. Events from each relay are collected here until
+  // that relay fires EOSE. On EOSE the relay's batch is clock-protected-merged into
+  // the task state and IDB data is shown immediately (no blocking spinner).
+  // Map<bTag, Map<relayUrl, Map<"boardId::taskId", Task | { _deleted:true; _nostrAt:number }>>>
+  type RelayBatchEntry = Task | { _deleted: true; _nostrAt: number };
+  const relayBatchRef = useRef<Map<string, Map<string, Map<string, RelayBatchEntry>>>>(new Map());
+
+  // Tracks which relay URLs still have pending EOSE for each board.
+  // When empty for a board, all relays are done and we're in live mode.
+  // Map<bTag, Set<relayUrl>>
+  const pendingRelaysByBoardRef = useRef<Map<string, Set<string>>>(new Map());
+
+  // Live-mode micro-batch coalescer. After the initial batch flush, post-EOSE events
+  // (e.g. from slow relays still streaming, or live peer updates) are accumulated for
+  // LIVE_BATCH_MS before a single setTasks is called. This prevents slow-relay events
+  // from triggering individual renders that briefly show stale state — by the time the
+  // window fires, both CREATE and DELETE events for a task have arrived, and the clock
+  // check ensures only the latest wins. Initial load speed is completely unaffected.
+  //
+  // Updater functions (not pre-built tasks) are buffered so all existing merge logic
+  // (bounty merging, subtask merging, etc.) runs intact inside a single setTasks call.
+  const LIVE_BATCH_MS = 150;
+  type TaskUpdater = (prev: Task[]) => Task[];
+  const liveBatchRef = useRef<Map<string, { updaters: TaskUpdater[]; timer: number }>>(new Map());
+
+
   const markNostrBoardInitialSyncComplete = useCallback((bTag: string) => {
     if (!bTag) return;
     completedNostrInitialSyncRef.current.add(bTag);
@@ -6286,6 +6328,36 @@ export default function App() {
   useEffect(() => { boardsRef.current = boards; }, [boards]);
   const tasksRef = useRef<Task[]>(tasks);
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
+
+  // AES key migration: track items encrypted with the legacy key (SHA-256(boardId) == public tag).
+  // When detected, we re-encrypt and re-publish with the secure labeled key.
+  const aesMigrationPendingTasksRef = useRef<Set<string>>(new Set());
+  const aesMigrationPendingBoardIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pendingBoardIds = aesMigrationPendingBoardIdsRef.current;
+    if (pendingBoardIds.size === 0) return;
+    aesMigrationPendingBoardIdsRef.current = new Set();
+    for (const boardId of pendingBoardIds) {
+      const board = boardsRef.current.find((b) => b.nostr?.boardId === boardId);
+      if (!board) continue;
+      publishBoardMetadataRef.current?.(board)?.catch(() => {});
+    }
+  }, [boards]);
+
+  useEffect(() => {
+    const pendingTaskIds = aesMigrationPendingTasksRef.current;
+    if (pendingTaskIds.size === 0) return;
+    aesMigrationPendingTasksRef.current = new Set();
+    for (const taskId of pendingTaskIds) {
+      const task = tasksRef.current.find((t) => t.id === taskId);
+      if (!task) continue;
+      const board = boardsRef.current.find((b) => b.id === task.boardId);
+      if (!board) continue;
+      maybePublishTaskRef.current?.(task, board, { skipBoardMetadata: true })?.catch(() => {});
+    }
+  }, [tasks]);
+
   const calendarEventsRef = useRef<CalendarEvent[]>(calendarEvents);
   useEffect(() => { calendarEventsRef.current = calendarEvents; }, [calendarEvents]);
   const [inboxProcessedSeed] = useState<string[]>(() => {
@@ -6314,6 +6386,19 @@ export default function App() {
   const inboxPoolRef = useRef<SessionPool | null>(null);
   const inboxSubCloserRef = useRef<(() => void) | null>(null);
   const nostrSkHex = useMemo(() => bytesToHex(nostrSK), [nostrSK]);
+
+  // ── Google Calendar integration ──────────────────────────────────────────
+  const {
+    connectionStatus: gcalStatus,
+    calendars: gcalCalendars,
+    gcalEvents: gcalCalendarEvents,
+    loading: gcalLoading,
+    connect: gcalConnect,
+    disconnect: gcalDisconnect,
+    toggleCalendar: gcalToggleCalendar,
+    sync: gcalSync,
+  } = useGoogleCalendar(workerBaseUrl, nostrSkHex || null);
+
   const inboxRelays = useMemo(
     () =>
       Array.from(
@@ -7007,15 +7092,32 @@ export default function App() {
     nostrApplyQueue.current = next.then(() => {}, () => {});
     return next;
   }, []);
-  const [nostrRefresh, setNostrRefresh] = useState(0);
-  const normalizeRelayList = useCallback((relays: string[] | null | undefined) => {
-    const normalized = Array.isArray(relays)
-      ? relays.map((r) => (typeof r === "string" ? r.trim() : "")).filter(Boolean)
-      : [];
-    const unique = Array.from(new Set(normalized));
-    unique.sort();
-    return unique;
+
+  // Per-board event queues. Each board processes its events independently in
+  // parallel with other boards but serially within the board (preserving task
+  // clock ordering). A GC yield is inserted every N events so iOS can reclaim
+  // memory between chunks instead of accumulating until the process is killed.
+  const NOSTR_BOARD_YIELD_INTERVAL = 50;
+  const boardEventQueuesRef = useRef<Map<string, { promise: Promise<void>; count: number }>>(new Map());
+  const enqueueForBoard = useCallback((boardId: string, fn: () => Promise<void>): Promise<void> => {
+    const entry = boardEventQueuesRef.current.get(boardId) ?? { promise: Promise.resolve(), count: 0 };
+    entry.count++;
+    const shouldYield = entry.count % NOSTR_BOARD_YIELD_INTERVAL === 0;
+    const next = entry.promise.catch(() => {}).then(async () => {
+      // Yield to the browser's task scheduler every N events so GC can run and
+      // iOS memory pressure warnings are less likely to kill the process.
+      if (shouldYield) await new Promise<void>(r => setTimeout(r, 0));
+      return fn();
+    });
+    entry.promise = next.then(() => {}, () => {});
+    boardEventQueuesRef.current.set(boardId, entry);
+    return next;
   }, []);
+  const [nostrRefresh, setNostrRefresh] = useState(0);
+  const normalizeRelayList = useCallback(
+    (relays: string[] | null | undefined) => normalizeRelayListSorted(relays) ?? [],
+    [],
+  );
 
   const sanitizeSettingsForBackup = useCallback(
     (raw: Settings | Record<string, unknown>): Partial<Settings> =>
@@ -7529,34 +7631,7 @@ export default function App() {
   }, [currentBoard?.kind, view]);
   const showSettings = activePage === "settings";
   const [addBoardOpen, setAddBoardOpen] = useState(false);
-  const [showAgentPanel, setShowAgentPanel] = useState(false);
-  const [agentSessionEnabled] = useState<boolean>(() => {
-    try {
-      return new URLSearchParams(window.location.search).get("agent") === "1";
-    } catch {
-      return false;
-    }
-  });
-  const [showAgentModeOnboarding, setShowAgentModeOnboarding] = useState<boolean>(() => {
-    if (!agentSessionEnabled) return false;
-    try {
-      return kvStorage.getItem(LS_AGENT_MODE_ONBOARDING_DONE) !== "done";
-    } catch {
-      return true;
-    }
-  });
 
-  useEffect(() => {
-    if (!agentSessionEnabled) return;
-    setShowAgentPanel(true);
-  }, [agentSessionEnabled]);
-
-  const completeAgentModeOnboarding = useCallback(() => {
-    try {
-      kvStorage.setItem(LS_AGENT_MODE_ONBOARDING_DONE, "done");
-    } catch {}
-    setShowAgentModeOnboarding(false);
-  }, []);
 
   const nostrBackupPublishedSnapshotRef = useRef<string | null>(null);
   const nostrBackupDebounceTimerRef = useRef<number | null>(null);
@@ -7979,52 +8054,7 @@ export default function App() {
     prefetchWalletModal();
     startTransition(() => setActivePage("contacts"));
   }, [prefetchWalletModal, shouldReloadForNavigation]);
-  const commitAgentSecurityConfig = useCallback((next: AgentSecurityConfig) => {
-    const normalized = normalizeAgentSecurityConfig({
-      ...next,
-      updatedISO: new Date().toISOString(),
-    });
-    setAgentSecurityConfigState(normalized);
-    saveAgentSecurityConfig(normalized);
-    return normalized;
-  }, []);
-  const updateAgentSecurityConfig = useCallback(
-    (updates: Partial<Pick<AgentSecurityConfig, "enabled" | "mode">>) =>
-      commitAgentSecurityConfig({
-        ...agentSecurityConfigRef.current,
-        ...updates,
-      }),
-    [commitAgentSecurityConfig],
-  );
-  const addTrustedAgentNpub = useCallback(
-    (npub: string) =>
-      commitAgentSecurityConfig(
-        addTrustedNpubToConfig(agentSecurityConfigRef.current, npub),
-      ),
-    [commitAgentSecurityConfig],
-  );
-  const removeTrustedAgentNpub = useCallback(
-    (npub: string) =>
-      commitAgentSecurityConfig(
-        removeTrustedNpubFromConfig(agentSecurityConfigRef.current, npub),
-      ),
-    [commitAgentSecurityConfig],
-  );
-  const clearTrustedAgentNpubs = useCallback(
-    () => commitAgentSecurityConfig(clearTrustedNpubs(agentSecurityConfigRef.current)),
-    [commitAgentSecurityConfig],
-  );
-  const setStrictWithTrustedAgentNpub = useCallback(
-    (npub: string) => {
-      const seeded = addTrustedNpubToConfig(agentSecurityConfigRef.current, npub);
-      return commitAgentSecurityConfig({
-        ...seeded,
-        enabled: true,
-        mode: "strict",
-      });
-    },
-    [commitAgentSecurityConfig],
-  );
+
   const openShareBoard = useCallback(() => {
     if (shouldReloadForNavigation()) return;
     if (!currentBoard) return;
@@ -8057,11 +8087,13 @@ export default function App() {
   }, []);
 
   const createBoardFromName = useCallback(
-    (name: string, type: "lists" | "compound") => {
+    (name: string, type: "lists" | "compound", shared = true) => {
       if (shouldReloadForNavigation()) return null;
       const trimmed = name.trim();
       if (!trimmed) return null;
       const id = crypto.randomUUID();
+      const nostrBoardId = shared ? crypto.randomUUID() : undefined;
+      const relayList = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
       let board: Board;
       if (type === "compound") {
         board = {
@@ -8074,7 +8106,8 @@ export default function App() {
           clearCompletedDisabled: false,
           indexCardEnabled: false,
           hideChildBoardNames: false,
-        };
+          ...(nostrBoardId ? { nostr: { boardId: nostrBoardId, relays: relayList } } : {}),
+        } as Board;
       } else {
         board = {
           id,
@@ -8085,13 +8118,17 @@ export default function App() {
           hidden: false,
           clearCompletedDisabled: false,
           indexCardEnabled: false,
-        };
+          ...(nostrBoardId ? { nostr: { boardId: nostrBoardId, relays: relayList } } : {}),
+        } as Board;
       }
       setBoards((prev) => [...prev, board]);
       changeBoard(id);
+      if (shared && nostrBoardId) {
+        publishBoardMetadataRef.current?.(board).catch(() => {});
+      }
       return id;
     },
-    [changeBoard, setBoards, shouldReloadForNavigation],
+    [changeBoard, defaultRelays, setBoards, shouldReloadForNavigation],
   );
 
   const joinSharedBoard = useCallback(
@@ -8161,7 +8198,6 @@ export default function App() {
     }
   }, []);
   const [showFirstRunOnboarding, setShowFirstRunOnboarding] = useState(() => {
-    if (agentSessionEnabled) return false;
     if (!onboardingNeedsKeySelection) return false;
     try {
       return kvStorage.getItem(LS_FIRST_RUN_ONBOARDING_DONE) !== "done";
@@ -8217,7 +8253,7 @@ export default function App() {
   const onboardingPushConfigured = !!workerBaseUrl && !!vapidPublicKey;
   // True while any onboarding/welcome overlay is blocking the app. Used to gate
   // background interaction via the HTML `inert` attribute.
-  const isOnboardingActive = showFirstRunOnboarding || showAgentModeOnboarding;
+  const isOnboardingActive = showFirstRunOnboarding;
   // Keep the ref in sync every render so nav callbacks can read it safely.
   isOnboardingActiveRef.current = isOnboardingActive;
   // Hard state-level gate: if onboarding is active, force activePage to the
@@ -8875,6 +8911,8 @@ export default function App() {
   const [pushWorkState, setPushWorkState] = useState<"idle" | "enabling" | "disabling">("idle");
   const [pushError, setPushError] = useState<string | null>(null);
   const [inlineTitles, setInlineTitles] = useState<Record<string, string>>({});
+  const [addMenuKey, setAddMenuKey] = useState<string | null>(null);
+  const [voiceDictationKey, setVoiceDictationKey] = useState<string | null>(null);
   const [pendingFocusColumnId, setPendingFocusColumnId] = useState<string | null>(null);
   const [renamingColumnId, setRenamingColumnId] = useState<string | null>(null);
   const [columnDrafts, setColumnDrafts] = useState<Record<string, string>>({});
@@ -8899,6 +8937,7 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [renamingColumnId]);
   const [previewDocument, setPreviewDocument] = useState<TaskDocument | null>(null);
+  const [previewDocumentBoardId, setPreviewDocumentBoardId] = useState<string | undefined>(undefined);
   const handleDownloadDocument = useCallback(async (doc: TaskDocument) => {
     if (typeof window === "undefined") return;
     try {
@@ -8924,21 +8963,22 @@ export default function App() {
 
   const openDocumentExternally = useCallback((doc: TaskDocument) => {
     if (typeof window === "undefined") return;
-    window.location.assign(doc.dataUrl);
+    window.location.assign(doc.dataUrl || doc.remoteUrl || "");
   }, []);
 
-  const openDocumentPreview = useCallback((doc: TaskDocument) => {
+  const openDocumentPreview = useCallback((doc: TaskDocument, boardId?: string) => {
     if (doc.kind === "pdf") {
       handleDownloadDocument(doc);
       return;
     }
     setPreviewDocument(doc);
+    setPreviewDocumentBoardId(boardId);
   }, [handleDownloadDocument]);
-  const handleOpenDocument = useCallback((_task: Task, doc: TaskDocument) => {
-    openDocumentPreview(doc);
+  const handleOpenDocument = useCallback((task: Task, doc: TaskDocument) => {
+    openDocumentPreview(doc, task.boardId);
   }, [openDocumentPreview]);
-  const handleOpenEventDocument = useCallback((doc: TaskDocument) => {
-    openDocumentPreview(doc);
+  const handleOpenEventDocument = useCallback((doc: TaskDocument, boardId?: string) => {
+    openDocumentPreview(doc, boardId);
   }, [openDocumentPreview]);
 
   function handleBoardChanged(boardId: string, options?: { board?: Board; republishTasks?: boolean }) {
@@ -9324,10 +9364,17 @@ export default function App() {
     return groups;
   }, [visibleBoards]);
 
-  const upcomingFilterOptions = useMemo(
-    () => upcomingFilterGroups.flatMap((group) => [group.boardOption, ...group.listOptions]),
-    [upcomingFilterGroups],
-  );
+  const upcomingFilterOptions = useMemo(() => {
+    const boardOptions = upcomingFilterGroups.flatMap((group) => [group.boardOption, ...group.listOptions]);
+    const gcalOptions: UpcomingFilterOption[] = gcalStatus.connected
+      ? gcalCalendars.map((cal) => ({
+          id: `gcal:${cal.id}`,
+          label: cal.name,
+          boardId: `gcal:${cal.id}`,
+        }))
+      : [];
+    return [...boardOptions, ...gcalOptions];
+  }, [upcomingFilterGroups, gcalCalendars, gcalStatus.connected]);
   const upcomingFilterOptionMap = useMemo(() => {
     const map = new Map<string, UpcomingFilterOption>();
     upcomingFilterOptions.forEach((option) => {
@@ -9975,12 +10022,21 @@ export default function App() {
     return ids;
   }, [boards, pendingNostrInitialSyncByBoardTag]);
 
+  // True while the current board's initial relay sync is in progress.
+  // Used to show a loading indicator so users know tasks are on their way.
+  const isCurrentBoardSyncing = useMemo(() => {
+    if (!currentBoard) return false;
+    const nostrBoardId = currentBoard.nostr?.boardId;
+    if (!nostrBoardId) return false;
+    return !!pendingNostrInitialSyncByBoardTag[boardTag(nostrBoardId)];
+  }, [currentBoard, pendingNostrInitialSyncByBoardTag]);
+
   /* ---------- Derived: board-scoped lists ---------- */
   const tasksForBoard = useMemo(() => {
     if (!currentBoard) return [] as Task[];
     const scope = new Set(boardScopeIds(currentBoard, boards));
     return tasks
-      .filter((t) => scope.has(t.boardId) && !pendingSharedBoardIds.has(t.boardId))
+      .filter((t) => scope.has(t.boardId))
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   }, [boards, tasks, currentBoard, pendingSharedBoardIds]);
 
@@ -10914,14 +10970,18 @@ export default function App() {
       const ts = Date.parse(ev.startISO);
       return !Number.isNaN(ts);
     });
-    if (!upcomingUsHolidaysEnabled) return boardEvents;
-    return [...boardEvents, ...upcomingUsHolidayEvents];
+    let result = upcomingUsHolidaysEnabled ? [...boardEvents, ...upcomingUsHolidayEvents] : boardEvents;
+    if (gcalCalendarEvents.length > 0) {
+      result = [...result, ...(gcalCalendarEvents as unknown as typeof result)];
+    }
+    return result;
   }, [
     calendarEvents,
     messagesBoardId,
     upcomingBoardOrder,
     upcomingUsHolidayEvents,
     upcomingUsHolidaysEnabled,
+    gcalCalendarEvents,
   ]);
 
   const upcomingItemCount = upcoming.length + upcomingEvents.length;
@@ -10968,6 +11028,7 @@ export default function App() {
         const { selectedBoards, selectedLists } = upcomingFilterMap;
         filtered = upcomingEvents.filter((ev) => {
           if (isUsHolidayCalendarEvent(ev)) return upcomingUsHolidaysEnabled;
+          if (isGcalBoardId(ev.boardId)) return upcomingFilter === null || upcomingFilter.includes(ev.boardId);
           if (ev.external) return true;
           const board = boardMap.get(ev.boardId);
           const listSet = selectedLists.get(ev.boardId);
@@ -11392,10 +11453,18 @@ export default function App() {
 
 	  const renderUpcomingEventCard = useCallback((ev: CalendarEvent) => {
 	    const isUsHoliday = isUsHolidayCalendarEvent(ev);
+	    const isGcal = (ev as any).gcalSource === true;
+	    const gcalCalendarName = isGcal && typeof (ev as any).gcalCalendarName === "string"
+	      ? (ev as any).gcalCalendarName
+	      : "";
 	    const board = boardMap.get(ev.boardId);
-	    const boardLabel = isUsHoliday ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL : board?.name || "Board";
+	    const boardLabel = isUsHoliday
+	      ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL
+	      : isGcal
+	        ? (gcalCalendarName || "Google Calendar")
+	        : (board?.name || "Board");
 	    const listLabel =
-	      board?.kind === "lists"
+	      !isGcal && board?.kind === "lists"
 	        ? board.columns.find((column) => column.id === ev.columnId)?.name || ""
 	        : "";
 	    const placementLabel = listLabel ? `${boardLabel} • ${listLabel}` : boardLabel;
@@ -11433,7 +11502,7 @@ export default function App() {
 	          showDate={false}
 	          meta={meta}
 	          trailing={revealAction}
-	          onOpenDocument={(_event, doc) => handleOpenEventDocument(doc)}
+	          onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 	          onEdit={isUsHoliday ? undefined : () => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 	          onDragStart={isUsHoliday ? undefined : (id) => setDraggingEventId(id)}
 	          onDragEnd={handleDragEnd}
@@ -12112,21 +12181,15 @@ export default function App() {
       pendingNostrTasksRef.current.delete(pendingKey);
     }
   }
-  // Ensure all images and documents for a shared board are stored remotely (encrypted).
-  // Images still as data URLs are encrypted and uploaded to the file server.
-  // Documents already carrying a remoteUrl have their local blobs stripped before publish.
-  // Documents still carrying only a dataUrl are encrypted and uploaded.
-  // Throws if any upload fails — save must not silently fall back to inline payloads.
   async function prepareAttachmentsForPublish(
     params: { images?: string[]; documents?: TaskDocument[]; boardId: string }
   ): Promise<{ images: string[] | null; documents: any[] | null }> {
     const servers = parseFileServers(settings.fileServers);
     const serverEntry = findServerEntry(servers, settings.fileStorageServer)
-      ?? servers[0]
       ?? { url: settings.fileStorageServer, type: "nip96" as const };
 
     const nextImages = typeof params.images === "undefined" ? null : await Promise.all((params.images || []).map(async (img, index) => {
-      if (!img || !img.startsWith("data:")) return img; // already a remote URL
+      if (!img || !img.startsWith("data:")) return img;
       try {
         const { mimeType, bytes } = parseDataUrl(img);
         return await encryptAndUploadAttachment({
@@ -12137,21 +12200,15 @@ export default function App() {
           serverEntry,
           nostrSkHex,
         });
-      } catch (err: any) {
-        console.error("[attachments] Failed to encrypt/upload image", err);
-        throw new Error(err?.message || "Failed to upload encrypted image attachment.");
+      } catch (err) {
+        console.warn("[attachments] Failed to encrypt/upload image; falling back to inline payload", err);
+        return img;
       }
     }));
 
     const nextDocuments = typeof params.documents === "undefined" ? null : await Promise.all((params.documents || []).map(async (doc) => {
-      // Remote-first doc already uploaded at attach-time: strip local blobs, keep metadata + remoteUrl
-      if (doc.remoteUrl) {
-        const { dataUrl: _d, preview: _p, full: _f, ...rest } = doc as any;
-        return { ...rest };
-      }
-      // Legacy inline doc: encrypt+upload now
-      if (!doc?.dataUrl || !doc.dataUrl.startsWith("data:")) {
-        return doc; // nothing to upload (unexpected, pass through)
+      if (!doc?.dataUrl || !doc.dataUrl.startsWith("data:") || doc.remoteUrl) {
+        return doc;
       }
       try {
         const { mimeType, bytes } = parseDataUrl(doc.dataUrl);
@@ -12163,11 +12220,11 @@ export default function App() {
           serverEntry,
           nostrSkHex,
         });
-        const { dataUrl: _d, preview: _p, full: _f, ...rest } = doc as any;
+        const { dataUrl, preview, full, ...rest } = doc as any;
         return { ...rest, remoteUrl, encrypted: true };
-      } catch (err: any) {
-        console.error("[attachments] Failed to encrypt/upload document", err);
-        throw new Error(err?.message || `Failed to upload encrypted file attachment: ${doc?.name || "document"}`);
+      } catch (err) {
+        console.warn("[attachments] Failed to encrypt/upload document; falling back to inline payload", err);
+        return doc;
       }
     }));
 
@@ -12213,8 +12270,7 @@ export default function App() {
     body.dueTimeEnabled = typeof t.dueTimeEnabled === 'boolean' ? t.dueTimeEnabled : null;
     body.dueTimeZone = typeof t.dueTimeZone === "string" ? t.dueTimeZone : null;
     // Reminders are device-specific and should not be published to shared boards.
-    // Include explicit nulls to signal removals when undefined.
-    // Attachments are encrypted+uploaded to the file server before publishing.
+    // Include explicit nulls to signal removals when undefined
     const preparedAttachments = await prepareAttachmentsForPublish({
       images: t.images,
       documents: t.documents,
@@ -12309,7 +12365,7 @@ export default function App() {
     };
   };
 
-  const buildCanonicalCalendarPayload = (event: CalendarEvent, options?: { deleted?: boolean }) => {
+  const buildCanonicalCalendarPayload = async (event: CalendarEvent, options?: { deleted?: boolean; boardId?: string }) => {
     const eventKey = event.eventKey || generateEventKey();
     const deleted = !!options?.deleted;
     const createdBy = normalizeAgentPubkey(event.createdBy || nostrPK) ?? undefined;
@@ -12358,7 +12414,12 @@ export default function App() {
     base.title = normalized.title || "Untitled";
     if (event.summary) base.summary = event.summary;
     if (event.description) base.description = event.description;
-    if (event.documents?.length) base.documents = event.documents;
+    if (event.documents?.length) {
+      const prepared = options?.boardId
+        ? await prepareAttachmentsForPublish({ boardId: options.boardId, documents: event.documents })
+        : { documents: event.documents };
+      if (prepared.documents?.length) base.documents = prepared.documents;
+    }
     if (event.image) base.image = event.image;
     if (event.locations?.length) base.locations = event.locations;
     if (event.geohash) base.geohash = event.geohash;
@@ -12382,7 +12443,7 @@ export default function App() {
     return base;
   };
 
-  const buildViewCalendarPayload = (event: CalendarEvent, options?: { deleted?: boolean }) => {
+  const buildViewCalendarPayload = async (event: CalendarEvent, options?: { deleted?: boolean; boardId?: string }) => {
     const deleted = !!options?.deleted;
     const createdBy = normalizeAgentPubkey(event.createdBy || nostrPK) ?? undefined;
     const lastEditedBy = normalizeAgentPubkey(event.lastEditedBy || nostrPK || createdBy) ?? createdBy;
@@ -12429,7 +12490,12 @@ export default function App() {
     base.title = normalized.title || "Untitled";
     if (event.summary) base.summary = event.summary;
     if (event.description) base.description = event.description;
-    if (event.documents?.length) base.documents = event.documents;
+    if (event.documents?.length) {
+      const prepared = options?.boardId
+        ? await prepareAttachmentsForPublish({ boardId: options.boardId, documents: event.documents })
+        : { documents: event.documents };
+      if (prepared.documents?.length) base.documents = prepared.documents;
+    }
     if (event.image) base.image = event.image;
     if (event.locations?.length) base.locations = event.locations;
     if (event.geohash) base.geohash = event.geohash;
@@ -12475,8 +12541,8 @@ export default function App() {
       if (changed) {
         setCalendarEvents((prev) => prev.map((ev) => (ev.id === event.id ? updatedEvent : ev)));
       }
-      const canonicalPayload = buildCanonicalCalendarPayload(updatedEvent, { deleted: true });
-      const viewPayload = buildViewCalendarPayload(updatedEvent, { deleted: true });
+      const canonicalPayload = await buildCanonicalCalendarPayload(updatedEvent, { deleted: true, boardId });
+      const viewPayload = await buildViewCalendarPayload(updatedEvent, { deleted: true, boardId });
       if (!canonicalPayload || !viewPayload) return;
       const canonicalContent = await encryptCalendarPayloadForBoard(
         canonicalPayload,
@@ -12546,9 +12612,9 @@ export default function App() {
         setCalendarEvents((prev) => prev.map((ev) => (ev.id === event.id ? updatedEvent : ev)));
       }
 
-      const canonicalPayload = buildCanonicalCalendarPayload(updatedEvent);
+      const canonicalPayload = await buildCanonicalCalendarPayload(updatedEvent, { boardId });
       if (!canonicalPayload) return;
-      const viewPayload = buildViewCalendarPayload(updatedEvent);
+      const viewPayload = await buildViewCalendarPayload(updatedEvent, { boardId });
       if (!viewPayload) return;
       const canonicalContent = await encryptCalendarPayloadForBoard(
         canonicalPayload,
@@ -12820,11 +12886,16 @@ export default function App() {
     const kindTag = tagValue(ev, "k");
     const name = tagValue(ev, "name");
     let payload: any = {};
+    let boardDecryptedWithLegacyKey = false;
     try {
-      const dec = await decryptFromBoard(boardId, ev.content);
-      payload = dec ? JSON.parse(dec) : {};
+      const { plaintext, usedLegacyKey } = await decryptFromBoard(boardId, ev.content);
+      boardDecryptedWithLegacyKey = usedLegacyKey;
+      payload = plaintext ? JSON.parse(plaintext) : {};
     } catch {
       try { payload = ev.content ? JSON.parse(ev.content) : {}; } catch {}
+    }
+    if (boardDecryptedWithLegacyKey) {
+      aesMigrationPendingBoardIdsRef.current.add(boardId);
     }
     setBoards((prev) => {
       const boardIndex = prev.findIndex((item) => item.id === board.id);
@@ -12998,13 +13069,35 @@ export default function App() {
     if (ev.created_at === last && isPending) return;
     // Accept equal timestamps so rapid consecutive updates still apply
     m.set(taskId, ev.created_at);
+    // Advance the in-memory cursor for this board so we know the high-water mark.
+    // Key by bTag (SHA256 of nostrBoardId) — must match the lookup in the
+    // subscription setup where it.id = boardTag(b.nostr!.boardId) = bTag.
+    // Also persist incrementally every 100 events: if the app crashes before EOSE
+    // the cursor survives and the next open re-fetches only unprocessed events.
+    if (typeof ev.created_at === "number" && Number.isFinite(ev.created_at)) {
+      const prev = boardSyncCursorsRef.current[bTag] ?? 0;
+      if (ev.created_at > prev) {
+        boardSyncCursorsRef.current = { ...boardSyncCursorsRef.current, [bTag]: ev.created_at };
+        const clock = nostrIdxRef.current.taskClock.get(bTag);
+        if (clock && clock.size % 100 === 0) {
+          try {
+            idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current));
+          } catch { /* non-fatal */ }
+        }
+      }
+    }
 
     let payload: any = {};
+    let taskDecryptedWithLegacyKey = false;
     try {
-      const dec = await decryptFromBoard(boardId, ev.content);
-      payload = dec ? JSON.parse(dec) : {};
+      const { plaintext, usedLegacyKey } = await decryptFromBoard(boardId, ev.content);
+      taskDecryptedWithLegacyKey = usedLegacyKey;
+      payload = plaintext ? JSON.parse(plaintext) : {};
     } catch {
       try { payload = ev.content ? JSON.parse(ev.content) : {}; } catch {}
+    }
+    if (taskDecryptedWithLegacyKey) {
+      aesMigrationPendingTasksRef.current.add(taskId);
     }
     const status = tagValue(ev, "status");
     const col = tagValue(ev, "col");
@@ -13063,7 +13156,70 @@ export default function App() {
       }
     }
     else if (lb.kind === "lists") base.columnId = col || (lb.columns[0]?.id || "");
-    setTasks(prev => {
+    // Key used for both the live setTasks path and the batch Map path.
+    const taskKey = `${lb.id}::${taskId}`;
+
+    // ── Per-relay batch path (relay hasn't fired EOSE yet) ───────────────────
+    // Route event into the relay-specific batch Map. On EOSE, the relay's batch
+    // is clock-protected-merged into state. IDB data is always visible immediately.
+    // evRelay is captured from pool.subscribe's onEvent(ev, relay) argument.
+    const evRelay = (ev as any).__relay as string | undefined;
+    const isPendingRelay = evRelay && pendingRelaysByBoardRef.current.get(bTag)?.has(evRelay);
+    if (isPendingRelay) {
+      let boardBatch = relayBatchRef.current.get(bTag);
+      if (!boardBatch) { boardBatch = new Map(); relayBatchRef.current.set(bTag, boardBatch); }
+      let batchMap = boardBatch.get(evRelay!);
+      if (!batchMap) { batchMap = new Map(); boardBatch.set(evRelay!, batchMap); }
+      if (status === "deleted") {
+        batchMap.set(taskKey, { _deleted: true, _nostrAt: ev.created_at });
+      } else {
+        // For merge fields that need prev (bounty, order, images, etc.),
+        // use what's already in this relay's batch, falling back to base.
+        const existing = batchMap.get(taskKey);
+        const cur = existing && !('_deleted' in existing) ? existing as Task : undefined;
+        const incomingB: Task["bounty"] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'bounty') ? payload.bounty : undefined;
+        const incomingImgs: string[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'images') ? payload.images : undefined;
+        const imgs = incomingImgs === undefined ? cur?.images : incomingImgs === null ? undefined : incomingImgs;
+        let docs: TaskDocument[] | undefined = cur?.documents;
+        if (Object.prototype.hasOwnProperty.call(payload, 'documents')) {
+          const rawDocs = (payload as any).documents;
+          docs = rawDocs === null ? undefined : (normalizeDocumentList(rawDocs)?.map(ensureDocumentPreview) ?? undefined);
+        }
+        const incomingStreak: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'streak') ? payload.streak : undefined;
+        const st = incomingStreak === undefined ? cur?.streak : incomingStreak === null ? undefined : incomingStreak;
+        const incomingLongest: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'longestStreak') ? payload.longestStreak : undefined;
+        const longest = incomingLongest === undefined ? cur?.longestStreak : incomingLongest === null ? undefined : incomingLongest;
+        const incomingSubs: Subtask[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'subtasks') ? payload.subtasks : undefined;
+        const subs = incomingSubs === undefined ? cur?.subtasks : incomingSubs === null ? undefined : incomingSubs;
+        const mergedAssignees = incomingAssignees === undefined ? cur?.assignees : incomingAssignees === null ? undefined : incomingAssignees;
+        const normalizedIncoming = incomingB === null ? undefined : normalizeBounty(incomingB);
+        batchMap.set(taskKey, {
+          ...(cur ?? {}),
+          ...base,
+          order: cur?.order ?? 0,
+          createdAt: cur?.createdAt ?? base.createdAt ?? Date.now(),
+          images: imgs,
+          documents: docs,
+          bounty: normalizedIncoming ?? cur?.bounty,
+          streak: st,
+          longestStreak: longest,
+          subtasks: subs,
+          assignees: mergedAssignees,
+          _nostrAt: ev.created_at,
+        } as Task);
+      }
+      return; // ← do NOT call setTasks; flush happens at relay EOSE
+    }
+
+    // ── Live path (sync already complete, normal per-event update) ────────────
+    // Enqueue the updater into the micro-batch coalescer instead of calling
+    // setTasks directly. Multiple events arriving within LIVE_BATCH_MS are
+    // applied sequentially inside a single setTasks call so React only renders
+    // once. The clock check already rejected older events above, so each updater
+    // here represents a genuinely newer state — applying them in arrival order
+    // (newest clock wins) produces the correct final state without flicker.
+    const liveUpdater = (prev: Task[]) => {
+      return ((prev: Task[]) => {
       const idx = prev.findIndex(x => x.id === taskId && x.boardId === lb.id);
       if (status === "deleted") {
         if (idx < 0) return prev;
@@ -13209,7 +13365,27 @@ export default function App() {
           },
         ]);
       }
-    });
+    })(prev);
+    };
+
+    // Enqueue liveUpdater into the micro-batch coalescer
+    let batch = liveBatchRef.current.get(bTag);
+    if (!batch) {
+      batch = { updaters: [], timer: 0 };
+      liveBatchRef.current.set(bTag, batch);
+    }
+    batch.updaters.push(liveUpdater);
+    window.clearTimeout(batch.timer);
+    batch.timer = window.setTimeout(() => {
+      const b = liveBatchRef.current.get(bTag);
+      if (!b) return;
+      liveBatchRef.current.delete(bTag);
+      setTasks(prev => {
+        let result = prev;
+        for (const updater of b.updaters) result = updater(result);
+        return result;
+      });
+    }, LIVE_BATCH_MS);
   }, [setTasks, settings.newTaskPosition, tagValue, ensureMigrationState]);
 
   const maybeMigrateBoardToDedicatedKey = useCallback(async (bTag: string) => {
@@ -14258,6 +14434,11 @@ export default function App() {
 
   function openInlineTaskEditor(key: string) {
     if (!currentBoard) return;
+    setAddMenuKey(key);
+  }
+
+  function openInlineTaskEditorDirect(key: string) {
+    if (!currentBoard) return;
 
     let targetBoardId = currentBoard.id;
     let dueISO = isoForToday();
@@ -14303,6 +14484,66 @@ export default function App() {
 
     setEditing({ type: "task", originalType: "task", originalId: draft.id, task: draft });
   }
+
+  function handleVoiceSave(key: string, finalTasks: FinalTask[]) {
+    if (!currentBoard || !finalTasks.length) return;
+
+    let targetBoardId = currentBoard.id;
+    let dueISOBase = isoForToday();
+    let column: Task["column"] | undefined;
+    let columnId: string | undefined;
+
+    if (currentBoard.kind === "week") {
+      column = "day";
+      dueISOBase = isoForWeekday(Number(key) as Weekday, { weekStart: settings.weekStart });
+    } else {
+      const placement = resolveListPlacement(key);
+      if (placement) {
+        targetBoardId = placement.boardId;
+        columnId = placement.columnId;
+      }
+    }
+
+    const newTasks: Task[] = [];
+    for (const ft of finalTasks) {
+      if (!ft.title?.trim()) continue;
+      const nextOrder = nextOrderForBoard(targetBoardId, [...tasks, ...newTasks], settings.newTaskPosition);
+      const hasExplicitVoiceDue = typeof ft.dueISO === "string" && !!ft.dueISO.trim();
+      const task: Task = {
+        id: crypto.randomUUID(),
+        boardId: ft.boardId ?? targetBoardId,
+        createdBy: nostrPK || undefined,
+        lastEditedBy: nostrPK || undefined,
+        title: ft.title.trim(),
+        createdAt: Date.now(),
+        dueISO: ft.dueISO ?? dueISOBase,
+        dueDateEnabled: !!(ft.dueISO || currentBoard.kind === "week"),
+        dueTimeEnabled: hasExplicitVoiceDue,
+        completed: false,
+        order: nextOrder,
+      };
+      if (Array.isArray(ft.subtasks) && ft.subtasks.length) {
+        task.subtasks = ft.subtasks
+          .map((title) => (typeof title === "string" ? title.trim() : ""))
+          .filter(Boolean)
+          .map((title) => ({ id: crypto.randomUUID(), title, completed: false }));
+      }
+      const parsedPriority = normalizeTaskPriority((ft as any).priority);
+      if (parsedPriority) task.priority = parsedPriority;
+      if (column) task.column = column;
+      if (columnId) task.columnId = columnId;
+      applyHiddenForFuture(task, settings.weekStart, currentBoard.kind);
+      newTasks.push(task);
+    }
+
+    if (!newTasks.length) return;
+    setTasks((prev) => [...prev, ...newTasks]);
+    newTasks.forEach((t) => maybePublishTask(t).catch(() => {}));
+    showToast(newTasks.length === 1 ? "Task added" : `${newTasks.length} tasks added`);
+    setVoiceDictationKey(null);
+    setAddMenuKey(null);
+  }
+
   function addInlineTask(key: string) {
     if (!currentBoard) return;
     const raw = (inlineTitles[key] || "").trim();
@@ -15208,182 +15449,7 @@ export default function App() {
     if (undoTask) { setTasks(prev => [...prev, undoTask]); setUndoTask(null); }
   }
 
-  useEffect(() => {
-    if (!agentSessionEnabled) {
-      setAgentRuntime(null);
-      delete (window as any).__taskifyAgent;
-      delete (window as any).taskifyAgent;
-      return;
-    }
 
-    const nextFrame = async () =>
-      await new Promise<void>((resolve) => {
-        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
-          window.requestAnimationFrame(() => resolve());
-          return;
-        }
-        setTimeout(resolve, 0);
-      });
-
-    const resolveAgentBoard = (requestedBoardId?: string) => {
-      const visibleBoards = boards.filter((board) => !board.archived && !board.hidden);
-      if (requestedBoardId && requestedBoardId !== "inbox") {
-        const board = boards.find((entry) => entry.id === requestedBoardId);
-        if (!board) {
-          throw { code: "NOT_FOUND", message: "Board not found" };
-        }
-        return board;
-      }
-      return (
-        boards.find((entry) => entry.id === currentBoardId)
-        ?? visibleBoards[0]
-        ?? boards[0]
-        ?? null
-      );
-    };
-
-    setAgentRuntime({
-      getDefaultBoardId: () => resolveAgentBoard()?.id ?? null,
-      async getTask(taskId: string) {
-        return tasksRef.current.find((task) => task.id === taskId) ?? null;
-      },
-      async listTasks(options: { boardId?: string; status: "open" | "done" | "any" }) {
-        return tasksRef.current.filter((task) => {
-          if (options.boardId && task.boardId !== options.boardId) return false;
-          if (options.status === "open" && task.completed) return false;
-          if (options.status === "done" && !task.completed) return false;
-          return true;
-        });
-      },
-      async createTask(input) {
-        const targetBoard = resolveAgentBoard(input.boardId);
-        if (!targetBoard) {
-          throw { code: "NOT_FOUND", message: "Board not found" };
-        }
-        const nowISO = new Date().toISOString();
-        const createdBy = normalizeAgentPubkey(nostrPK) ?? undefined;
-        const createdTask = buildImportedTaskFromPayload(
-          {
-            title: input.title,
-            note: input.note,
-            ...(input.dueISO ? { dueISO: input.dueISO } : {}),
-            ...(input.priority ? { priority: input.priority } : {}),
-          },
-          {
-            overrides: {
-              boardId: targetBoard.id,
-              ...(createdBy ? { createdBy } : {}),
-              ...(createdBy ? { lastEditedBy: createdBy } : {}),
-              updatedAt: nowISO,
-            } as Partial<Task>,
-            taskPool: tasksRef.current.slice(),
-          },
-        );
-        if (!createdTask) {
-          throw { code: "INTERNAL", message: "Failed to create task" };
-        }
-        const nextTask: Task = {
-          ...createdTask,
-          ...(createdBy ? { createdBy } : {}),
-          ...(createdBy ? { lastEditedBy: createdBy } : {}),
-          updatedAt: nowISO,
-        };
-        saveEdit(nextTask);
-        await nextFrame();
-        return tasksRef.current.find((task) => task.id === nextTask.id) ?? nextTask;
-      },
-      async updateTask(taskId, patch) {
-        const existing = tasksRef.current.find((task) => task.id === taskId);
-        if (!existing) return null;
-
-        const editor = normalizeAgentPubkey(nostrPK) ?? existing.lastEditedBy ?? existing.createdBy;
-        const nextTask: Task = {
-          ...existing,
-          ...(patch.title !== undefined ? { title: patch.title } : {}),
-          ...(patch.note !== undefined ? { note: patch.note } : {}),
-          ...(patch.priority === null
-            ? { priority: undefined }
-            : patch.priority !== undefined
-              ? { priority: patch.priority }
-              : {}),
-          ...(editor ? { lastEditedBy: editor } : {}),
-          updatedAt: new Date().toISOString(),
-        };
-
-        if (patch.dueISO !== undefined) {
-          if (patch.dueISO === null) {
-            nextTask.dueDateEnabled = false;
-            nextTask.dueTimeEnabled = false;
-          } else {
-            nextTask.dueISO = patch.dueISO;
-            nextTask.dueDateEnabled = true;
-          }
-        }
-
-        saveEdit(nextTask);
-        await nextFrame();
-        return tasksRef.current.find((task) => task.id === taskId) ?? nextTask;
-      },
-      async setTaskStatus(taskId, status) {
-        const existing = tasksRef.current.find((task) => task.id === taskId);
-        if (!existing) return null;
-        if (status === "done") {
-          if (!existing.completed) {
-            completeTask(taskId);
-            await nextFrame();
-          }
-        } else if (existing.completed) {
-          restoreTask(taskId);
-          await nextFrame();
-        }
-        await nextFrame();
-        return tasksRef.current.find((task) => task.id === taskId) ?? existing;
-      },
-      getAgentSecurityConfig: () => agentSecurityConfigRef.current,
-      setAgentSecurityConfig: (config) => commitAgentSecurityConfig(config),
-    });
-
-    const executeAgentCommand = async (input: unknown) => {
-      const { dispatchAgentCommand } = await import("./agent/agentDispatcher");
-      if (typeof input === "string") {
-        return await dispatchAgentCommand(input);
-      }
-      try {
-        return await dispatchAgentCommand(JSON.stringify(input));
-      } catch {
-        return await dispatchAgentCommand("{");
-      }
-    };
-
-    const agentApi = {
-      version: 1,
-      exec(input: unknown) {
-        return executeAgentCommand(input);
-      },
-      open() {
-        setShowAgentPanel(true);
-      },
-      close() {
-        setShowAgentPanel(false);
-      },
-    };
-
-    (window as any).__taskifyAgent = agentApi;
-    (window as any).taskifyAgent = agentApi;
-
-    return () => {
-      setAgentRuntime(null);
-      delete (window as any).__taskifyAgent;
-      delete (window as any).taskifyAgent;
-    };
-  }, [
-    agentSessionEnabled,
-    boards,
-    commitAgentSecurityConfig,
-    currentBoardId,
-    nostrPK,
-    saveEdit,
-  ]);
 
   function restoreTask(id: string) {
     const t = tasks.find((x) => x.id === id);
@@ -15655,7 +15721,7 @@ export default function App() {
     }
   }
 
-  function saveEdit(updated: Task) {
+  async function saveEdit(updated: Task) {
     let editedTask: Task | null = null;
     let previousAssignees: TaskAssignee[] | null = null;
     setTasks(prev => {
@@ -15696,7 +15762,6 @@ export default function App() {
           updatedAt: new Date().toISOString(),
         };
         const normalizedNext = normalizeTaskBounty(next);
-        maybePublishTask(normalizedNext).catch(() => {});
         editedTask = normalizedNext;
         return normalizedNext;
       });
@@ -15721,7 +15786,6 @@ export default function App() {
           };
         }
         const normalizedNext = normalizeTaskBounty(next);
-        maybePublishTask(normalizedNext).catch(() => {});
         editedTask = normalizedNext;
         const withNew = [...arr, normalizedNext];
         return settings.showFullWeekRecurring && editedTask?.recurrence
@@ -15733,6 +15797,7 @@ export default function App() {
         : arr;
     });
     if (editedTask) {
+      await maybePublishTask(editedTask);
       void maybeSendTaskAssignments(editedTask, { previousAssignees }).catch((err) => {
         console.warn("Failed to send task assignments", err);
       });
@@ -17224,49 +17289,151 @@ export default function App() {
       window.clearTimeout(timeoutId);
       syncTimeoutByBoard.delete(bTag);
     };
+    // Mark all boards as syncing (non-blocking — IDB tasks render immediately).
     setPendingNostrInitialSyncByBoardTag((prev) => {
-      let changed = false;
       const next = { ...prev };
+      let changed = false;
       for (const item of parsed) {
-        if (completedNostrInitialSyncRef.current.has(item.id) || next[item.id]) continue;
+        if (next[item.id]) continue;
         next[item.id] = true;
         changed = true;
       }
       return changed ? next : prev;
     });
+
+    // Clock-protected merge: apply a relay's batch into current task state.
+    // Only updates tasks where the relay has newer data than what's already in state.
+    const flushRelayBatch = (bTag: string, relayBatch: Map<string, RelayBatchEntry>) => {
+      if (!relayBatch.size) return;
+      const bTagClock = nostrIdxRef.current.taskClock.get(bTag);
+      setTasks(prev => {
+        const merged = new Map(prev.map(t => [`${t.boardId}::${t.id}`, t]));
+        for (const [key, entry] of relayBatch) {
+          const taskId = key.split('::')[1];
+          const incomingNostrAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? bTagClock?.get(taskId) ?? 0;
+          const existingNostrAt = (merged.get(key) as Task | undefined)?._nostrAt ?? 0;
+          if (incomingNostrAt < existingNostrAt) continue; // IDB/prior relay has newer data
+          if ('_deleted' in entry) merged.delete(key);
+          else merged.set(key, entry as Task);
+        }
+        return dedupeRecurringInstances(Array.from(merged.values()));
+      });
+    };
+
     for (const it of parsed) {
       const rls = it.relays.split(",").filter(Boolean);
       if (!rls.length) continue;
-      if (!completedNostrInitialSyncRef.current.has(it.id)) {
-        const timeoutId = window.setTimeout(() => {
-          markNostrBoardInitialSyncComplete(it.id);
-        }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
-        syncTimeoutByBoard.set(it.id, timeoutId);
-      }
+
+      // Register this board's pending relays. applyTaskEvent reads this ref to route
+      // events into per-relay batches instead of the live path.
+      pendingRelaysByBoardRef.current.set(it.id, new Set(rls));
+
+      // Absolute timeout: flush all remaining relay batches for stuck relays.
+      const timeoutId = window.setTimeout(() => {
+        clearSyncTimeout(it.id);
+        const boardBatch = relayBatchRef.current.get(it.id);
+        if (boardBatch?.size) {
+          const combined = new Map<string, RelayBatchEntry>();
+          for (const relayBatch of boardBatch.values()) {
+            for (const [key, entry] of relayBatch) {
+              const existing = combined.get(key);
+              const inAt = '_deleted' in entry ? entry._nostrAt : (entry as Task)._nostrAt ?? 0;
+              const exAt = existing ? ('_deleted' in existing ? existing._nostrAt : (existing as Task)._nostrAt ?? 0) : -1;
+              if (inAt >= exAt) combined.set(key, entry);
+            }
+          }
+          flushRelayBatch(it.id, combined);
+          relayBatchRef.current.delete(it.id);
+        }
+        pendingRelaysByBoardRef.current.delete(it.id);
+        completedNostrInitialSyncRef.current.add(it.id);
+        markNostrBoardInitialSyncComplete(it.id);
+        try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
+        setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
+      }, NOSTR_INITIAL_SYNC_TIMEOUT_MS);
+      syncTimeoutByBoard.set(it.id, timeoutId);
+
       pool.setRelays(rls);
       ensureMigrationState(it.id);
+
+      const INITIAL_SYNC_FALLBACK_DAYS = 30;
+      const cursor = boardSyncCursorsRef.current[it.id];
+      const sinceFilter = cursor
+        ? { since: Math.max(0, cursor - NOSTR_CURSOR_LOOKBACK_SECS) }
+        : { since: Math.floor(Date.now() / 1000) - INITIAL_SYNC_FALLBACK_DAYS * 24 * 3600 };
       const filters = [
-        { kinds: [30300, 30301], "#b": [it.id], limit: 500 },
+        { kinds: [30300, 30301], "#b": [it.id], ...sinceFilter },
         { kinds: [30300], "#d": [it.id], limit: 1 },
-        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], limit: 500 },
+        { kinds: [TASKIFY_CALENDAR_EVENT_KIND], "#b": [it.id], ...sinceFilter },
       ];
-      const unsub = pool.subscribe(rls, filters, (ev) => {
-        if (ev.kind === 30300) enqueueNostrApply(() => applyBoardEvent(ev)).catch(() => {});
-        else if (ev.kind === 30301) enqueueNostrApply(() => applyTaskEvent(ev)).catch(() => {});
-        else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueNostrApply(() => applyCalendarEvent(ev)).catch(() => {});
-      }, () => {
-        // After initial sync, migrate legacy authors to the per-board key if needed.
-        nostrApplyQueue.current.catch(() => {}).then(() => {
+
+      const unsub = pool.subscribe(rls, filters, (ev, evRelay) => {
+        // Tag the event with the relay URL so applyTaskEvent can route it to the
+        // correct per-relay batch without changing the function signature.
+        (ev as any).__relay = evRelay;
+        if (ev.kind === 30300) enqueueForBoard(it.id, () => applyBoardEvent(ev)).catch(() => {});
+        else if (ev.kind === 30301) enqueueForBoard(it.id, () => applyTaskEvent(ev)).catch(() => {});
+        else if (ev.kind === TASKIFY_CALENDAR_EVENT_KIND) enqueueForBoard(it.id, () => applyCalendarEvent(ev)).catch(() => {});
+      }, (eoseRelay) => {
+        // NDK fires a single subscription-level EOSE (not per-relay), so eoseRelay
+        // is typically undefined. When undefined, treat it as "all relays done" and
+        // flush every pending relay batch for this board.
+        if (!eoseRelay) {
+          const boardBatch = relayBatchRef.current.get(it.id);
+          if (boardBatch?.size) {
+            const combined = new Map<string, RelayBatchEntry>();
+            for (const [, relayBatch] of boardBatch) {
+              for (const [key, entry] of relayBatch) {
+                const existing = combined.get(key);
+                const inAt = '_deleted' in entry ? (entry as { _nostrAt?: number })._nostrAt ?? 0 : (entry as Task)._nostrAt ?? 0;
+                const exAt = existing ? ('_deleted' in existing ? (existing as { _nostrAt?: number })._nostrAt ?? 0 : (existing as Task)._nostrAt ?? 0) : -1;
+                if (!existing || inAt > exAt) combined.set(key, entry);
+              }
+            }
+            relayBatchRef.current.delete(it.id);
+            (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
+              if (combined.size) flushRelayBatch(it.id, combined);
+            });
+          }
           clearSyncTimeout(it.id);
+          pendingRelaysByBoardRef.current.delete(it.id);
+          completedNostrInitialSyncRef.current.add(it.id);
           markNostrBoardInitialSyncComplete(it.id);
+          try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
           setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
-        });
+          return;
+        }
+
+        // Per-relay EOSE (if NDK ever provides relay URL): merge just that relay's batch.
+        const relayUrl = eoseRelay;
+        pendingRelaysByBoardRef.current.get(it.id)?.delete(relayUrl);
+
+        const boardBatch = relayBatchRef.current.get(it.id);
+        const relayBatch = boardBatch?.get(relayUrl);
+        if (relayBatch?.size) {
+          boardBatch!.delete(relayUrl);
+          (boardEventQueuesRef.current.get(it.id)?.promise ?? Promise.resolve()).catch(() => {}).then(() => {
+            flushRelayBatch(it.id, relayBatch!);
+          });
+        }
+
+        // If all relays done: clear spinner, persist cursor, trigger migration.
+        const pendingRelays = pendingRelaysByBoardRef.current.get(it.id);
+        if (!pendingRelays?.size) {
+          clearSyncTimeout(it.id);
+          pendingRelaysByBoardRef.current.delete(it.id);
+          completedNostrInitialSyncRef.current.add(it.id);
+          markNostrBoardInitialSyncComplete(it.id);
+          try { idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current)); } catch { /* non-fatal */ }
+          setTimeout(() => migrateBoardRef.current(it.id), NOSTR_MIGRATION_BUFFER_MS);
+        }
       });
       unsubs.push(unsub);
     }
     return () => {
       unsubs.forEach((u) => u());
       syncTimeoutByBoard.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      for (const it of parsed) pendingRelaysByBoardRef.current.delete(it.id);
     };
   }, [
     nostrBoardsKey,
@@ -17278,6 +17445,7 @@ export default function App() {
     ensureMigrationState,
     migrateBoardRef,
     enqueueNostrApply,
+    enqueueForBoard,
     markNostrBoardInitialSyncComplete,
   ]);
 
@@ -17655,6 +17823,25 @@ export default function App() {
                   </div>
                 </div>
                 <div className="app-header__right">
+                  {isCurrentBoardSyncing && (
+                    <span
+                      className="flex items-center gap-1.5 text-xs text-secondary select-none px-1"
+                      aria-label="Syncing tasks…"
+                      title="Fetching latest tasks from relays…"
+                    >
+                      <svg
+                        className="animate-spin h-3.5 w-3.5 shrink-0 opacity-60"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                      >
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                      </svg>
+                      <span className="hidden sm:inline opacity-60">Syncing…</span>
+                    </span>
+                  )}
                   {settings.completedTab ? (
                     <button
                       ref={completedTabRef}
@@ -17989,7 +18176,7 @@ export default function App() {
 		                            key={`${ev.id}-${day}`}
 		                            event={ev}
 		                            showDate={false}
-		                            onOpenDocument={(_event, doc) => handleOpenEventDocument(doc)}
+		                            onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 		                            onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 		                            onDragStart={(id) => setDraggingEventId(id)}
 		                            onDragEnd={handleDragEnd}
@@ -18227,7 +18414,7 @@ export default function App() {
 		                          key={ev.id}
 		                          event={ev}
 		                          showDate
-		                          onOpenDocument={(_event, doc) => handleOpenEventDocument(doc)}
+		                          onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 		                          onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 		                          onDragStart={(id) => setDraggingEventId(id)}
 		                          onDragEnd={handleDragEnd}
@@ -18787,6 +18974,13 @@ export default function App() {
           onRegenerateBoardId={regenerateBoardId}
           onBoardChanged={handleBoardChanged}
           onClose={closeSettings}
+          gcalStatus={gcalStatus}
+          gcalCalendars={gcalCalendars}
+          gcalLoading={gcalLoading}
+          onGcalConnect={gcalConnect}
+          onGcalDisconnect={gcalDisconnect}
+          onGcalToggleCalendar={gcalToggleCalendar}
+          onGcalSync={gcalSync}
         />
       )}
       </div>
@@ -19020,33 +19214,7 @@ export default function App() {
             </div>
             <div className="app-tab-switcher__label">Settings</div>
           </button>
-          {agentSessionEnabled && (
-            <button
-              type="button"
-              className={`app-tab-switcher__btn pressable${showAgentPanel ? " app-tab-switcher__btn--active" : ""}`}
-              onClick={() => setShowAgentPanel((v) => !v)}
-              aria-label="Agent"
-              title="Agent Mode"
-            >
-              <div className="app-tab-switcher__icon">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="app-tab-switcher__icon-svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.7}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <rect x="3" y="3" width="18" height="18" rx="2" />
-                  <polyline points="8 12 12 16 16 12" />
-                  <line x1="12" y1="8" x2="12" y2="16" />
-                </svg>
-              </div>
-              <div className="app-tab-switcher__label">Agent</div>
-            </button>
-          )}
+
         </div>
       </div>
 
@@ -19298,6 +19466,51 @@ export default function App() {
                 <span className="upcoming-filter__label">{SPECIAL_CALENDAR_US_HOLIDAYS_LABEL}</span>
               </button>
             </div>
+            {gcalStatus.connected && gcalCalendars.map((cal) => {
+              const boardId = `gcal:${cal.id}`;
+              const isSelected = upcomingFilter === null || upcomingFilter.includes(boardId);
+              return (
+                <div key={cal.id} className="upcoming-filter__group">
+                  <button
+                    type="button"
+                    className="upcoming-filter__row pressable"
+                    onClick={() => {
+                      if (upcomingFilter === null) {
+                        // Deselect just this calendar
+                        const allIds = upcomingFilterOptions.map((o) => o.id);
+                        setUpcomingFilter(allIds.filter((id) => id !== boardId));
+                      } else if (isSelected) {
+                        setUpcomingFilter(upcomingFilter.filter((id) => id !== boardId));
+                      } else {
+                        setUpcomingFilter([...upcomingFilter, boardId]);
+                      }
+                    }}
+                    role="checkbox"
+                    aria-checked={isSelected}
+                  >
+                    <span
+                      className={`upcoming-filter__check${isSelected ? " is-checked" : ""}`}
+                      aria-hidden="true"
+                    >
+                      {isSelected && (
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M5 12l4 4 10-10" />
+                        </svg>
+                      )}
+                    </span>
+                    <span className="upcoming-filter__label">
+                      {cal.color && (
+                        <span
+                          className="inline-block w-2 h-2 rounded-full mr-1.5"
+                          style={{ backgroundColor: cal.color, verticalAlign: "middle" }}
+                        />
+                      )}
+                      {cal.name}
+                    </span>
+                  </button>
+                </div>
+              );
+            })}
             <div>
               <button
                 type="button"
@@ -19495,7 +19708,10 @@ export default function App() {
 
       {/* Undo Snackbar */}
       {undoTask && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-surface-muted border border-surface text-sm px-4 py-2 rounded-xl shadow-lg flex items-center gap-3">
+        <div
+          className="fixed left-1/2 -translate-x-1/2 bg-surface-muted border border-surface text-sm px-4 py-2 rounded-xl shadow-lg flex items-center gap-3 z-[9999]"
+          style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + var(--app-tab-pill-offset) + 0.75rem)" }}
+        >
           Task deleted
           <button onClick={undoDelete} className="accent-button button-sm pressable">Undo</button>
         </div>
@@ -19629,8 +19845,6 @@ export default function App() {
           defaultRelays={defaultRelays}
           nostrPK={nostrPK}
           nostrSkHex={nostrSkHex}
-          fileServers={settings.fileServers}
-          fileStorageServer={settings.fileStorageServer}
         />
       )}
 
@@ -19659,7 +19873,7 @@ export default function App() {
           nostrPK={nostrPK}
           nostrSkHex={nostrSkHex}
 	          defaultRelays={defaultRelays}
-	          onPreviewDocument={(_event, doc) => handleOpenEventDocument(doc)}
+	          onPreviewDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
 		          onRsvp={
 	            activeEventRsvpCoord
 	              ? async (status, options) => {
@@ -19707,7 +19921,8 @@ export default function App() {
       {previewDocument && (
         <DocumentPreviewModal
           document={previewDocument}
-          onClose={() => setPreviewDocument(null)}
+          boardId={previewDocumentBoardId}
+          onClose={() => { setPreviewDocument(null); setPreviewDocumentBoardId(undefined); }}
           onDownloadDocument={handleDownloadDocument}
           onOpenExternal={openDocumentExternally}
         />
@@ -19812,7 +20027,7 @@ export default function App() {
         </Modal>
       )}
 
-      {!agentSessionEnabled && showFirstRunOnboarding && (
+      {showFirstRunOnboarding && (
         <Modal onClose={() => {}} title="Welcome to Taskify" showClose={false}>
           <FirstRunOnboarding
             pushSupported={onboardingPushSupported}
@@ -19827,18 +20042,6 @@ export default function App() {
           />
         </Modal>
       )}
-
-      <Suspense fallback={null}>
-        {agentSessionEnabled && showAgentModeOnboarding && (
-          <Modal onClose={() => {}} title="Agent Mode Setup" showClose={false}>
-            <AgentModeOnboarding
-              onUseExistingKey={handleOnboardingUseExistingKey}
-              onGenerateNewKey={handleOnboardingGenerateNewKey}
-              onComplete={completeAgentModeOnboarding}
-            />
-          </Modal>
-        )}
-      </Suspense>
 
       {addBoardOpen && (
         <AddBoardModal
@@ -20086,6 +20289,7 @@ export default function App() {
             mintBackupEnabled={settings.walletMintBackupEnabled}
             contactsSyncEnabled={settings.walletContactsSyncEnabled}
             fileStorageServer={settings.fileStorageServer}
+            fileServers={settings.fileServers}
             messageItems={walletMessageItems}
             messagesUnreadCount={messagesUnreadCount}
             onAcceptMessage={acceptInboxMessage}
@@ -20097,20 +20301,64 @@ export default function App() {
         )}
       </Suspense>
 
-      {/* Agent Mode Panel */}
-      <Suspense fallback={null}>
-        {agentSessionEnabled && showAgentPanel && (
-          <AgentModePanel
-            securityConfig={agentSecurityConfig}
-            onUpdateSecurityConfig={updateAgentSecurityConfig}
-            onAddTrustedNpub={addTrustedAgentNpub}
-            onSetStrictWithTrustedNpub={setStrictWithTrustedAgentNpub}
-            onRemoveTrustedNpub={removeTrustedAgentNpub}
-            onClearTrustedNpubs={clearTrustedAgentNpubs}
-            onClose={() => setShowAgentPanel(false)}
-          />
-        )}
-      </Suspense>
+
+      {/* ── Add task menu: New Task / Dictate ─────────────────────────────── */}
+      <ActionSheet
+        open={addMenuKey !== null && voiceDictationKey === null}
+        onClose={() => setAddMenuKey(null)}
+        title="Add Task"
+      >
+        <div className="space-y-1 pb-1">
+          <button
+            type="button"
+            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left hover:bg-[var(--color-surface-hover)] transition-colors pressable"
+            onClick={() => {
+              const key = addMenuKey!;
+              setAddMenuKey(null);
+              openInlineTaskEditorDirect(key);
+            }}
+          >
+            <span className="text-lg leading-none">＋</span>
+            <span className="text-sm font-medium">New Task</span>
+          </button>
+          <button
+            type="button"
+            className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left hover:bg-[var(--color-surface-hover)] transition-colors pressable"
+            onClick={() => {
+              setVoiceDictationKey(addMenuKey);
+            }}
+          >
+            <span className="text-lg leading-none">🎙</span>
+            <span className="text-sm font-medium">Dictate</span>
+          </button>
+        </div>
+      </ActionSheet>
+
+      {/* ── Voice dictation modal ──────────────────────────────────────────── */}
+      {voiceDictationKey !== null && (
+        <VoiceDictationModal
+          isOpen={true}
+          onClose={() => {
+            setVoiceDictationKey(null);
+            setAddMenuKey(null);
+          }}
+          onSave={(tasks) => {
+            if (voiceDictationKey !== null) {
+              handleVoiceSave(voiceDictationKey, tasks);
+            }
+          }}
+          workerBaseUrl={workerBaseUrl}
+          npub={nostrPK ? ((() => {
+            try {
+              return typeof (nip19 as any).npubEncode === "function"
+                ? (nip19 as any).npubEncode(nostrPK)
+                : nostrPK;
+            } catch { return nostrPK; }
+          })()) : ""}
+          testingMode={kvStorage.getItem("taskify.voice.testInput.enabled") === "true"}
+          defaultBoardId={currentBoard?.id}
+        />
+      )}
 
       </div>
     </div>
