@@ -1173,13 +1173,28 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     const id = `${doc.id}-uploading`;
     setUploadingDocumentRows((prev) => [
       ...prev,
-      { id, name: doc.name || fallbackName || "attachment", kind: doc.kind.toUpperCase(), progress: 0.18 },
+      { id, name: doc.name || fallbackName || "attachment", kind: doc.kind.toUpperCase(), progress: 0.22 },
     ]);
     return id;
   }
 
   function advanceUploadingDocumentRow(id: string, progress: number) {
     setUploadingDocumentRows((prev) => prev.map((row) => row.id === id ? { ...row, progress: Math.max(row.progress, Math.min(progress, 0.94)) } : row));
+  }
+
+  function startUploadingDocumentRowAnimation(id: string) {
+    const steps = [0.3, 0.42, 0.54, 0.66, 0.78, 0.88, 0.94];
+    let stepIndex = 0;
+    advanceUploadingDocumentRow(id, steps[0]);
+    const interval = window.setInterval(() => {
+      stepIndex += 1;
+      if (stepIndex >= steps.length) {
+        window.clearInterval(interval);
+        return;
+      }
+      advanceUploadingDocumentRow(id, steps[stepIndex]);
+    }, 260);
+    return () => window.clearInterval(interval);
   }
 
   function completeUploadingDocumentRow(id: string) {
@@ -1213,12 +1228,14 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
         if (isSharedBoard) {
           setUploadingLabel(`Uploading ${label}…`);
           const rowId = addUploadingDocumentRow(doc, label);
+          const stopAnimating = startUploadingDocumentRowAnimation(rowId);
           try {
-            advanceUploadingDocumentRow(rowId, 0.52);
             const uploaded = await uploadSharedDocument(file, doc);
+            stopAnimating();
             advanceUploadingDocumentRow(rowId, 1);
             nextDocs.push(uploaded);
           } finally {
+            stopAnimating();
             completeUploadingDocumentRow(rowId);
           }
         } else {
@@ -1255,12 +1272,14 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
         if (isSharedBoard) {
           setUploadingLabel(`Uploading ${label}…`);
           const rowId = addUploadingDocumentRow(doc, label);
+          const stopAnimating = startUploadingDocumentRowAnimation(rowId);
           try {
-            advanceUploadingDocumentRow(rowId, 0.52);
             const uploaded = await uploadSharedDocument(file, doc);
+            stopAnimating();
             advanceUploadingDocumentRow(rowId, 1);
             nextDocs.push(uploaded);
           } finally {
+            stopAnimating();
             completeUploadingDocumentRow(rowId);
           }
         } else {
