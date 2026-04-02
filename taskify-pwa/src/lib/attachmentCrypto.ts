@@ -58,6 +58,7 @@ export async function encryptAndUploadAttachment(opts: {
   nostrSkHex: string;
   signal?: AbortSignal;
   onProgress?: (progress: number, loaded: number, total: number) => void;
+  onPhaseChange?: (phase: "uploading" | "processing") => void;
 }): Promise<string> {
   attachmentDebug("encrypt:start", {
     boardId: opts.boardId,
@@ -103,6 +104,7 @@ export async function encryptAndUploadAttachment(opts: {
     signer: opts.nostrSkHex,
     signal: opts.signal,
     onProgress: opts.onProgress,
+    onPhaseChange: opts.onPhaseChange,
   });
   attachmentDebug("upload:complete", {
     filename: opts.filename,

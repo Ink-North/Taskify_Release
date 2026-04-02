@@ -58,6 +58,7 @@ function xhrRequest(opts: {
   responseType?: XMLHttpRequestResponseType;
   signal?: AbortSignal;
   onUploadProgress?: (loaded: number, total: number) => void;
+  debugLabel?: string;
 }): Promise<{ status: number; responseText: string; responseURL: string }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -66,11 +67,13 @@ function xhrRequest(opts: {
     if (opts.headers) {
       for (const [key, value] of Object.entries(opts.headers)) xhr.setRequestHeader(key, value);
     }
-    xhr.onload = () => resolve({ status: xhr.status, responseText: typeof xhr.response === "string" ? xhr.response : xhr.responseText, responseURL: xhr.responseURL || opts.url });
+    xhr.onload = () => { console.info("[attachment-debug] upload:xhr:load", { label: opts.debugLabel, status: xhr.status, elapsedMs: Date.now() - startedAt }); resolve({ status: xhr.status, responseText: typeof xhr.response === "string" ? xhr.response : xhr.responseText, responseURL: xhr.responseURL || opts.url }); };
     xhr.onerror = () => reject(new Error(`Network request failed for ${opts.url}`));
     xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"));
+    const startedAt = Date.now();
     if (xhr.upload && opts.onUploadProgress) {
       xhr.upload.onprogress = (event) => {
+        console.info("[attachment-debug] upload:xhr:progress", { label: opts.debugLabel, loaded: event.loaded, total: event.total, lengthComputable: event.lengthComputable, elapsedMs: Date.now() - startedAt });
         if (!event.lengthComputable) return;
         opts.onUploadProgress?.(event.loaded, event.total);
       };
@@ -195,6 +198,7 @@ export async function uploadFileToNip96(options: {
   timeoutMs?: number;
   signal?: AbortSignal;
   onProgress?: (loaded: number, total: number) => void;
+  onPhaseChange?: (phase: "uploading" | "processing") => void;
 }): Promise<Nip96UploadResult> {
   const info = await discoverNip96Server(options.serverUrl);
   console.info("[attachment-debug] upload:nip96:start", {
@@ -224,6 +228,8 @@ export async function uploadFileToNip96(options: {
   form.append("content_type", options.contentType || uploadFile.type || "application/octet-stream");
   form.append("size", String(uploadFile.size));
 
+  options.onPhaseChange?.("uploading");
+  const requestStartedAt = Date.now();
   const res = await xhrRequest({
     url: info.apiUrl,
     method: "POST",
@@ -231,11 +237,14 @@ export async function uploadFileToNip96(options: {
     body: form,
     signal: options.signal,
     onUploadProgress: options.onProgress,
+    debugLabel: `nip96:${options.filename || "upload"}` ,
   });
+  console.info("[attachment-debug] upload:nip96:request-complete", { filename: options.filename, elapsedMs: Date.now() - requestStartedAt, status: res.status });
 
   let data = (() => { try { return JSON.parse(res.responseText || "null"); } catch { return null; } })();
   console.info("[attachment-debug] upload:nip96:response", { status: res.status, ok: res.status >= 200 && res.status < 300, data: flattenDebugError(data) });
   if (res.status === 202 && data?.processing_url) {
+    options.onPhaseChange?.("processing");
     const processingUrl = new URL(data.processing_url, info.apiUrl).toString();
     const poll = await pollProcessingUrl(processingUrl, headers, options.timeoutMs ?? 12000);
     data = poll.data ?? data;
@@ -298,6 +307,7 @@ export async function uploadFileToBlossom(options: {
   signer: string | Uint8Array;
   signal?: AbortSignal;
   onProgress?: (loaded: number, total: number) => void;
+  onPhaseChange?: (phase: "uploading" | "processing") => void;
 }): Promise<{ url: string; nip94: null }> {
   if (!options.signer) throw new Error("signer is required for Blossom uploads");
   const bytes = new Uint8Array(await options.file.arrayBuffer());
@@ -317,6 +327,8 @@ export async function uploadFileToBlossom(options: {
     contentType: options.contentType || options.file.type || "application/octet-stream",
     blobBytes: options.file.size,
   });
+  options.onPhaseChange?.("uploading");
+  const requestStartedAt = Date.now();
   const res = await xhrRequest({
     url: uploadUrl,
     method: "PUT",
@@ -327,7 +339,10 @@ export async function uploadFileToBlossom(options: {
     body: options.file,
     signal: options.signal,
     onUploadProgress: options.onProgress,
+    debugLabel: `blossom:${options.filename || "upload"}` ,
   });
+  console.info("[attachment-debug] upload:blossom:request-complete", { filename: options.filename, elapsedMs: Date.now() - requestStartedAt, status: res.status });
+  options.onPhaseChange?.("processing");
   const data = (() => { try { return JSON.parse(res.responseText || "null"); } catch { return null; } })();
   if (!(res.status >= 200 && res.status < 300)) throw new Error(data?.message || `Blossom upload failed (${res.status})`);
   const url = typeof data?.url === "string" ? data.url.trim() : "";
@@ -447,10 +462,11 @@ export type UploadFileOptions = {
   signal?: AbortSignal;
   debugMeta?: Record<string, unknown>;
   onProgress?: (loaded: number, total: number) => void;
+  onPhaseChange?: (phase: "uploading" | "processing") => void;
 };
 
 export async function uploadFile(options: UploadFileOptions): Promise<{ url: string; nip94: NostrEvent | null }> {
-  const { serverEntry, file, filename, contentType, signer, signal, debugMeta, onProgress } = options;
+  const { serverEntry, file, filename, contentType, signer, signal, debugMeta, onProgress, onPhaseChange } = options;
   console.info("[attachment-debug] upload:dispatch", {
     serverType: serverEntry.type,
     serverUrl: serverEntry.url,
@@ -461,7 +477,7 @@ export async function uploadFile(options: UploadFileOptions): Promise<{ url: str
   });
   if (serverEntry.type === "blossom") {
     if (!signer) throw new Error("signer is required for Blossom uploads");
-    const result = await uploadFileToBlossom({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal, onProgress });
+    const result = await uploadFileToBlossom({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal, onProgress, onPhaseChange });
     return result;
   }
   if (serverEntry.type === "originless") {
@@ -470,7 +486,7 @@ export async function uploadFile(options: UploadFileOptions): Promise<{ url: str
   }
   // Default: NIP-96
   if (!signer) throw new Error("signer is required for NIP-96 uploads");
-  const result = await uploadFileToNip96({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal, onProgress });
+  const result = await uploadFileToNip96({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal, onProgress, onPhaseChange });
   return { url: result.url, nip94: result.nip94 ?? null };
 }
 
