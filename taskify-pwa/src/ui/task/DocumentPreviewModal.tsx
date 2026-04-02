@@ -167,7 +167,6 @@ export function DocumentPreviewModal({
   const [resolvedDocument, setResolvedDocument] = useState<TaskDocument>(document);
   const [loadingRemote, setLoadingRemote] = useState(false);
   const [remoteError, setRemoteError] = useState<string | null>(null);
-  const [fullScreenMode, setFullScreenMode] = useState<null | "pdf" | "image" | "video" | "html" | "text">(null);
   const label = document.name || "Document";
   const decryptBoardId = document.encryptionBoardId || boardId;
 
@@ -210,25 +209,25 @@ export function DocumentPreviewModal({
   } else if (effectiveDocument.kind === "pdf") {
     content = (
       <div className="doc-modal__content">
-        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 rounded-[28px] bg-[#1b1c20] p-3 shadow-2xl"><embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-full w-full rounded-[22px] bg-white" /></div><div className="flex justify-center gap-2"><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("pdf")}>Full screen</button><button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open in browser</button></div></div>
+        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 rounded-[28px] bg-[#1b1c20] p-3 shadow-2xl"><embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-full w-full rounded-[22px] bg-white" /></div><div className="flex justify-center gap-2"><button type="button" className="ghost-button button-sm pressable" style={{ display: "none" }}></button><button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open in browser</button></div></div>
       </div>
     );
   } else if (full?.type === "html") {
     content = (
       <div className="doc-modal__content">
-        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 overflow-auto rounded-[28px] bg-white p-6 text-black shadow-2xl"><div className="doc-modal__markup" dangerouslySetInnerHTML={{ __html: full.data }} /></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("html")}>Full screen</button></div></div>
+        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 overflow-auto rounded-[28px] bg-white p-6 text-black shadow-2xl"><div className="doc-modal__markup" dangerouslySetInnerHTML={{ __html: full.data }} /></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" style={{ display: "none" }}></button></div></div>
       </div>
     );
   } else if (full?.type === "text") {
     content = (
       <div className="doc-modal__content">
-        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 overflow-auto rounded-[28px] bg-white p-6 text-black shadow-2xl"><pre className="doc-modal__text whitespace-pre-wrap">{full.data}</pre></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("text")}>Full screen</button></div></div>
+        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 overflow-auto rounded-[28px] bg-white p-6 text-black shadow-2xl"><pre className="doc-modal__text whitespace-pre-wrap">{full.data}</pre></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" style={{ display: "none" }}></button></div></div>
       </div>
     );
   } else if (full?.type === "image") {
     content = (
       <div className="doc-modal__content">
-        <div className="flex h-full flex-col gap-3"><div className="flex min-h-0 flex-1 items-center justify-center rounded-[28px] bg-[#1b1c20] p-4 shadow-2xl"><img src={full.data} alt={label} className="max-h-full max-w-full rounded-[22px] object-contain" /></div><div className="flex justify-center gap-2"><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("image")}>Full screen</button><button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open image</button></div></div>
+        <div className="flex h-full flex-col gap-3"><div className="flex min-h-0 flex-1 items-center justify-center rounded-[28px] bg-[#1b1c20] p-4 shadow-2xl"><img src={full.data} alt={label} className="max-h-full max-w-full rounded-[22px] object-contain" /></div><div className="flex justify-center gap-2"><button type="button" className="ghost-button button-sm pressable" style={{ display: "none" }}></button><button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open image</button></div></div>
       </div>
     );
   } else if (full?.type === "audio") {
@@ -240,7 +239,7 @@ export function DocumentPreviewModal({
   } else if (full?.type === "video") {
     content = (
       <div className="doc-modal__content">
-        <div className="flex h-full flex-col gap-3"><div className="flex min-h-0 flex-1 items-center justify-center rounded-[28px] bg-black p-2 shadow-2xl"><video controls src={full.data} className="max-h-full w-full rounded-[22px] bg-black" /></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("video")}>Full screen</button></div></div>
+        <div className="flex h-full flex-col gap-3"><div className="flex min-h-0 flex-1 items-center justify-center rounded-[28px] bg-black p-2 shadow-2xl"><video controls src={full.data} className="max-h-full w-full rounded-[22px] bg-black" /></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" style={{ display: "none" }}></button></div></div>
       </div>
     );
   } else {
@@ -273,35 +272,8 @@ export function DocumentPreviewModal({
   );
 
   return (
-    <>
-      <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={onClose}>
-        {content}
-      </ViewerShell>
-      {fullScreenMode === "pdf" && effectiveDocument.kind === "pdf" ? (
-        <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={() => setFullScreenMode(null)}>
-          <div className="h-full rounded-[28px] bg-[#1b1c20] p-3"><embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-full w-full rounded-[22px] bg-white" /></div>
-        </ViewerShell>
-      ) : null}
-      {fullScreenMode === "image" && full?.type === "image" ? (
-        <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={() => setFullScreenMode(null)}>
-          <div className="flex h-full items-center justify-center"><img src={full.data} alt={label} className="max-h-full max-w-full object-contain" /></div>
-        </ViewerShell>
-      ) : null}
-      {fullScreenMode === "video" && full?.type === "video" ? (
-        <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={() => setFullScreenMode(null)}>
-          <div className="flex h-full items-center justify-center rounded-[28px] bg-black p-2"><video controls autoPlay src={full.data} className="max-h-full w-full rounded-[22px] bg-black" /></div>
-        </ViewerShell>
-      ) : null}
-      {fullScreenMode === "html" && full?.type === "html" ? (
-        <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={() => setFullScreenMode(null)}>
-          <div className="h-full overflow-auto rounded-[28px] bg-white p-6 text-black" dangerouslySetInnerHTML={{ __html: full.data }} />
-        </ViewerShell>
-      ) : null}
-      {fullScreenMode === "text" && full?.type === "text" ? (
-        <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={() => setFullScreenMode(null)}>
-          <pre className="h-full overflow-auto rounded-[28px] bg-white p-6 text-black whitespace-pre-wrap">{full.data}</pre>
-        </ViewerShell>
-      ) : null}
-    </>
+    <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={onClose}>
+      {content}
+    </ViewerShell>
   );
 }

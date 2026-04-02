@@ -1,5 +1,8 @@
 import JSZip from "jszip";
 import readXlsxFile from "read-excel-file/browser";
+import MarkdownIt from "markdown-it";
+import * as mammoth from "mammoth/mammoth.browser";
+import * as XLSX from "xlsx";
 
 export type TaskDocumentKind = "pdf" | "doc" | "docx" | "xls" | "xlsx" | "txt" | "md" | "json" | "csv" | "png" | "jpg" | "jpeg" | "webp" | "gif" | "mp3" | "aac" | "m4a" | "wav" | "mp4" | "mov" | "webm";
 
@@ -54,6 +57,8 @@ const EXTENSION_TO_KIND: Record<string, TaskDocumentKind> = {
   ".mov": "mov",
   ".webm": "webm",
 };
+
+const markdownRenderer = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
 const MIME_TO_KIND: Record<string, TaskDocumentKind> = {
   "application/pdf": "pdf",
@@ -528,25 +533,51 @@ async function generateSpreadsheetMarkup(
   buffer: ArrayBuffer,
   kind: TaskDocumentKind
 ): Promise<{ previewHtml?: string; fullHtml?: string }> {
-  if (kind === "xls") {
-    // Legacy .xls parsing is intentionally not supported without SheetJS (xlsx).
-    return {};
-  }
-
   try {
-    const blob = new Blob([buffer]);
-    const rows = await readXlsxFile(blob);
-    const rowsArray = Array.isArray(rows) ? (rows as Array<Array<unknown>>) : [];
-    if (!rowsArray.length) return {};
-    const fullHtml = wrapSheetHtml(rowsArray, 100, 20);
-    const previewHtml = wrapSheetHtml(rowsArray, 20, 8);
-    return { previewHtml, fullHtml };
+    const workbook = XLSX.read(buffer, { type: "array", cellStyles: true, cellHTML: true, cellNF: true });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) return {};
+    const fullTable = XLSX.utils.sheet_to_html(sheet, { editable: false, id: "doc-sheet-table" });
+    const fullHtml = `<div class="doc-sheet doc-sheet--rich"><div class="doc-sheet__tab">${escapeHtml(sheetName)}</div>${fullTable}</div>`;
+    try {
+      const blob = new Blob([buffer]);
+      const rows = await readXlsxFile(blob);
+      const rowsArray = Array.isArray(rows) ? (rows as Array<Array<unknown>>) : [];
+      const previewHtml = rowsArray.length ? wrapSheetHtml(rowsArray, 12, 6, sheetName) : fullHtml;
+      return { previewHtml, fullHtml };
+    } catch {
+      return { previewHtml: fullHtml, fullHtml };
+    }
   } catch {
     return {};
   }
 }
 
-function wrapSheetHtml(rows: Array<Array<unknown>>, maxRows: number, maxCols: number): string {
+async function generateDocxMarkupRich(buffer: ArrayBuffer): Promise<{ previewHtml?: string; fullHtml?: string }> {
+  try {
+    const result = await mammoth.convertToHtml({ arrayBuffer: buffer }, {
+      includeDefaultStyleMap: true,
+      styleMap: [
+        "p[style-name='Heading 1'] => h1:fresh",
+        "p[style-name='Heading 2'] => h2:fresh",
+        "p[style-name='Heading 3'] => h3:fresh",
+        "p[style-name='Title'] => h1.doc-title:fresh",
+        "p[style-name='Subtitle'] => h2.doc-subtitle:fresh"
+      ]
+    });
+    const html = (result.value || "").trim();
+    if (!html) return {};
+    return {
+      previewHtml: `<div class="doc-rich doc-rich--preview">${html}</div>`,
+      fullHtml: `<div class="doc-rich">${html}</div>`,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function wrapSheetHtml(rows: Array<Array<unknown>>, maxRows: number, maxCols: number, sheetName = "Sheet 1"): string {
   const limitedRows = rows.slice(0, maxRows);
   const body = limitedRows
     .map((row) => {
@@ -559,7 +590,7 @@ function wrapSheetHtml(rows: Array<Array<unknown>>, maxRows: number, maxCols: nu
       return `<tr>${cells.join("")}</tr>`;
     })
     .join("");
-  return `<div class="doc-sheet"><table><tbody>${body}</tbody></table></div>`;
+  return `<div class="doc-sheet"><div class="doc-sheet__tab">${escapeHtml(sheetName)}</div><table><tbody>${body}</tbody></table></div>`;
 }
 
 export async function createDocumentFromDataUrl(input: {
@@ -595,7 +626,10 @@ export async function createDocumentFromDataUrl(input: {
       base.preview = { type: "image", data: previewImage };
     }
   } else if (kind === "docx") {
-    const { previewHtml, fullHtml } = await generateDocxMarkup(buffer);
+    const rich = await generateDocxMarkupRich(buffer);
+    const fallback = !rich.fullHtml ? await generateDocxMarkup(buffer) : {};
+    const previewHtml = rich.previewHtml || fallback.previewHtml;
+    const fullHtml = rich.fullHtml || fallback.fullHtml;
     if (previewHtml) base.preview = { type: "html", data: previewHtml };
     if (fullHtml) base.full = { type: "html", data: fullHtml };
   } else if (kind === "doc") {
@@ -606,6 +640,13 @@ export async function createDocumentFromDataUrl(input: {
     const { previewHtml, fullHtml } = await generateSpreadsheetMarkup(buffer, kind);
     if (previewHtml) base.preview = { type: "html", data: previewHtml };
     if (fullHtml) base.full = { type: "html", data: fullHtml };
+  } else if (kind === "md") {
+    const { fullText } = await generateTextDocument(buffer);
+    if (fullText) {
+      const rendered = `<div class="doc-rich doc-markdown">${markdownRenderer.render(fullText)}</div>`;
+      base.preview = { type: "html", data: rendered };
+      base.full = { type: "html", data: rendered };
+    }
   } else if (isTextKind(kind)) {
     const { previewText, fullText } = await generateTextDocument(buffer);
     if (previewText) base.preview = { type: "text", data: previewText };
@@ -687,6 +728,8 @@ async function buildPreviewFromDocument(doc: TaskDocument): Promise<TaskDocument
   if (!buffer.byteLength) return null;
 
   if (ensured.kind === "docx") {
+    const rich = await generateDocxMarkupRich(buffer);
+    if (rich.previewHtml) return { type: "html", data: rich.previewHtml };
     const { previewHtml } = await generateDocxMarkup(buffer);
     if (previewHtml) return { type: "html", data: previewHtml };
     return null;
@@ -701,6 +744,12 @@ async function buildPreviewFromDocument(doc: TaskDocument): Promise<TaskDocument
   if (ensured.kind === "xls" || ensured.kind === "xlsx") {
     const { previewHtml } = await generateSpreadsheetMarkup(buffer, ensured.kind);
     if (previewHtml) return { type: "html", data: previewHtml };
+    return null;
+  }
+
+  if (ensured.kind === "md") {
+    const { fullText } = await generateTextDocument(buffer);
+    if (fullText) return { type: "html", data: `<div class="doc-rich doc-markdown">${markdownRenderer.render(fullText)}</div>` };
     return null;
   }
 
