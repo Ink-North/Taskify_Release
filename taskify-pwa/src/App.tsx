@@ -8982,13 +8982,9 @@ export default function App() {
   }, []);
 
   const openDocumentPreview = useCallback((doc: TaskDocument, boardId?: string) => {
-    if (doc.kind === "pdf") {
-      handleDownloadDocument(doc, boardId);
-      return;
-    }
     setPreviewDocument(doc);
     setPreviewDocumentBoardId(boardId);
-  }, [handleDownloadDocument]);
+  }, []);
   const handleOpenDocument = useCallback((task: Task, doc: TaskDocument) => {
     openDocumentPreview(doc, task.boardId);
   }, [openDocumentPreview]);
@@ -12248,7 +12244,7 @@ export default function App() {
           nostrSkHex,
         });
         const { dataUrl: _d, preview: _p, full: _f, ...rest } = doc as any;
-        return { ...rest, remoteUrl, encrypted: true };
+        return { ...rest, remoteUrl, encrypted: true, encryptionBoardId: params.boardId };
       } catch (err: any) {
         console.error("[attachments] Failed to encrypt/upload document", err);
         throw new Error(err?.message || `Failed to upload encrypted file attachment: ${doc?.name || "document"}`);

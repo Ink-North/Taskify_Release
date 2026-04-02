@@ -1,30 +1,90 @@
 import React, { useState, useEffect } from "react";
 import type { TaskDocument, TaskDocumentPreview } from "../../lib/documents";
-import { loadDocumentPreview } from "../../lib/documents";
+import { createDocumentFromDataUrl, documentAssetCacheKey, loadDocumentPreview } from "../../lib/documents";
 import { Modal } from "../Modal";
 import { decryptAttachment } from "../../lib/attachmentCrypto";
 
-export function DocumentThumbnail({ document: doc, onClick }: { document: TaskDocument; onClick: () => void }) {
+const resolvedDocumentCache = new Map<string, Promise<TaskDocument>>();
+
+async function resolveDocumentAsset(doc: TaskDocument, boardId?: string): Promise<TaskDocument> {
+  if (!doc.remoteUrl) return doc;
+  const decryptBoardId = doc.encryptionBoardId || boardId;
+  const cacheKey = documentAssetCacheKey(doc, boardId);
+  const cached = resolvedDocumentCache.get(cacheKey);
+  if (cached) return cached;
+
+  const promise = (async () => {
+    if (doc.encrypted && decryptBoardId) {
+      console.info("[attachment-debug] document-resolve:decrypt-context", {
+        documentId: doc.id,
+        documentName: doc.name,
+        boardIdProp: boardId,
+        encryptionBoardId: doc.encryptionBoardId,
+        decryptBoardId,
+        cacheKey,
+      });
+      const dataUrl = await decryptAttachment({ boardId: decryptBoardId, url: doc.remoteUrl, mimeType: doc.mimeType });
+      return createDocumentFromDataUrl({
+        id: doc.id,
+        name: doc.name,
+        mimeType: doc.mimeType,
+        dataUrl,
+        createdAt: doc.createdAt,
+        size: doc.size,
+        remoteUrl: doc.remoteUrl,
+        encrypted: doc.encrypted,
+        encryptionBoardId: doc.encryptionBoardId || decryptBoardId,
+      });
+    }
+
+    return createDocumentFromDataUrl({
+      id: doc.id,
+      name: doc.name,
+      mimeType: doc.mimeType,
+      dataUrl: doc.remoteUrl,
+      createdAt: doc.createdAt,
+      size: doc.size,
+      remoteUrl: doc.remoteUrl,
+      encrypted: doc.encrypted,
+      encryptionBoardId: doc.encryptionBoardId,
+    });
+  })().catch((err) => {
+    resolvedDocumentCache.delete(cacheKey);
+    throw err;
+  });
+
+  resolvedDocumentCache.set(cacheKey, promise);
+  return promise;
+}
+
+export function DocumentThumbnail({ document: doc, boardId, onClick }: { document: TaskDocument; boardId?: string; onClick: () => void }) {
   const [derivedPreview, setDerivedPreview] = useState<TaskDocumentPreview | null>(doc.preview ?? null);
 
   useEffect(() => {
     let cancelled = false;
-    if (doc.preview) {
+    if (doc.preview && !doc.remoteUrl) {
       setDerivedPreview(doc.preview);
       return () => {
         cancelled = true;
       };
     }
-    setDerivedPreview(null);
-    loadDocumentPreview(doc).then((next) => {
-      if (!cancelled) {
-        setDerivedPreview(next);
-      }
-    });
+    setDerivedPreview(doc.preview ?? null);
+    resolveDocumentAsset(doc, boardId)
+      .then((resolved) => loadDocumentPreview(resolved))
+      .then((next) => {
+        if (!cancelled) {
+          setDerivedPreview(next);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDerivedPreview(doc.preview ?? null);
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, [doc]);
+  }, [doc, boardId]);
 
   const preview = derivedPreview ?? doc.preview ?? null;
   const label = doc.name || "Document";
@@ -72,60 +132,43 @@ export function DocumentPreviewModal({
   document: TaskDocument;
   boardId?: string;
   onClose: () => void;
-  onDownloadDocument?: (doc: TaskDocument) => void;
-  onOpenExternal?: (doc: TaskDocument) => void;
+  onDownloadDocument?: (doc: TaskDocument, boardId?: string) => void;
+  onOpenExternal?: (doc: TaskDocument, boardId?: string) => void;
 }) {
-  const [resolvedDataUrl, setResolvedDataUrl] = useState<string | null>(document.dataUrl || null);
+  const [resolvedDocument, setResolvedDocument] = useState<TaskDocument>(document);
   const [loadingRemote, setLoadingRemote] = useState(false);
   const [remoteError, setRemoteError] = useState<string | null>(null);
-  const full = document.full;
   const label = document.name || "Document";
   const decryptBoardId = document.encryptionBoardId || boardId;
 
   useEffect(() => {
     let cancelled = false;
     if (!document.remoteUrl) {
-      setResolvedDataUrl(document.dataUrl || null);
+      setResolvedDocument(document);
       setLoadingRemote(false);
       setRemoteError(null);
       return;
     }
-    if (document.encrypted && decryptBoardId) {
-      console.info("[attachment-debug] document-preview:decrypt-context", {
-        documentId: document.id,
-        documentName: document.name,
-        boardIdProp: boardId,
-        encryptionBoardId: document.encryptionBoardId,
-        decryptBoardId,
-      });
-      setLoadingRemote(true);
-      setRemoteError(null);
-      decryptAttachment({ boardId: decryptBoardId, url: document.remoteUrl, mimeType: document.mimeType })
-        .then((dataUrl) => {
-          if (cancelled) return;
-          setResolvedDataUrl(dataUrl);
-          setLoadingRemote(false);
-        })
-        .catch((err: any) => {
-          if (cancelled) return;
-          setRemoteError(err?.message || "Failed to decrypt document");
-          setLoadingRemote(false);
-        });
-      return () => {
-        cancelled = true;
-      };
-    }
-    setResolvedDataUrl(document.remoteUrl);
-    setLoadingRemote(false);
+    setLoadingRemote(true);
     setRemoteError(null);
+    resolveDocumentAsset(document, boardId)
+      .then((resolved) => {
+        if (cancelled) return;
+        setResolvedDocument(resolved);
+        setLoadingRemote(false);
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setRemoteError(err?.message || "Failed to decrypt document");
+        setLoadingRemote(false);
+      });
     return () => {
       cancelled = true;
     };
-  }, [document, boardId, decryptBoardId]);
+  }, [document, boardId]);
 
-  const effectiveDocument = resolvedDataUrl && resolvedDataUrl !== document.dataUrl
-    ? { ...document, dataUrl: resolvedDataUrl }
-    : document;
+  const effectiveDocument = resolvedDocument;
+  const full = effectiveDocument.full;
 
   let content: React.ReactNode;
   if (loadingRemote) {
@@ -141,7 +184,7 @@ export function DocumentPreviewModal({
             type="button"
             className="ghost-button button-sm pressable"
             style={{ marginTop: "0.75rem" }}
-            onClick={() => onOpenExternal?.(effectiveDocument)}
+            onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}
           >
             Open full screen
           </button>
@@ -196,7 +239,7 @@ export function DocumentPreviewModal({
       <button
         type="button"
         className="ghost-button button-sm pressable"
-        onClick={() => onDownloadDocument?.(effectiveDocument)}
+        onClick={() => onDownloadDocument?.(effectiveDocument, decryptBoardId)}
       >
         Download
       </button>

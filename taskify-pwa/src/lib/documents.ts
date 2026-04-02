@@ -562,19 +562,31 @@ function wrapSheetHtml(rows: Array<Array<unknown>>, maxRows: number, maxCols: nu
   return `<div class="doc-sheet"><table><tbody>${body}</tbody></table></div>`;
 }
 
-export async function createDocumentAttachment(file: File): Promise<TaskDocument> {
-  const kind = inferKind(file.name, file.type);
+export async function createDocumentFromDataUrl(input: {
+  id?: string;
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+  createdAt?: string;
+  size?: number;
+  remoteUrl?: string;
+  encrypted?: boolean;
+  encryptionBoardId?: string;
+}): Promise<TaskDocument> {
+  const kind = inferKind(input.name, input.mimeType);
   if (!kind) throw new Error("Unsupported file type");
-  const dataUrl = await readFileAsDataURL(file);
-  const buffer = await file.arrayBuffer();
+  const buffer = arrayBufferFromDataUrl(input.dataUrl);
   const base: TaskDocument = {
-    id: generateId(),
-    name: file.name,
-    mimeType: guessMime(kind, file.type),
+    id: input.id || generateId(),
+    name: input.name,
+    mimeType: guessMime(kind, input.mimeType),
     kind,
-    size: typeof file.size === "number" ? file.size : undefined,
-    dataUrl,
-    createdAt: new Date().toISOString(),
+    size: typeof input.size === "number" ? input.size : undefined,
+    dataUrl: input.dataUrl,
+    createdAt: input.createdAt || new Date().toISOString(),
+    ...(input.remoteUrl ? { remoteUrl: input.remoteUrl } : {}),
+    ...(input.encrypted ? { encrypted: true } : {}),
+    ...(input.encryptionBoardId ? { encryptionBoardId: input.encryptionBoardId } : {}),
   };
 
   if (kind === "pdf") {
@@ -590,10 +602,6 @@ export async function createDocumentAttachment(file: File): Promise<TaskDocument
     const { previewText, fullText } = generateDocBinary(buffer);
     if (previewText) base.preview = { type: "text", data: previewText };
     if (fullText) base.full = { type: "text", data: fullText };
-  } else if (kind === "doc") {
-    const { previewText, fullText } = generateDocBinary(buffer);
-    if (previewText) base.preview = { type: "text", data: previewText };
-    if (fullText) base.full = { type: "text", data: fullText };
   } else if (kind === "xls" || kind === "xlsx") {
     const { previewHtml, fullHtml } = await generateSpreadsheetMarkup(buffer, kind);
     if (previewHtml) base.preview = { type: "html", data: previewHtml };
@@ -603,15 +611,25 @@ export async function createDocumentAttachment(file: File): Promise<TaskDocument
     if (previewText) base.preview = { type: "text", data: previewText };
     if (fullText) base.full = { type: "text", data: fullText };
   } else if (isImageKind(kind)) {
-    base.preview = { type: "image", data: dataUrl };
-    base.full = { type: "image", data: dataUrl };
+    base.preview = { type: "image", data: input.dataUrl };
+    base.full = { type: "image", data: input.dataUrl };
   } else if (isAudioKind(kind)) {
-    base.full = { type: "audio", data: dataUrl };
+    base.full = { type: "audio", data: input.dataUrl };
   } else if (isVideoKind(kind)) {
-    base.full = { type: "video", data: dataUrl };
+    base.full = { type: "video", data: input.dataUrl };
   }
 
   return base;
+}
+
+export async function createDocumentAttachment(file: File): Promise<TaskDocument> {
+  const dataUrl = await readFileAsDataURL(file);
+  return createDocumentFromDataUrl({
+    name: file.name,
+    mimeType: file.type,
+    dataUrl,
+    size: typeof file.size === "number" ? file.size : undefined,
+  });
 }
 
 export function ensureDocumentPreview(doc: TaskDocument): TaskDocument {
@@ -716,4 +734,12 @@ export async function readDocumentsFromFiles(list: FileList | File[]): Promise<T
     attachments.push(ensureDocumentPreview(doc));
   }
   return attachments;
+}
+
+export function documentAssetCacheKey(doc: Pick<TaskDocument, "remoteUrl" | "encrypted" | "encryptionBoardId" | "id">, boardId?: string): string {
+  if (doc.remoteUrl) {
+    const keyBoardId = doc.encrypted ? (doc.encryptionBoardId || boardId || "") : "public";
+    return `remote::${doc.remoteUrl}::${keyBoardId}`;
+  }
+  return `inline::${doc.id}`;
 }
