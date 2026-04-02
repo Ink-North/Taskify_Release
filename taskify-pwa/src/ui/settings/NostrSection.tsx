@@ -139,8 +139,8 @@ export function NostrSection({
                 fileServers={settings.encryptedFileServers || ""}
                 onSelectServer={(url) => setSettings({ encryptedFileStorageServer: url })}
                 onUpdateServers={(serialized) => setSettings({ encryptedFileServers: serialized })}
+                addWarning={(type) => type && type !== "originless" ? "Warning: NIP-96 and Blossom servers may fail for encrypted uploads. Originless is recommended." : null}
               />
-              <div className="text-xs text-amber-400 mt-2">Warning: NIP-96 and Blossom servers may fail for encrypted uploads. Originless is recommended.</div>
             </div>
           </div>
 

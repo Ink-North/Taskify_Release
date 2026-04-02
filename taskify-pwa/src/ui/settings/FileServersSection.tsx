@@ -14,6 +14,7 @@ type Props = {
   fileServers: string;
   onSelectServer: (url: string) => void;
   onUpdateServers: (serialized: string) => void;
+  addWarning?: (type: FileServerType | null) => string | null;
 };
 
 const DEFAULT_URLS = new Set(DEFAULT_FILE_SERVERS.map((s) => s.url));
@@ -33,7 +34,7 @@ const TYPE_LABELS: Record<FileServerType, string> = {
   originless: "Originless",
 };
 
-export function FileServersSection({ fileStorageServer, fileServers, onSelectServer, onUpdateServers }: Props) {
+export function FileServersSection({ fileStorageServer, fileServers, onSelectServer, onUpdateServers, addWarning }: Props) {
   const servers = parseFileServers(fileServers);
   const selectedNorm = normalizeFileServerUrl(fileStorageServer) || fileStorageServer;
 
@@ -199,6 +200,9 @@ export function FileServersSection({ fileStorageServer, fileServers, onSelectSer
           <div className="text-xs text-secondary font-medium">
             {TYPE_LABELS[addType!]} server URL
           </div>
+          {addWarning?.(addType) ? (
+            <div className="text-xs text-amber-400">{addWarning(addType)}</div>
+          ) : null}
           <div className="flex gap-2">
             <input
               className="pill-input flex-1"
