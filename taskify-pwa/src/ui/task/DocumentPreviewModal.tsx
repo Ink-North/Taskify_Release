@@ -178,17 +178,7 @@ export function DocumentPreviewModal({
   } else if (effectiveDocument.kind === "pdf") {
     content = (
       <div className="doc-modal__content">
-        <div className="doc-modal__placeholder">
-          <div>PDF previews open in a new tab for the best experience.</div>
-          <button
-            type="button"
-            className="ghost-button button-sm pressable"
-            style={{ marginTop: "0.75rem" }}
-            onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}
-          >
-            Open full screen
-          </button>
-        </div>
+        <iframe src={effectiveDocument.dataUrl} title={label} className="h-[70vh] w-full rounded-xl border border-surface bg-white" />
       </div>
     );
   } else if (full?.type === "html") {
