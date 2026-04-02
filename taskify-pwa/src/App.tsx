@@ -179,7 +179,7 @@ import {
   type HistoryEntryRaw,
 } from "./lib/walletHistory";
 import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, parseFileServers, findServerEntry, serializeFileServers, DEFAULT_FILE_SERVERS } from "./lib/fileStorage";
-import { encryptAndUploadAttachment, parseDataUrl } from "./lib/attachmentCrypto";
+import { encryptAndUploadAttachment, parseDataUrl, decryptAttachment } from "./lib/attachmentCrypto";
 import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
@@ -8939,10 +8939,17 @@ export default function App() {
   }, [renamingColumnId]);
   const [previewDocument, setPreviewDocument] = useState<TaskDocument | null>(null);
   const [previewDocumentBoardId, setPreviewDocumentBoardId] = useState<string | undefined>(undefined);
-  const handleDownloadDocument = useCallback(async (doc: TaskDocument) => {
+  const handleDownloadDocument = useCallback(async (doc: TaskDocument, boardId?: string) => {
     if (typeof window === "undefined") return;
     try {
-      const response = await fetch(doc.dataUrl);
+      let sourceUrl = doc.dataUrl;
+      if (!sourceUrl && doc.remoteUrl) {
+        sourceUrl = doc.encrypted && boardId
+          ? await decryptAttachment({ boardId, url: doc.remoteUrl, mimeType: doc.mimeType })
+          : doc.remoteUrl;
+      }
+      if (!sourceUrl) throw new Error("Missing document source");
+      const response = await fetch(sourceUrl);
       const blob = await response.blob();
       const fileName =
         doc.name ||
@@ -8962,14 +8969,21 @@ export default function App() {
     }
   }, [showToast]);
 
-  const openDocumentExternally = useCallback((doc: TaskDocument) => {
+  const openDocumentExternally = useCallback(async (doc: TaskDocument, boardId?: string) => {
     if (typeof window === "undefined") return;
-    window.location.assign(doc.dataUrl || doc.remoteUrl || "");
+    const sourceUrl = doc.dataUrl || (doc.remoteUrl
+      ? (doc.encrypted && boardId
+        ? await decryptAttachment({ boardId, url: doc.remoteUrl, mimeType: doc.mimeType })
+        : doc.remoteUrl)
+      : "");
+    if (sourceUrl) {
+      window.location.assign(sourceUrl);
+    }
   }, []);
 
   const openDocumentPreview = useCallback((doc: TaskDocument, boardId?: string) => {
     if (doc.kind === "pdf") {
-      handleDownloadDocument(doc);
+      handleDownloadDocument(doc, boardId);
       return;
     }
     setPreviewDocument(doc);
@@ -19939,8 +19953,8 @@ export default function App() {
           document={previewDocument}
           boardId={previewDocumentBoardId}
           onClose={() => { setPreviewDocument(null); setPreviewDocumentBoardId(undefined); }}
-          onDownloadDocument={handleDownloadDocument}
-          onOpenExternal={openDocumentExternally}
+          onDownloadDocument={(doc) => handleDownloadDocument(doc, previewDocumentBoardId)}
+          onOpenExternal={(doc) => openDocumentExternally(doc, previewDocumentBoardId)}
         />
       )}
 
