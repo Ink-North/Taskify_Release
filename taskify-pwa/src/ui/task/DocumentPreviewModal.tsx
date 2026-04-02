@@ -203,69 +203,33 @@ export function DocumentPreviewModal({
 
   let content: React.ReactNode;
   if (loadingRemote) {
-    content = <div className="doc-modal__content"><div className="doc-modal__placeholder">Decrypting document…</div></div>;
+    content = <div className="flex h-full items-center justify-center text-white/70">Decrypting document…</div>;
   } else if (remoteError) {
-    content = <div className="doc-modal__content"><div className="doc-modal__placeholder">{remoteError}</div></div>;
+    content = <div className="flex h-full items-center justify-center text-center text-white/70">{remoteError}</div>;
   } else if (effectiveDocument.kind === "pdf") {
-    content = (
-      <div className="doc-modal__content">
-        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 rounded-[28px] bg-[#1b1c20] p-3 shadow-2xl"><embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-full w-full rounded-[22px] bg-white" /></div><div className="flex justify-center gap-2"><button type="button" className="ghost-button button-sm pressable" style={{ display: "none" }}></button><button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open in browser</button></div></div>
-      </div>
-    );
-  } else if (full?.type === "html") {
-    content = (
-      <div className="doc-modal__content">
-        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 overflow-auto rounded-[28px] bg-white p-6 text-black shadow-2xl"><div className="doc-modal__markup" dangerouslySetInnerHTML={{ __html: full.data }} /></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" style={{ display: "none" }}></button></div></div>
-      </div>
-    );
-  } else if (full?.type === "text") {
-    content = (
-      <div className="doc-modal__content">
-        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 overflow-auto rounded-[28px] bg-white p-6 text-black shadow-2xl"><pre className="doc-modal__text whitespace-pre-wrap">{full.data}</pre></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" style={{ display: "none" }}></button></div></div>
-      </div>
-    );
+    content = <div className="h-full rounded-[28px] bg-[#1b1c20] p-3 shadow-2xl"><embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-full w-full rounded-[22px] bg-white" /></div>;
   } else if (full?.type === "image") {
-    content = (
-      <div className="doc-modal__content">
-        <div className="flex h-full flex-col gap-3"><div className="flex min-h-0 flex-1 items-center justify-center rounded-[28px] bg-[#1b1c20] p-4 shadow-2xl"><img src={full.data} alt={label} className="max-h-full max-w-full rounded-[22px] object-contain" /></div><div className="flex justify-center gap-2"><button type="button" className="ghost-button button-sm pressable" style={{ display: "none" }}></button><button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open image</button></div></div>
-      </div>
-    );
-  } else if (full?.type === "audio") {
-    content = (
-      <div className="doc-modal__content">
-        <div className="flex h-full items-center justify-center"><div className="w-full max-w-xl rounded-[28px] bg-[#1b1c20] p-6 shadow-2xl"><div className="mb-4 text-center text-sm text-white/70">Audio attachment</div><audio controls src={full.data} className="w-full" /></div></div>
-      </div>
-    );
+    content = <div className="flex h-full items-center justify-center"><img src={full.data} alt={label} className="max-h-full max-w-full object-contain" /></div>;
   } else if (full?.type === "video") {
-    content = (
-      <div className="doc-modal__content">
-        <div className="flex h-full flex-col gap-3"><div className="flex min-h-0 flex-1 items-center justify-center rounded-[28px] bg-black p-2 shadow-2xl"><video controls src={full.data} className="max-h-full w-full rounded-[22px] bg-black" /></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" style={{ display: "none" }}></button></div></div>
-      </div>
-    );
+    content = <div className="flex h-full items-center justify-center rounded-[28px] bg-black p-2 shadow-2xl"><video controls autoPlay src={full.data} className="max-h-full w-full rounded-[22px] bg-black" /></div>;
+  } else if (full?.type === "audio") {
+    content = <div className="flex h-full items-center justify-center"><div className="w-full max-w-xl rounded-[28px] bg-[#1b1c20] p-6 shadow-2xl"><div className="mb-4 text-center text-sm text-white/70">Audio attachment</div><audio controls src={full.data} className="w-full" /></div></div>;
+  } else if (full?.type === "html") {
+    content = <div className="mx-auto h-full max-w-4xl overflow-auto rounded-[28px] bg-white px-6 py-8 text-[#111827] shadow-2xl"><div className="doc-modal__markup doc-modal__markup--rich" dangerouslySetInnerHTML={{ __html: full.data }} /></div>;
+  } else if (full?.type === "text") {
+    content = <div className="mx-auto h-full max-w-4xl overflow-auto rounded-[28px] bg-white px-6 py-8 text-[#111827] shadow-2xl"><pre className="doc-modal__text whitespace-pre-wrap text-[15px] leading-7 text-[#111827]">{full.data}</pre></div>;
   } else {
-    content = (
-      <div className="doc-modal__content">
-        <div className="flex h-full items-center justify-center"><div className="rounded-[28px] bg-[#1b1c20] px-6 py-8 text-center text-white/70 shadow-2xl">Preview unavailable. Use Download to open the original file.</div></div>
-      </div>
-    );
+    content = <div className="flex h-full items-center justify-center"><div className="rounded-[28px] bg-[#1b1c20] px-6 py-8 text-center text-white/70 shadow-2xl">Preview unavailable. Use Download to open the original file.</div></div>;
   }
 
   const actions = (
     <>
       {onOpenExternal ? (
-        <button
-          type="button"
-          className="ghost-button button-sm pressable"
-          onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}
-        >
+        <button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>
           Open
         </button>
       ) : null}
-      <button
-        type="button"
-        className="ghost-button button-sm pressable"
-        onClick={() => onDownloadDocument?.(effectiveDocument, decryptBoardId)}
-      >
+      <button type="button" className="ghost-button button-sm pressable" onClick={() => onDownloadDocument?.(effectiveDocument, decryptBoardId)}>
         Download
       </button>
     </>
