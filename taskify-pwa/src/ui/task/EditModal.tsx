@@ -1142,7 +1142,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       filename: file.name || "image",
       serverEntry: selectedServerEntry,
       nostrSkHex,
-      onProgress: (progress) => onProgress?.(progress),
     });
   }
 
@@ -1175,33 +1174,31 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     const id = `${doc.id}-uploading`;
     setUploadingDocumentRows((prev) => [
       ...prev,
-      { id, name: doc.name || fallbackName || "attachment", kind: doc.kind.toUpperCase(), progress: 0.22 },
+      { id, name: doc.name || fallbackName || "attachment", kind: doc.kind.toUpperCase(), progress: 0 },
     ]);
     return id;
   }
 
   function advanceUploadingDocumentRow(id: string, progress: number) {
-    setUploadingDocumentRows((prev) => prev.map((row) => row.id === id ? { ...row, progress: Math.max(0, Math.min(progress, 1)) } : row));
-  }
-
-  function startUploadingDocumentRowAnimation(id: string) {
-    const steps = [0.3, 0.42, 0.54, 0.66, 0.78, 0.88, 0.94];
-    let stepIndex = 0;
-    advanceUploadingDocumentRow(id, steps[0]);
-    const interval = window.setInterval(() => {
-      stepIndex += 1;
-      if (stepIndex >= steps.length) {
-        window.clearInterval(interval);
-        return;
-      }
-      advanceUploadingDocumentRow(id, steps[stepIndex]);
-    }, 260);
-    return () => window.clearInterval(interval);
+    setUploadingDocumentRows((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, progress: Math.max(0, Math.min(progress, 1)) } : row)),
+    );
   }
 
   function completeUploadingDocumentRow(id: string) {
     setUploadingDocumentRows((prev) => prev.filter((row) => row.id !== id));
   }
+
+  useEffect(() => {
+    if (!uploadingDocumentRows.length) {
+      setUploadingDotPhase(0);
+      return;
+    }
+    const interval = window.setInterval(() => {
+      setUploadingDotPhase((prev) => (prev + 1) % 4);
+    }, 420);
+    return () => window.clearInterval(interval);
+  }, [uploadingDocumentRows.length]);
 
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
@@ -1209,20 +1206,22 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     const imgs = Array.from(items).filter((it) => it.type.startsWith("image/"));
     if (!imgs.length) return;
     e.preventDefault();
-    const fileList = imgs.map((it, index) => {
-      const file = it.getAsFile();
-      if (!file) return null;
-      if (file.name) return file;
-      const extension = (file.type || "image/png").split("/")[1] || "png";
-      return new File([file], `pasted-image-${Date.now()}-${index}.${extension}`, { type: file.type || "image/png" });
-    }).filter(Boolean) as File[];
+    const fileList = imgs
+      .map((it, index) => {
+        const file = it.getAsFile();
+        if (!file) return null;
+        if (file.name) return file;
+        const extension = (file.type || "image/png").split("/")[1] || "png";
+        return new File([file], `pasted-image-${Date.now()}-${index}.${extension}`, { type: file.type || "image/png" });
+      })
+      .filter(Boolean) as File[];
     if (!fileList.length) return;
     try {
       setSaveError(null);
       setUploadingCount((prev) => prev + fileList.length);
       const nextDocs: TaskDocument[] = [];
       for (const file of fileList) {
-        const label = file.name || 'pasted image';
+        const label = file.name || "pasted image";
         setUploadingLabel(`Preparing ${label}…`);
         const docs = await readDocumentsFromFiles([file] as any);
         const doc = docs[0];
@@ -1230,14 +1229,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
         if (isSharedBoard) {
           setUploadingLabel(`Uploading ${label}…`);
           const rowId = addUploadingDocumentRow(doc, label);
-          const stopAnimating = startUploadingDocumentRowAnimation(rowId);
           try {
             const uploaded = await uploadSharedDocument(file, doc, (progress) => advanceUploadingDocumentRow(rowId, progress));
-            stopAnimating();
             advanceUploadingDocumentRow(rowId, 1);
             nextDocs.push(uploaded);
           } finally {
-            stopAnimating();
             completeUploadingDocumentRow(rowId);
           }
         } else {
@@ -1264,24 +1260,19 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       const nextDocs: TaskDocument[] = [];
       for (let index = 0; index < fileList.length; index += 1) {
         const file = fileList[index];
-        const label = file.name || 'attachment';
+        const label = file.name || "attachment";
         setUploadingLabel(`Preparing ${label}…`);
         const docs = await readDocumentsFromFiles([file] as any);
         const doc = docs[0];
-        if (!doc) {
-          throw new Error(`Could not read ${label}. The selected file may not be supported.`);
-        }
+        if (!doc) throw new Error(`Could not read ${label}. The selected file may not be supported.`);
         if (isSharedBoard) {
           setUploadingLabel(`Uploading ${label}…`);
           const rowId = addUploadingDocumentRow(doc, label);
-          const stopAnimating = startUploadingDocumentRowAnimation(rowId);
           try {
             const uploaded = await uploadSharedDocument(file, doc, (progress) => advanceUploadingDocumentRow(rowId, progress));
-            stopAnimating();
             advanceUploadingDocumentRow(rowId, 1);
             nextDocs.push(uploaded);
           } finally {
-            stopAnimating();
             completeUploadingDocumentRow(rowId);
           }
         } else {
@@ -1290,25 +1281,15 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       }
       setDocuments((prev) => [...prev, ...nextDocs]);
     } catch (err: any) {
-      console.error('Failed to attach document', err);
-      setSaveError(err?.message || 'Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.');
+      console.error("Failed to attach document", err);
+      setSaveError(err?.message || "Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
     } finally {
       setUploadingCount((prev) => Math.max(0, prev - fileList.length));
       setUploadingLabel(null);
-      e.target.value = '';
+      e.target.value = "";
     }
   }
 
-  useEffect(() => {
-    if (!uploadingDocumentRows.length) {
-      setUploadingDotPhase(0);
-      return;
-    }
-    const interval = window.setInterval(() => {
-      setUploadingDotPhase((prev) => (prev + 1) % 4);
-    }, 420);
-    return () => window.clearInterval(interval);
-  }, [uploadingDocumentRows.length]);
 
   function addSubtask(keepKeyboard = false) {
     const title = newSubtask.trim();
