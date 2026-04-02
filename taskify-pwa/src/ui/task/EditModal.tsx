@@ -1,6 +1,8 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 import { nip19 } from "nostr-tools";
+import { normalizeTaskAssignmentStatus } from "taskify-core";
 
 // Sub-sheet components
 import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
@@ -53,6 +55,7 @@ import {
   scheduleWheelSnap,
   parseTimePickerValue,
   formatTimePickerValue,
+  currentTimeValue,
 } from "../../domains/dateTime/dateUtils";
 
 // Timezone utilities
@@ -88,23 +91,15 @@ import {
 import {
   readDocumentsFromFiles,
   type TaskDocument,
-  type TaskDocumentKind,
 } from "../../lib/documents";
+import { encryptAndUploadAttachment } from "../../lib/attachmentCrypto";
+import { findServerEntry, parseFileServers, type FileServerEntry } from "../../lib/fileStorage";
 import {
   buildTaskShareEnvelope,
   sendShareMessage,
   type SharedTaskPayload,
 } from "../../lib/shareInbox";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
-import {
-  encryptAndUploadAttachment,
-  parseDataUrl,
-} from "../../lib/attachmentCrypto";
-import {
-  parseFileServers,
-  findServerEntry,
-  type FileServerEntry,
-} from "../../lib/fileStorage";
 
 // Nostr crypto
 import { encryptEcashTokenForRecipient, hexToBytes } from "../../domains/nostr/nostrCrypto";
@@ -193,12 +188,6 @@ function normalizeAssigneePubkey(value: string | null | undefined): string | nul
   return /^[0-9a-f]{64}$/.test(raw) ? raw : null;
 }
 
-function normalizeAssigneeStatus(value: unknown): TaskAssignee["status"] | undefined {
-  if (value === "pending" || value === "accepted" || value === "declined" || value === "tentative") return value;
-  if (value === "maybe") return "tentative";
-  return undefined;
-}
-
 function normalizeAssigneeList(value: Task["assignees"] | undefined): TaskAssignee[] {
   if (!Array.isArray(value)) return [];
   const normalized: TaskAssignee[] = [];
@@ -208,7 +197,7 @@ function normalizeAssigneeList(value: Task["assignees"] | undefined): TaskAssign
     if (!pubkey || seen.has(pubkey)) return;
     seen.add(pubkey);
     const relay = typeof assignee?.relay === "string" ? assignee.relay.trim() : "";
-    const status = normalizeAssigneeStatus(assignee?.status);
+    const status = normalizeTaskAssignmentStatus(assignee?.status) as TaskAssignee["status"] | undefined;
     const respondedAtRaw = Number(assignee?.respondedAt);
     const respondedAt = Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
     normalized.push({
@@ -230,7 +219,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
-  onSave: (t: Task)=>void;
+  onSave: (t: Task)=>void | Promise<void>;
   onSwitchToEvent?: (t: Task)=>void;
   weekStart: Weekday;
   boardKind: Board["kind"];
@@ -248,20 +237,20 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   defaultRelays: string[];
   nostrPK: string;
   nostrSkHex: string;
-  fileServers?: string;
-  fileStorageServer?: string;
+  fileServers: string;
+  fileStorageServer: string;
 }) {
   const [title, setTitle] = useState(task.title);
   const [priority, setPriority] = useState<TaskPriority | 0>(() => normalizeTaskPriority(task.priority) ?? 0);
   const [prioritySheetOpen, setPrioritySheetOpen] = useState(false);
   const [note, setNote] = useState(task.note || "");
   const [images, setImages] = useState<string[]>(task.images || []);
+  const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const [documents, setDocuments] = useState<TaskDocument[]>(task.documents || []);
-  // Pending attachment uploads while editing on a shared board (remote-first)
-  const [uploadingImages, setUploadingImages] = useState<{ id: string; dataUrl: string }[]>([]);
-  const [uploadingDocuments, setUploadingDocuments] = useState<{ id: string; name: string; kind: TaskDocumentKind }[]>([]);
-  const [attachUploadError, setAttachUploadError] = useState<string | null>(null);
-  const isUploading = uploadingImages.length > 0 || uploadingDocuments.length > 0;
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [uploadingCount, setUploadingCount] = useState(0);
+  const [uploadingLabel, setUploadingLabel] = useState<string | null>(null);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
   const [newSubtask, setNewSubtask] = useState("");
   const [selectedBoardId, setSelectedBoardId] = useState(task.boardId);
@@ -282,8 +271,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   );
   const initialDate = initialDateEnabled ? isoDatePart(task.dueISO, initialTimeZone) : "";
   const initialTime = initialDateEnabled ? isoTimePart(task.dueISO, initialTimeZone) : "";
-  const defaultTimeValue = initialTime || "09:00";
   const defaultHasTime = initialDateEnabled && (task.dueTimeEnabled ?? false);
+  // Only use the task's stored time as the default if time was actually enabled.
+  // Otherwise (time disabled / new task) default to current time rounded to next hour,
+  // so the picker opens at "now" instead of a stale or midnight time from dueISO.
+  const defaultTimeValue = defaultHasTime ? initialTime : currentTimeValue(0, initialTimeZone);
   const [scheduledDate, setScheduledDate] = useState(initialDate);
   const [scheduledTime, setScheduledTime] = useState<string>(defaultHasTime ? initialTime : "");
   const [scheduledTimeZone, setScheduledTimeZone] = useState(initialTimeZone);
@@ -353,18 +345,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     [boards, selectedBoardId],
   );
   const selectedBoardKind = selectedBoard?.kind ?? boardKind;
-  // When the selected destination board is a shared (Nostr) board, provide context for
-  // immediate attachment uploads so files are encrypted and stored remotely at attach-time
-  // rather than at publish-time.
-  const sharedUploadContext = useMemo<{ boardId: string; serverEntry: FileServerEntry } | null>(() => {
-    const nostrBoardId = selectedBoard?.nostr?.boardId;
-    if (!nostrBoardId || !nostrSkHex) return null;
+  const selectedServerEntry = useMemo<FileServerEntry>(() => {
     const servers = parseFileServers(fileServers);
-    const serverEntry = findServerEntry(servers, fileStorageServer ?? "")
-      ?? servers[0]
-      ?? { url: "https://nostr.build", type: "nip96" as const };
-    return { boardId: nostrBoardId, serverEntry };
-  }, [selectedBoard, fileServers, fileStorageServer, nostrSkHex]);
+    return findServerEntry(servers, fileStorageServer) || { url: fileStorageServer, type: "nip96" };
+  }, [fileServers, fileStorageServer]);
+  const isSharedBoard = !!selectedBoard?.nostr;
   const locationSummary = useMemo(() => {
     if (!selectedBoard) return "Select board";
     const boardLabel = selectedBoard.name || "Board";
@@ -921,15 +906,17 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     if ((hasDueTime && !timeDetailsOpen) || (!hasDueTime && !reminderTimeDetailsOpen)) return;
     const hourIndex = HOURS_12.indexOf(timePickerHour);
     if (hourIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex);
+      // Use "instant" to avoid firing scroll events mid-animation, which would
+      // cause the snap handler to read a stale position and re-snap to the wrong item.
+      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex, "instant");
     }
     const minuteIndex = MINUTES.indexOf(timePickerMinute);
     if (minuteIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex);
+      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex, "instant");
     }
     const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
     if (meridiemIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex);
+      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex, "instant");
     }
   }, [timeDetailsOpen, hasDueTime, reminderTimeDetailsOpen, timePickerHour, timePickerMinute, timePickerMeridiem]);
 
@@ -1139,110 +1126,79 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   }, [bountyButtonActive, onAddToBountyList, onRemoveFromBountyList, task.id, taskInBountyList]);
 
 
+  async function uploadSharedImage(file: File): Promise<string> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return encryptAndUploadAttachment({
+      boardId: selectedBoard!.nostr!.boardId,
+      data: bytes,
+      mimeType: file.type || "application/octet-stream",
+      filename: file.name || "image",
+      serverEntry: selectedServerEntry,
+      nostrSkHex,
+    });
+  }
+
+  async function uploadSharedDocument(file: File, doc: TaskDocument): Promise<TaskDocument> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const remoteUrl = await encryptAndUploadAttachment({
+      boardId: selectedBoard!.nostr!.boardId,
+      data: bytes,
+      mimeType: doc.mimeType || file.type || "application/octet-stream",
+      filename: doc.name || file.name || "document",
+      serverEntry: selectedServerEntry,
+      nostrSkHex,
+    });
+    const { dataUrl, preview, full, ...rest } = doc as any;
+    return { ...rest, remoteUrl, encrypted: true };
+  }
+
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
     if (!items) return;
     const imgs = Array.from(items).filter(it => it.type.startsWith("image/"));
-    if (!imgs.length) return;
-    e.preventDefault();
-
-    if (sharedUploadContext) {
-      // Remote-first: immediately encrypt+upload each pasted image for shared boards
-      for (const it of imgs) {
-        const file = it.getAsFile();
-        if (!file) continue;
-        const dataUrl = await fileToDataURL(file);
-        const uploadId = crypto.randomUUID();
-        setUploadingImages(prev => [...prev, { id: uploadId, dataUrl }]);
-        setAttachUploadError(null);
-        const ctx = sharedUploadContext;
-        (async () => {
-          try {
-            const { mimeType, bytes } = parseDataUrl(dataUrl);
-            const remoteUrl = await encryptAndUploadAttachment({
-              boardId: ctx.boardId,
-              data: bytes,
-              mimeType,
-              filename: `paste-${Date.now()}`,
-              serverEntry: ctx.serverEntry,
-              nostrSkHex,
-            });
-            setImages(prev => [...prev, remoteUrl]);
-          } catch (err: any) {
-            console.error("[attachments] Failed to upload pasted image", err);
-            setAttachUploadError(err?.message || "Failed to upload image. Please try again.");
-          } finally {
-            setUploadingImages(prev => prev.filter(x => x.id !== uploadId));
-          }
-        })();
+    if (imgs.length) {
+      e.preventDefault();
+      try {
+        setSaveError(null);
+        setUploadingCount((prev) => prev + imgs.length);
+        setUploadingLabel(`Uploading ${imgs.length === 1 ? "image" : "images"}…`);
+        const nextImages: string[] = [];
+        for (const it of imgs) {
+          const file = it.getAsFile();
+          if (!file) continue;
+          nextImages.push(isSharedBoard ? await uploadSharedImage(file) : await fileToDataURL(file));
+        }
+        setImages(prev => [...prev, ...nextImages]);
+      } catch (err: any) {
+        console.error("Failed to attach image", err);
+        setSaveError(err?.message || "Failed to upload image attachment.");
+      } finally {
+        setUploadingCount((prev) => Math.max(0, prev - imgs.length));
+        setUploadingLabel(null);
       }
-    } else {
-      // Local board: store as data URLs
-      const datas: string[] = [];
-      for (const it of imgs) {
-        const file = it.getAsFile();
-        if (file) datas.push(await fileToDataURL(file));
-      }
-      setImages(prev => [...prev, ...datas]);
     }
   }
 
   async function handleDocumentAttach(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
     if (!files || !files.length) return;
-    e.target.value = "";
-
-    if (sharedUploadContext) {
-      // Remote-first: parse locally for previews, then immediately encrypt+upload
-      const ctx = sharedUploadContext;
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        let doc: TaskDocument;
-        try {
-          const parsed = await readDocumentsFromFiles([file]);
-          if (!parsed.length) continue;
-          doc = parsed[0];
-        } catch (err) {
-          console.error("Failed to read document for upload", err);
-          alert("Failed to read document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
-          continue;
-        }
-        const uploadId = crypto.randomUUID();
-        setUploadingDocuments(prev => [...prev, { id: uploadId, name: doc.name, kind: doc.kind }]);
-        setAttachUploadError(null);
-        (async () => {
-          try {
-            const { mimeType, bytes } = parseDataUrl(doc.dataUrl);
-            const remoteUrl = await encryptAndUploadAttachment({
-              boardId: ctx.boardId,
-              data: bytes,
-              mimeType: doc.mimeType || mimeType,
-              filename: doc.name || doc.id,
-              serverEntry: ctx.serverEntry,
-              nostrSkHex,
-            });
-            // Keep preview for local thumbnail display; drop dataUrl and full to avoid storing
-            // the raw file bytes in memory/state after the upload succeeds.
-            const { dataUrl: _d, full: _f, ...rest } = doc as any;
-            const remoteDoc: TaskDocument = { ...rest, dataUrl: "", remoteUrl, encrypted: true };
-            setDocuments(prev => [...prev, remoteDoc]);
-          } catch (err: any) {
-            console.error("[attachments] Failed to upload document", err);
-            setAttachUploadError(err?.message || `Failed to upload ${doc.name || "document"}. Please try again.`);
-          } finally {
-            setUploadingDocuments(prev => prev.filter(x => x.id !== uploadId));
-          }
-        })();
-      }
-    } else {
-      // Local board: store with full data URL
-      try {
-        const docs = await readDocumentsFromFiles(files);
-        setDocuments((prev) => [...prev, ...docs]);
-      } catch (err) {
-        console.error("Failed to attach document", err);
-        alert("Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
-      }
+    const fileList = Array.from(files);
+    try {
+      setSaveError(null);
+      setUploadingCount((prev) => prev + fileList.length);
+      setUploadingLabel(`Uploading ${fileList.length === 1 ? "attachment" : "attachments"}…`);
+      const docs = await readDocumentsFromFiles(files);
+      const nextDocs = isSharedBoard
+        ? await Promise.all(docs.map((doc, index) => uploadSharedDocument(fileList[index], doc)))
+        : docs;
+      setDocuments((prev) => [...prev, ...nextDocs]);
+    } catch (err: any) {
+      console.error("Failed to attach document", err);
+      setSaveError(err?.message || "Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
+    } finally {
+      setUploadingCount((prev) => Math.max(0, prev - fileList.length));
+      setUploadingLabel(null);
+      e.target.value = "";
     }
   }
 
@@ -1433,11 +1389,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       const clampedIndex = getWheelNearestIndex(column, HOURS_12.length);
       if (clampedIndex == null) return;
       const nextHour = HOURS_12[clampedIndex];
-      if (typeof nextHour === "number" && timePickerHourValueRef.current !== nextHour) {
-        setTimePickerFromParts(nextHour, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-      }
       if (typeof nextHour === "number") {
-        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex);
+        // Update ref immediately for cross-column coordination; defer state commit to avoid
+        // re-rendering the whole modal during active scroll (which disrupts scroll physics).
+        timePickerHourValueRef.current = nextHour;
+        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -1451,11 +1409,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       const clampedIndex = getWheelNearestIndex(column, MINUTES.length);
       if (clampedIndex == null) return;
       const nextMinute = MINUTES[clampedIndex];
-      if (typeof nextMinute === "number" && timePickerMinuteValueRef.current !== nextMinute) {
-        setTimePickerFromParts(timePickerHourValueRef.current, nextMinute, timePickerMeridiemValueRef.current);
-      }
       if (typeof nextMinute === "number") {
-        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex);
+        timePickerMinuteValueRef.current = nextMinute;
+        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -1469,11 +1427,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       const clampedIndex = getWheelNearestIndex(column, MERIDIEMS.length);
       if (clampedIndex == null) return;
       const nextMeridiem = MERIDIEMS[clampedIndex];
-      if (nextMeridiem && timePickerMeridiemValueRef.current !== nextMeridiem) {
-        setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, nextMeridiem);
-      }
       if (nextMeridiem) {
-        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex);
+        timePickerMeridiemValueRef.current = nextMeridiem;
+        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex, () => {
+          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
+        });
       }
     });
   }, [setTimePickerFromParts]);
@@ -1561,9 +1519,17 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     };
   }
 
-  function save(overrides: Partial<Task> = {}) {
-    if (isUploading) return;
-    onSave(normalizeTaskBounty(buildTask(overrides)));
+  async function save(overrides: Partial<Task> = {}) {
+    if (saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(normalizeTaskBounty(buildTask(overrides)));
+    } catch (err: any) {
+      console.error("Failed to save task", err);
+      setSaveError(err?.message || "Failed to save task.");
+      setSaving(false);
+    }
   }
 
   async function copyCurrent() {
@@ -1701,23 +1667,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
 
   return (
     <>
-      <Modal onClose={() => {
-        if (isUploading) {
-          if (!window.confirm("Attachments are still uploading. Close anyway?")) return;
-        }
-        onCancel();
-      }} showClose={false} variant="fullscreen">
+      <Modal onClose={() => { if (!saving && uploadingCount === 0) onCancel(); }} showClose={false} variant="fullscreen">
       <div className="edit-modal">
         <div className="edit-sheet__header">
           <button
             type="button"
             className="edit-sheet__action"
-            onClick={() => {
-              if (isUploading) {
-                if (!window.confirm("Attachments are still uploading. Close anyway?")) return;
-              }
-              onCancel();
-            }}
+            onClick={() => { if (!saving && uploadingCount === 0) onCancel(); }}
             aria-label="Close editor"
           >
             <span aria-hidden="true">×</span>
@@ -1728,10 +1684,10 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
             className="edit-sheet__action edit-sheet__action--accent"
             onClick={() => save()}
             aria-label="Save task"
-            disabled={isUploading}
+            disabled={saving || uploadingCount > 0}
           >
-            {isUploading ? (
-              <span className="text-xs px-1">Uploading…</span>
+            {saving || uploadingCount > 0 ? (
+              <span className="text-xs px-1">{uploadingLabel || "Uploading…"}</span>
             ) : (
               <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2}>
                 <path d="M5 12l4 4 10-10" strokeLinecap="round" strokeLinejoin="round" />
@@ -1740,22 +1696,15 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           </button>
         </div>
 
-        {isUploading && (
-          <div className="px-4 pt-2 text-xs text-secondary">
-            Uploading encrypted attachments… Please keep Taskify open until done.
+        {saveError && (
+          <div className="px-4 pt-2 text-xs" style={{ color: "var(--color-rose, #f43f5e)" }}>
+            {saveError}
           </div>
         )}
 
-        {attachUploadError && (
-          <div className="px-4 pt-2 text-xs" style={{ color: "var(--color-rose, #f43f5e)" }}>
-            {attachUploadError}
-            <button
-              type="button"
-              className="ml-2 underline opacity-70"
-              onClick={() => setAttachUploadError(null)}
-            >
-              Dismiss
-            </button>
+        {(saving || uploadingCount > 0) && (
+          <div className="px-4 pt-2 text-xs text-secondary">
+            {uploadingLabel || "Uploading encrypted attachments to your selected file server."} Please keep Taskify open until this finishes.
           </div>
         )}
 
@@ -1819,11 +1768,21 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 </button>
               </div>
             </div>
-            {(images.length > 0 || uploadingImages.length > 0) && (
+            {previewImageSrc && (
+              <ImagePreviewModal src={previewImageSrc} onClose={() => setPreviewImageSrc(null)} />
+            )}
+            {images.length > 0 && (
               <div className="edit-media-grid">
                 {images.map((img, i) => (
                   <div key={i} className="relative">
-                    <img src={img} className="max-h-40 rounded-lg" alt="Attachment" />
+                    <img
+                      src={img}
+                      className="max-h-40 rounded-lg cursor-zoom-in"
+                      alt="Attachment"
+                      onClick={() => setPreviewImageSrc(img)}
+                      role="button"
+                      aria-label="View full image"
+                    />
                     <button
                       type="button"
                       className="absolute top-1 right-1 rounded-full bg-black/70 px-1 text-xs"
@@ -1834,17 +1793,9 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                     </button>
                   </div>
                 ))}
-                {uploadingImages.map((u) => (
-                  <div key={u.id} className="relative opacity-60">
-                    <img src={u.dataUrl} className="max-h-40 rounded-lg" alt="Uploading…" />
-                    <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/40 text-xs text-white">
-                      Uploading…
-                    </div>
-                  </div>
-                ))}
               </div>
             )}
-            {(documents.length > 0 || uploadingDocuments.length > 0) && (
+            {documents.length > 0 && (
               <ul className="space-y-1">
                 {documents.map((doc) => (
                   <li key={doc.id} className="doc-edit-row">
@@ -1867,14 +1818,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                       >
                         Remove
                       </button>
-                    </div>
-                  </li>
-                ))}
-                {uploadingDocuments.map((u) => (
-                  <li key={u.id} className="doc-edit-row opacity-60">
-                    <div className="doc-edit-row__info">
-                      <div className="doc-edit-row__name" title={u.name}>{u.name}</div>
-                      <div className="doc-edit-row__meta">{u.kind.toUpperCase()} · Uploading…</div>
                     </div>
                   </li>
                 ))}
