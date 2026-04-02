@@ -37,6 +37,18 @@ function encodeBase64(value: string): string {
   return value;
 }
 
+
+function flattenDebugError(data: any): Record<string, unknown> | null {
+  if (!data || typeof data !== "object") return null;
+  const out: Record<string, unknown> = {};
+  for (const key of ["message", "error", "status", "code", "reason", "detail"]) {
+    const value = (data as any)[key];
+    if (value !== undefined) out[key] = value;
+  }
+  out.raw = data;
+  return out;
+}
+
 async function parseJsonSafe(response: Response): Promise<any> {
   try {
     return await response.json();
@@ -108,7 +120,7 @@ async function pollProcessingUrl(url: string, headers: HeadersInit, timeoutMs: n
   while (Date.now() - started < timeoutMs) {
     const res = await fetch(absoluteUrl, { headers });
     const data = await parseJsonSafe(res);
-  console.info("[attachment-debug] upload:blossom:response", { status: res.status, ok: res.ok, data });
+  console.info("[attachment-debug] upload:blossom:response", { status: res.status, ok: res.ok, data: flattenDebugError(data) });
     lastData = data;
     if (res.status !== 202) {
       return { status: res.status, data };
@@ -180,7 +192,7 @@ export async function uploadFileToNip96(options: {
   });
 
   let data = await parseJsonSafe(res);
-  console.info("[attachment-debug] upload:nip96:response", { status: res.status, ok: res.ok, data });
+  console.info("[attachment-debug] upload:nip96:response", { status: res.status, ok: res.ok, data: flattenDebugError(data) });
   if (res.status === 202 && data?.processing_url) {
     const processingUrl = new URL(data.processing_url, info.apiUrl).toString();
     const poll = await pollProcessingUrl(processingUrl, headers, options.timeoutMs ?? 12000);
@@ -198,7 +210,7 @@ export async function uploadFileToNip96(options: {
   }
 
   const nip94 = (data?.nip94_event || data?.nip94) as NostrEvent | null | undefined;
-  console.info("[attachment-debug] upload:nip96:complete", { url: pictureUrl, response: data });
+  console.info("[attachment-debug] upload:nip96:complete", { url: pictureUrl, response: flattenDebugError(data) });
 
   return {
     url: pictureUrl,
@@ -275,8 +287,8 @@ export async function uploadFileToBlossom(options: {
   if (!res.ok) throw new Error(data?.message || `Blossom upload failed (${res.status})`);
   const url = typeof data?.url === "string" ? data.url.trim() : "";
   if (!url) throw new Error("Blossom upload response did not include a url.");
-  console.info("[attachment-debug] upload:blossom:complete", { url, response: data });
-  console.info("[attachment-debug] upload:originless:complete", { url, response: data });
+  console.info("[attachment-debug] upload:blossom:complete", { url, response: flattenDebugError(data) });
+  console.info("[attachment-debug] upload:originless:complete", { url, response: flattenDebugError(data) });
   return { url, nip94: null };
 }
 
@@ -297,7 +309,7 @@ export async function uploadFileToOriginless(options: {
     signal: options.signal,
   });
   const data = await parseJsonSafe(res);
-  console.info("[attachment-debug] upload:originless:response", { status: res.status, ok: res.ok, data });
+  console.info("[attachment-debug] upload:originless:response", { status: res.status, ok: res.ok, data: flattenDebugError(data) });
   if (!res.ok) throw new Error(data?.message || `Originless upload failed (${res.status})`);
   const url = typeof data?.url === "string" ? data.url.trim() : "";
   if (!url) throw new Error("Originless upload response did not include a url.");
