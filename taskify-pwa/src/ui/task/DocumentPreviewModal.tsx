@@ -25,17 +25,7 @@ async function resolveDocumentAsset(doc: TaskDocument, boardId?: string): Promis
     const dataUrl = doc.encrypted && decryptBoardId
       ? await decryptAttachment({ boardId: decryptBoardId, url: doc.remoteUrl!, mimeType: doc.mimeType })
       : doc.remoteUrl!;
-    return createDocumentFromDataUrl({
-      id: doc.id,
-      name: doc.name,
-      mimeType: doc.mimeType,
-      dataUrl,
-      createdAt: doc.createdAt,
-      size: doc.size,
-      remoteUrl: doc.remoteUrl,
-      encrypted: doc.encrypted,
-      encryptionBoardId: doc.encryptionBoardId || decryptBoardId,
-    });
+    return createDocumentFromDataUrl({ id: doc.id, name: doc.name, mimeType: doc.mimeType, dataUrl, createdAt: doc.createdAt, size: doc.size, remoteUrl: doc.remoteUrl, encrypted: doc.encrypted, encryptionBoardId: doc.encryptionBoardId || decryptBoardId });
   })().catch((err) => { resolvedDocumentCache.delete(cacheKey); throw err; });
   resolvedDocumentCache.set(cacheKey, promise);
   return promise;
@@ -46,11 +36,7 @@ export function DocumentThumbnail({ document: doc, boardId, onClick }: { documen
   useEffect(() => {
     let cancelled = false;
     setDerivedPreview(doc.preview ?? null);
-    resolveDocumentAsset(doc, boardId).then((resolved) => loadDocumentPreview(resolved)).then((next) => {
-      if (!cancelled) setDerivedPreview(next);
-    }).catch(() => {
-      if (!cancelled) setDerivedPreview(doc.preview ?? null);
-    });
+    resolveDocumentAsset(doc, boardId).then((resolved) => loadDocumentPreview(resolved)).then((next) => { if (!cancelled) setDerivedPreview(next); }).catch(() => { if (!cancelled) setDerivedPreview(doc.preview ?? null); });
     return () => { cancelled = true; };
   }, [doc, boardId]);
   const preview = derivedPreview ?? doc.preview ?? null;
@@ -80,45 +66,50 @@ function ViewerShell({ title, subtitle, actions, children, onClose }: { title: s
   );
 }
 
-function Zoomable({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+function ZoomPane({ children, pageClassName = "", zoomable = true }: { children: React.ReactNode; pageClassName?: string; zoomable?: boolean }) {
   const [scale, setScale] = useState(1);
-  const points = useRef<Map<number, { x: number; y: number }>>(new Map());
-  const pinchStart = useRef<number | null>(null);
-  const distance = () => {
-    const vals = Array.from(points.current.values());
-    if (vals.length < 2) return null;
-    const [a, b] = vals;
-    return Math.hypot(a.x - b.x, a.y - b.y);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  const applyScale = (next: number) => {
+    const clamped = Math.max(1, Math.min(4, next));
+    setScale(clamped);
+    if (clamped === 1) setOffset({ x: 0, y: 0 });
   };
   return (
-    <div
-      className={`h-full overflow-auto ${className}`}
-      onPointerDown={(e) => { points.current.set(e.pointerId, { x: e.clientX, y: e.clientY }); }}
-      onPointerMove={(e) => {
-        if (!points.current.has(e.pointerId)) return;
-        points.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        if (points.current.size >= 2) {
-          const nextDistance = distance();
-          if (!nextDistance) return;
-          if (pinchStart.current == null) pinchStart.current = nextDistance;
-          else setScale((s) => Math.max(1, Math.min(4, (s * nextDistance) / pinchStart.current!)));
-          pinchStart.current = nextDistance;
-        }
-      }}
-      onPointerUp={(e) => { points.current.delete(e.pointerId); if (points.current.size < 2) pinchStart.current = null; }}
-      onPointerCancel={(e) => { points.current.delete(e.pointerId); if (points.current.size < 2) pinchStart.current = null; }}
-      onDoubleClick={() => setScale((s) => (s > 1 ? 1 : 2))}
-    >
-      <div className="min-h-full min-w-full flex items-center justify-center" style={{ transform: `scale(${scale})`, transformOrigin: "center center" }}>
-        {children}
+    <div className="relative h-full overflow-hidden">
+      {zoomable ? (
+        <div className="absolute right-3 top-3 z-10 flex gap-2">
+          <button type="button" className="ghost-button button-sm pressable" onClick={() => applyScale(scale - 0.25)}>−</button>
+          <button type="button" className="ghost-button button-sm pressable" onClick={() => applyScale(1)}>100%</button>
+          <button type="button" className="ghost-button button-sm pressable" onClick={() => applyScale(scale + 0.25)}>+</button>
+        </div>
+      ) : null}
+      <div className="h-full overflow-auto">
+        <div
+          className="flex min-h-full items-center justify-center py-4"
+          onPointerDown={(e) => {
+            if (scale <= 1) return;
+            dragRef.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
+          }}
+          onPointerMove={(e) => {
+            if (!dragRef.current || scale <= 1) return;
+            e.preventDefault();
+            setOffset({ x: dragRef.current.ox + (e.clientX - dragRef.current.x), y: dragRef.current.oy + (e.clientY - dragRef.current.y) });
+          }}
+          onPointerUp={() => { dragRef.current = null; }}
+          onPointerCancel={() => { dragRef.current = null; }}
+        >
+          <div className={pageClassName} style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`, transformOrigin: "center center", touchAction: scale > 1 ? "none" : "auto" }}>
+            {children}
+          </div>
+        </div>
       </div>
-      <div className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-3 py-1 text-xs text-white/80">{Math.round(scale * 100)}%</div>
     </div>
   );
 }
 
-function PdfCanvasPreview({ dataUrl }: { dataUrl: string }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+function PdfPages({ dataUrl, scale }: { dataUrl: string; scale: number }) {
+  const [pages, setPages] = useState<string[]>([]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -126,25 +117,33 @@ function PdfCanvasPreview({ dataUrl }: { dataUrl: string }) {
         const pdfjs = await ensurePdfjs();
         const bytes = await fetch(dataUrl).then((r) => r.arrayBuffer());
         const pdf = await pdfjs.getDocument({ data: bytes }).promise;
-        const page = await pdf.getPage(1);
-        const viewport = page.getViewport({ scale: 1.35 });
-        const canvas = canvasRef.current;
-        const ctx = canvas?.getContext("2d");
-        if (!canvas || !ctx || cancelled) return;
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        await page.render({ canvasContext: ctx, viewport }).promise;
-      } catch {}
+        const rendered: string[] = [];
+        for (let i = 1; i <= pdf.numPages; i += 1) {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale });
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) continue;
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          rendered.push(canvas.toDataURL("image/png"));
+        }
+        if (!cancelled) setPages(rendered);
+      } catch {
+        if (!cancelled) setPages([]);
+      }
     })();
     return () => { cancelled = true; };
-  }, [dataUrl]);
-  return <canvas ref={canvasRef} className="max-w-full rounded-[22px] bg-white shadow-2xl" />;
+  }, [dataUrl, scale]);
+  return <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">{pages.map((src, i) => <img key={i} src={src} alt={`PDF page ${i + 1}`} className="w-full rounded-[22px] bg-white shadow-2xl" />)}</div>;
 }
 
 export function DocumentPreviewModal({ document, boardId, onClose, onDownloadDocument, onOpenExternal }: { document: TaskDocument; boardId?: string; onClose: () => void; onDownloadDocument?: (doc: TaskDocument, boardId?: string) => void; onOpenExternal?: (doc: TaskDocument, boardId?: string) => void; }) {
   const [resolvedDocument, setResolvedDocument] = useState<TaskDocument>(document);
   const [loadingRemote, setLoadingRemote] = useState(false);
   const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [pdfScale, setPdfScale] = useState(1.15);
   const label = document.name || "Document";
   const decryptBoardId = document.encryptionBoardId || boardId;
   useEffect(() => {
@@ -160,12 +159,12 @@ export function DocumentPreviewModal({ document, boardId, onClose, onDownloadDoc
   let content: React.ReactNode;
   if (loadingRemote) content = <div className="flex h-full items-center justify-center text-white/70">Decrypting document…</div>;
   else if (remoteError) content = <div className="flex h-full items-center justify-center text-center text-white/70">{remoteError}</div>;
-  else if (effectiveDocument.kind === "pdf") content = <Zoomable className="relative"><PdfCanvasPreview dataUrl={effectiveDocument.dataUrl} /></Zoomable>;
-  else if (full?.type === "image") content = <Zoomable className="relative"><img src={full.data} alt={label} className="max-h-full max-w-full object-contain" /></Zoomable>;
+  else if (effectiveDocument.kind === "pdf") content = <div className="relative h-full overflow-auto"><div className="absolute right-3 top-3 z-10 flex gap-2"><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale((s) => Math.max(0.75, s - 0.15))}>−</button><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale(1.15)}>{Math.round((pdfScale / 1.15) * 100)}%</button><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale((s) => Math.min(2.5, s + 0.15))}>+</button></div><div className="pt-14 pb-6"><PdfPages dataUrl={effectiveDocument.dataUrl} scale={pdfScale} /></div></div>;
+  else if (full?.type === "image") content = <ZoomPane><img src={full.data} alt={label} className="max-h-full max-w-full object-contain" /></ZoomPane>;
   else if (full?.type === "video") content = <div className="flex h-full items-center justify-center rounded-[28px] bg-black p-2 shadow-2xl"><video controls autoPlay poster={effectiveDocument.preview?.type === "image" ? effectiveDocument.preview.data : undefined} src={full.data} className="max-h-full w-full rounded-[22px] bg-black" /></div>;
   else if (full?.type === "audio") content = <div className="flex h-full items-center justify-center"><div className="w-full max-w-xl rounded-[28px] bg-[#1b1c20] p-6 shadow-2xl"><div className="mb-4 text-center text-sm text-white/70">Audio attachment</div><audio controls src={full.data} className="w-full" /></div></div>;
-  else if (full?.type === "html") content = <Zoomable className="relative"><div className="mx-auto max-w-4xl rounded-[28px] bg-white px-6 py-8 text-[#111827] shadow-2xl"><div className="doc-modal__markup doc-modal__markup--rich" dangerouslySetInnerHTML={{ __html: full.data }} /></div></Zoomable>;
-  else if (full?.type === "text") content = <Zoomable className="relative"><div className="mx-auto max-w-4xl rounded-[28px] bg-white px-6 py-8 text-[#111827] shadow-2xl"><pre className="doc-modal__text whitespace-pre-wrap text-[15px] leading-7 text-[#111827]">{full.data}</pre></div></Zoomable>;
+  else if (full?.type === "html") content = <ZoomPane pageClassName="mx-auto max-w-4xl rounded-[28px] bg-white px-6 py-8 text-[#111827] shadow-2xl"><div className="doc-modal__markup doc-modal__markup--rich" dangerouslySetInnerHTML={{ __html: full.data }} /></ZoomPane>;
+  else if (full?.type === "text") content = <ZoomPane pageClassName="mx-auto max-w-4xl rounded-[28px] bg-white px-6 py-8 text-[#111827] shadow-2xl"><pre className="doc-modal__text whitespace-pre-wrap text-[15px] leading-7 text-[#111827]">{full.data}</pre></ZoomPane>;
   else content = <div className="flex h-full items-center justify-center"><div className="rounded-[28px] bg-[#1b1c20] px-6 py-8 text-center text-white/70 shadow-2xl">Preview unavailable. Use Download to open the original file.</div></div>;
   const actions = <><button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open</button><button type="button" className="ghost-button button-sm pressable" onClick={() => onDownloadDocument?.(effectiveDocument, decryptBoardId)}>Download</button></>;
   return <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={onClose}>{content}</ViewerShell>;
