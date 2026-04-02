@@ -122,14 +122,26 @@ export function NostrSection({
             </div>
           </div>
 
-          {/* File storage servers */}
-          <div className="mb-3">
-            <FileServersSection
-              fileStorageServer={settings.fileStorageServer}
-              fileServers={settings.fileServers || ""}
-              onSelectServer={(url) => setSettings({ fileStorageServer: url })}
-              onUpdateServers={(serialized) => setSettings({ fileServers: serialized })}
-            />
+          <div className="mb-3 space-y-4">
+            <div>
+              <div className="text-xs text-secondary mb-1">Public file servers</div>
+              <FileServersSection
+                fileStorageServer={settings.fileStorageServer}
+                fileServers={settings.fileServers || ""}
+                onSelectServer={(url) => setSettings({ fileStorageServer: url })}
+                onUpdateServers={(serialized) => setSettings({ fileServers: serialized })}
+              />
+            </div>
+            <div>
+              <div className="text-xs text-secondary mb-1">Encrypted file servers</div>
+              <FileServersSection
+                fileStorageServer={settings.encryptedFileStorageServer}
+                fileServers={settings.encryptedFileServers || ""}
+                onSelectServer={(url) => setSettings({ encryptedFileStorageServer: url })}
+                onUpdateServers={(serialized) => setSettings({ encryptedFileServers: serialized })}
+              />
+              <div className="text-xs text-amber-400 mt-2">Warning: NIP-96 and Blossom servers may fail for encrypted uploads. Originless is recommended.</div>
+            </div>
           </div>
 
           {/* Default relays */}

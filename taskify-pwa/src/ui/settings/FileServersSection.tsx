@@ -96,7 +96,7 @@ export function FileServersSection({ fileStorageServer, fileServers, onSelectSer
 
   return (
     <div className="space-y-2">
-      <div className="text-xs text-secondary mb-1">File storage servers</div>
+      
 
       <div className="space-y-2">
         {servers.map((entry) => {
@@ -235,9 +235,6 @@ export function FileServersSection({ fileStorageServer, fileServers, onSelectSer
         </button>
       )}
 
-      <div className="text-xs text-secondary">
-        Used for profile photo uploads. Tap a server to select it.
-      </div>
     </div>
   );
 }

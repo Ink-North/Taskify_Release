@@ -292,6 +292,25 @@ export async function uploadFileToBlossom(options: {
   return { url, nip94: null };
 }
 
+
+function resolveOriginlessUrl(serverUrl: string, data: any): string {
+  const direct = [data?.url, data?.cidUrl, data?.gatewayUrl, data?.fileUrl, data?.ipfs];
+  for (const value of direct) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  const cid = typeof data?.cid === "string" ? data.cid.trim() : "";
+  if (cid) {
+    const base = normalizeFileServerUrl(serverUrl) || serverUrl;
+    return `${base}/ipfs/${cid}`;
+  }
+  const path = typeof data?.path === "string" ? data.path.trim() : "";
+  if (path) {
+    const base = normalizeFileServerUrl(serverUrl) || serverUrl;
+    return path.startsWith("http") ? path : `${base}${path.startsWith("/") ? "" : "/"}${path}`;
+  }
+  return "";
+}
+
 // ── Originless ────────────────────────────────────────────────────────────────
 
 export async function uploadFileToOriginless(options: {
@@ -352,8 +371,8 @@ export async function uploadFileToOriginless(options: {
         data: flattenDebugError(data),
       });
       if (!res.ok) throw new Error(data?.message || `Originless upload failed (${res.status})`);
-      const url = typeof data?.url === "string" ? data.url.trim() : "";
-      if (!url) throw new Error("Originless upload response did not include a url.");
+      const url = resolveOriginlessUrl(options.serverUrl, data);
+      if (!url) throw new Error(`Originless upload response did not include a url. Response: ${JSON.stringify(flattenDebugError(data))}`);
       return { url, nip94: null };
     } catch (err) {
       lastError = err;

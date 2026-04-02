@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import type { TaskDocument, TaskDocumentPreview } from "../../lib/documents";
 import { createDocumentFromDataUrl, documentAssetCacheKey, loadDocumentPreview } from "../../lib/documents";
 import { Modal } from "../Modal";
@@ -122,6 +123,19 @@ export function DocumentThumbnail({ document: doc, boardId, onClick }: { documen
   );
 }
 
+function PdfFullScreenPreview({ src, label, onClose }: { src: string; label: string; onClose: () => void }) {
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[120] bg-black/90 p-3" onClick={onClose}>
+      <button type="button" className="ghost-button button-sm pressable" style={{ position: "absolute", top: 12, right: 12, zIndex: 2 }} onClick={onClose}>Close</button>
+      <div className="h-full w-full pt-10" onClick={(e) => e.stopPropagation()}>
+        <embed src={src} type="application/pdf" className="h-full w-full rounded-xl bg-white" />
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export function DocumentPreviewModal({
   document,
   boardId,
@@ -138,6 +152,7 @@ export function DocumentPreviewModal({
   const [resolvedDocument, setResolvedDocument] = useState<TaskDocument>(document);
   const [loadingRemote, setLoadingRemote] = useState(false);
   const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [pdfFullScreen, setPdfFullScreen] = useState(false);
   const label = document.name || "Document";
   const decryptBoardId = document.encryptionBoardId || boardId;
 
@@ -178,7 +193,10 @@ export function DocumentPreviewModal({
   } else if (effectiveDocument.kind === "pdf") {
     content = (
       <div className="doc-modal__content">
-        <iframe src={effectiveDocument.dataUrl} title={label} className="h-[70vh] w-full rounded-xl border border-surface bg-white" />
+        <embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-[80vh] w-full rounded-xl border border-surface bg-white" />
+        <div style={{ marginTop: "0.75rem" }}>
+          <button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfFullScreen(true)}>Open full screen</button>
+        </div>
       </div>
     );
   } else if (full?.type === "html") {
@@ -237,8 +255,13 @@ export function DocumentPreviewModal({
   );
 
   return (
-    <Modal onClose={onClose} title={label} actions={actions}>
-      {content}
-    </Modal>
+    <>
+      <Modal onClose={onClose} title={label} actions={actions}>
+        {content}
+      </Modal>
+      {pdfFullScreen && effectiveDocument.kind === "pdf" && effectiveDocument.dataUrl ? (
+        <PdfFullScreenPreview src={effectiveDocument.dataUrl} label={label} onClose={() => setPdfFullScreen(false)} />
+      ) : null}
+    </>
   );
 }
