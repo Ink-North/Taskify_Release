@@ -1139,6 +1139,16 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   }
 
   async function uploadSharedDocument(file: File, doc: TaskDocument): Promise<TaskDocument> {
+    console.info("[attachment-debug] shared-document:start", {
+      filename: file.name,
+      fileType: file.type,
+      fileBytes: file.size,
+      docKind: doc.kind,
+      docMimeType: doc.mimeType,
+      boardId: selectedBoard?.nostr?.boardId,
+      serverUrl: selectedServerEntry?.url,
+      serverType: selectedServerEntry?.type,
+    });
     const bytes = new Uint8Array(await file.arrayBuffer());
     const remoteUrl = await encryptAndUploadAttachment({
       boardId: selectedBoard!.nostr!.boardId,
