@@ -7,6 +7,9 @@ export type UploadingDocumentRow = {
   kind: string;
   progress: number;
   phase: "uploading" | "processing";
+  indeterminate: boolean;
+  progressEventCount: number;
+  lastProgressAt: number | null;
 };
 
 export function createUploadingDocumentRow(doc: TaskDocument, fallbackName: string): UploadingDocumentRow {
@@ -16,12 +19,45 @@ export function createUploadingDocumentRow(doc: TaskDocument, fallbackName: stri
     kind: doc.kind.toUpperCase(),
     progress: 0,
     phase: "uploading",
+    indeterminate: true,
+    progressEventCount: 0,
+    lastProgressAt: null,
   };
 }
 
 export function updateUploadingDocumentRowProgress(rows: UploadingDocumentRow[], id: string, progress: number): UploadingDocumentRow[] {
+  const now = Date.now();
   const clamped = Math.max(0, Math.min(progress, 1));
-  return rows.map((row) => (row.id === id ? { ...row, progress: clamped } : row));
+  return rows.map((row) => {
+    if (row.id !== id) return row;
+    const progressEventCount = row.progressEventCount + 1;
+    const hasMeaningfulProgress = progressEventCount >= 2 || clamped >= 0.12;
+    return {
+      ...row,
+      progress: clamped,
+      indeterminate: !hasMeaningfulProgress,
+      progressEventCount,
+      lastProgressAt: now,
+    };
+  });
+}
+
+export function setUploadingDocumentRowPhase(rows: UploadingDocumentRow[], id: string, phase: "uploading" | "processing"): UploadingDocumentRow[] {
+  return rows.map((row) => (
+    row.id === id
+      ? { ...row, phase, indeterminate: phase === "uploading" ? row.indeterminate : false, progress: phase === "processing" ? Math.max(row.progress, 1) : row.progress }
+      : row
+  ));
+}
+
+export function markStaleUploadingRowsIndeterminate(rows: UploadingDocumentRow[], now = Date.now()): UploadingDocumentRow[] {
+  return rows.map((row) => {
+    if (row.phase !== "uploading") return row;
+    if (row.lastProgressAt == null) return row;
+    if (row.progress >= 1) return row;
+    if (now - row.lastProgressAt < 900) return row;
+    return { ...row, indeterminate: true };
+  });
 }
 
 export function removeUploadingDocumentRow(rows: UploadingDocumentRow[], id: string): UploadingDocumentRow[] {
@@ -40,9 +76,4 @@ export function startUploadingDotsTimer(
     setUploadingDotPhase((prev) => (prev + 1) % 4);
   }, 420);
   return () => window.clearInterval(interval);
-}
-
-
-export function setUploadingDocumentRowPhase(rows: UploadingDocumentRow[], id: string, phase: "uploading" | "processing"): UploadingDocumentRow[] {
-  return rows.map((row) => (row.id === id ? { ...row, phase, progress: phase === "processing" ? Math.max(row.progress, 1) : row.progress } : row));
 }

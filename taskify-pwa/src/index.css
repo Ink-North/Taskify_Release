@@ -6668,3 +6668,15 @@ html.light .wallet-modal__unit {
   background: var(--accent);
   transition: width 220ms ease;
 }
+.doc-edit-row__progress--indeterminate {
+  position: relative;
+}
+.doc-edit-row__progress-bar--indeterminate {
+  width: 34% !important;
+  min-width: 34%;
+  animation: doc-edit-row-progress-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes doc-edit-row-progress-indeterminate {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(320%); }
+}

@@ -93,7 +93,7 @@ import {
   type TaskDocument,
 } from "../../lib/documents";
 import { encryptAndUploadAttachment } from "../../lib/attachmentCrypto";
-import { createUploadingDocumentRow, removeUploadingDocumentRow, setUploadingDocumentRowPhase, startUploadingDotsTimer, updateUploadingDocumentRowProgress, type UploadingDocumentRow } from "./uploadProgress";
+import { createUploadingDocumentRow, markStaleUploadingRowsIndeterminate, removeUploadingDocumentRow, setUploadingDocumentRowPhase, startUploadingDotsTimer, updateUploadingDocumentRowProgress, type UploadingDocumentRow } from "./uploadProgress";
 import { findServerEntry, parseFileServers, type FileServerEntry } from "../../lib/fileStorage";
 import {
   buildTaskShareEnvelope,
@@ -1171,6 +1171,14 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     return startUploadingDotsTimer(uploadingDocumentRows.length, setUploadingDotPhase);
   }, [uploadingDocumentRows.length]);
 
+  useEffect(() => {
+    if (!uploadingDocumentRows.length) return;
+    const interval = window.setInterval(() => {
+      setUploadingDocumentRows((prev) => markStaleUploadingRowsIndeterminate(prev));
+    }, 300);
+    return () => window.clearInterval(interval);
+  }, [uploadingDocumentRows]);
+
 
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
@@ -1876,8 +1884,8 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                     <div className="doc-edit-row__actions">
                       <span className="doc-edit-row__status">{doc.phase === "processing" ? "Processing" : "Uploading"}<span className="doc-edit-row__dots">{".".repeat(uploadingDotPhase)}</span></span>
                     </div>
-                    <div className="doc-edit-row__progress" aria-hidden="true">
-                      <div className="doc-edit-row__progress-bar" style={{ width: `${Math.round(doc.progress * 100)}%` }} />
+                    <div className={`doc-edit-row__progress${doc.indeterminate ? " doc-edit-row__progress--indeterminate" : ""}`} aria-hidden="true">
+                      <div className={`doc-edit-row__progress-bar${doc.indeterminate ? " doc-edit-row__progress-bar--indeterminate" : ""}`} style={doc.indeterminate ? undefined : { width: `${Math.max(12, Math.round(doc.progress * 100))}%` }} />
                     </div>
                   </li>
                 ))}
