@@ -26,6 +26,9 @@ export type TaskDocument = {
   createdAt: string;
   preview?: TaskDocumentPreview;
   full?: TaskDocumentFull;
+  remoteUrl?: string;
+  encrypted?: boolean;
+  encryptionBoardId?: string;
 };
 
 const EXTENSION_TO_KIND: Record<string, TaskDocumentKind> = {
@@ -160,6 +163,7 @@ export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined 
     const dataUrl = typeof (entry as any).dataUrl === "string" ? (entry as any).dataUrl : "";
     const remoteUrl = typeof (entry as any).remoteUrl === "string" ? (entry as any).remoteUrl.trim() : "";
     const encrypted = (entry as any).encrypted === true;
+    const encryptionBoardId = typeof (entry as any).encryptionBoardId === "string" ? (entry as any).encryptionBoardId.trim() : "";
     // Accept legacy inline docs (dataUrl present) and remote-first docs (remoteUrl present)
     if (!name || (!dataUrl && !remoteUrl)) continue;
     const kindInput = typeof (entry as any).kind === "string" ? (entry as any).kind.toLowerCase() : "";
@@ -187,6 +191,7 @@ export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined 
       full: full || undefined,
       ...(remoteUrl ? { remoteUrl } : {}),
       ...(encrypted ? { encrypted: true } : {}),
+      ...(encryptionBoardId ? { encryptionBoardId } : {}),
     });
   }
   return normalized.length ? normalized : undefined;
