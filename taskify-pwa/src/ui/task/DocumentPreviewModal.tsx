@@ -155,6 +155,24 @@ export function DocumentPreviewModal({
         <pre className="doc-modal__text">{full.data}</pre>
       </div>
     );
+  } else if (full?.type === "image") {
+    content = (
+      <div className="doc-modal__content">
+        <img src={full.data} alt={label} className="max-h-[70vh] w-full object-contain" />
+      </div>
+    );
+  } else if (full?.type === "audio") {
+    content = (
+      <div className="doc-modal__content">
+        <audio controls src={full.data} className="w-full" />
+      </div>
+    );
+  } else if (full?.type === "video") {
+    content = (
+      <div className="doc-modal__content">
+        <video controls src={full.data} className="max-h-[70vh] w-full" />
+      </div>
+    );
   } else {
     content = (
       <div className="doc-modal__content">
