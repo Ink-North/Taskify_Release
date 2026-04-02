@@ -8,6 +8,15 @@ function attachmentDebug(event: string, detail?: Record<string, unknown>) {
   console.info("[attachment-debug]", event, detail || {});
 }
 
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function sampleHex(bytes: Uint8Array, count = 16): string {
+  return Array.from(bytes.slice(0, count)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function deriveBoardAesKey(boardId: string): Promise<CryptoKey> {
   const cached = aesKeyCache.get(boardId);
   if (cached) return cached;
@@ -63,10 +72,13 @@ export async function encryptAndUploadAttachment(opts: {
   const combined = new Uint8Array(iv.length + ctBuf.byteLength);
   combined.set(iv, 0);
   combined.set(new Uint8Array(ctBuf), iv.length);
+  const ciphertextSha256 = await sha256Hex(combined);
   attachmentDebug("encrypt:complete", {
     filename: opts.filename,
     plaintextBytes: opts.data.byteLength,
     ciphertextBytes: combined.byteLength,
+    ciphertextSha256,
+    ciphertextSampleHex: sampleHex(combined),
     uploadContentType: "application/octet-stream",
     uploadFilename: opts.filename,
     plaintextUploaded: false,
@@ -80,6 +92,7 @@ export async function encryptAndUploadAttachment(opts: {
       originalMimeType: opts.mimeType,
       plaintextBytes: opts.data.byteLength,
       ciphertextBytes: combined.byteLength,
+      ciphertextSha256,
       plaintextUploaded: false,
     },
     serverEntry: opts.serverEntry,
@@ -109,10 +122,22 @@ export async function decryptAttachment(opts: {
   const promise = (async () => {
     attachmentDebug("decrypt:start", { boardId: opts.boardId, url: opts.url, mimeType: opts.mimeType });
     const res = await fetch(opts.url);
-    attachmentDebug("decrypt:fetch", { url: opts.url, status: res.status, ok: res.ok });
+    attachmentDebug("decrypt:fetch", {
+      url: opts.url,
+      finalUrl: res.url,
+      status: res.status,
+      ok: res.ok,
+      contentType: res.headers.get("content-type"),
+      contentLength: res.headers.get("content-length"),
+    });
     if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
     const bytes = new Uint8Array(await res.arrayBuffer());
-    attachmentDebug("decrypt:fetched-bytes", { url: opts.url, encryptedBytes: bytes.byteLength });
+    attachmentDebug("decrypt:fetched-bytes", {
+      url: opts.url,
+      encryptedBytes: bytes.byteLength,
+      ciphertextSha256: await sha256Hex(bytes),
+      ciphertextSampleHex: sampleHex(bytes),
+    });
     if (bytes.length < 13) throw new Error("Encrypted attachment too small");
     const iv = bytes.slice(0, 12);
     const ct = bytes.slice(12);
