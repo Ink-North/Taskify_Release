@@ -134,7 +134,7 @@ function extractUrlFromResponse(data: any): string | null {
   return null;
 }
 
-export async function uploadAvatarToNip96(options: {
+export async function uploadFileToNip96(options: {
   serverUrl: string;
   file: Blob;
   filename?: string;
@@ -144,12 +144,12 @@ export async function uploadAvatarToNip96(options: {
   signal?: AbortSignal;
 }): Promise<Nip96UploadResult> {
   const info = await discoverNip96Server(options.serverUrl);
-  console.info("[nip96] Uploading avatar", { server: info.baseUrl, apiUrl: info.apiUrl });
+  console.info("[nip96] Uploading file", { server: info.baseUrl, apiUrl: info.apiUrl });
 
   const uploadFile =
     options.file instanceof File
       ? options.file
-      : new File([options.file], options.filename || "avatar", {
+      : new File([options.file], options.filename || "upload.bin", {
           type: options.contentType || options.file.type || "application/octet-stream",
         });
   const payloadHash = bytesToHex(sha256(new Uint8Array(await uploadFile.arrayBuffer())));
@@ -159,7 +159,9 @@ export async function uploadAvatarToNip96(options: {
 
   const form = new FormData();
   form.append("file", uploadFile);
-  form.append("media_type", "avatar");
+  if (options.filename) {
+    form.append("filename", options.filename);
+  }
   form.append("content_type", options.contentType || uploadFile.type || "application/octet-stream");
   form.append("size", String(uploadFile.size));
 
@@ -226,7 +228,7 @@ function buildBlossomAuthHeader(signer: string | Uint8Array, fileHash: string): 
   return `Nostr ${toBase64Url(new TextEncoder().encode(JSON.stringify(event)))}`;
 }
 
-export async function uploadAvatarToBlossom(options: {
+export async function uploadFileToBlossom(options: {
   serverUrl: string;
   file: Blob;
   filename?: string;
@@ -256,7 +258,7 @@ export async function uploadAvatarToBlossom(options: {
 
 // ── Originless ────────────────────────────────────────────────────────────────
 
-export async function uploadAvatarToOriginless(options: {
+export async function uploadFileToOriginless(options: {
   serverUrl: string;
   file: Blob;
   filename?: string;
@@ -279,7 +281,7 @@ export async function uploadAvatarToOriginless(options: {
 
 // ── Unified dispatcher ────────────────────────────────────────────────────────
 
-export type UploadAvatarOptions = {
+export type UploadFileOptions = {
   serverEntry: FileServerEntry;
   file: Blob;
   filename?: string;
@@ -288,19 +290,25 @@ export type UploadAvatarOptions = {
   signal?: AbortSignal;
 };
 
-export async function uploadAvatar(options: UploadAvatarOptions): Promise<{ url: string; nip94: NostrEvent | null }> {
+export async function uploadFile(options: UploadFileOptions): Promise<{ url: string; nip94: NostrEvent | null }> {
   const { serverEntry, file, filename, contentType, signer, signal } = options;
   if (serverEntry.type === "blossom") {
     if (!signer) throw new Error("signer is required for Blossom uploads");
-    const result = await uploadAvatarToBlossom({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal });
+    const result = await uploadFileToBlossom({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal });
     return result;
   }
   if (serverEntry.type === "originless") {
-    const result = await uploadAvatarToOriginless({ serverUrl: serverEntry.url, file, filename, signal });
+    const result = await uploadFileToOriginless({ serverUrl: serverEntry.url, file, filename, signal });
     return result;
   }
   // Default: NIP-96
   if (!signer) throw new Error("signer is required for NIP-96 uploads");
-  const result = await uploadAvatarToNip96({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal });
+  const result = await uploadFileToNip96({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal });
   return { url: result.url, nip94: result.nip94 ?? null };
 }
+
+export const uploadAvatarToNip96 = uploadFileToNip96;
+export const uploadAvatarToBlossom = uploadFileToBlossom;
+export const uploadAvatarToOriginless = uploadFileToOriginless;
+export const uploadAvatar = uploadFile;
+export type UploadAvatarOptions = UploadFileOptions;
