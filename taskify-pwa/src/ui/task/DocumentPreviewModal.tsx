@@ -66,14 +66,12 @@ function ViewerShell({ title, subtitle, actions, children, onClose }: { title: s
   );
 }
 
-function ZoomPane({ children, pageClassName = "", zoomable = true }: { children: React.ReactNode; pageClassName?: string; zoomable?: boolean }) {
+function ZoomPane({ children, pageClassName = "", zoomable = true, baseWidth = 960 }: { children: React.ReactNode; pageClassName?: string; zoomable?: boolean; baseWidth?: number }) {
   const [scale, setScale] = useState(1);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
-  const applyScale = (next: number) => {
-    const clamped = Math.max(1, Math.min(4, next));
-    setScale(clamped);
-  };
+  const scaledWidth = Math.round(baseWidth * scale);
+  const applyScale = (next: number) => setScale(Math.max(1, Math.min(4, next)));
   return (
     <div className="relative h-full overflow-hidden">
       {zoomable ? (
@@ -98,18 +96,14 @@ function ZoomPane({ children, pageClassName = "", zoomable = true }: { children:
           viewportRef.current.scrollLeft = draggingRef.current.left - (e.clientX - draggingRef.current.x);
           viewportRef.current.scrollTop = draggingRef.current.top - (e.clientY - draggingRef.current.y);
         }}
-        onPointerUp={(e) => {
-          draggingRef.current = null;
-          (e.currentTarget as HTMLDivElement).releasePointerCapture?.(e.pointerId);
-        }}
-        onPointerCancel={(e) => {
-          draggingRef.current = null;
-          (e.currentTarget as HTMLDivElement).releasePointerCapture?.(e.pointerId);
-        }}
+        onPointerUp={(e) => { draggingRef.current = null; (e.currentTarget as HTMLDivElement).releasePointerCapture?.(e.pointerId); }}
+        onPointerCancel={(e) => { draggingRef.current = null; (e.currentTarget as HTMLDivElement).releasePointerCapture?.(e.pointerId); }}
       >
-        <div className="flex min-h-full min-w-full items-start justify-center p-4">
-          <div className={pageClassName} style={{ transform: `scale(${scale})`, transformOrigin: 'top center', width: scale > 1 ? `${100 / scale}%` : 'auto' }}>
-            {children}
+        <div className="flex min-h-full items-start justify-center p-4">
+          <div style={{ width: `${scaledWidth}px`, maxWidth: 'none' }}>
+            <div className={pageClassName} style={{ width: '100%', maxWidth: 'none' }}>
+              {children}
+            </div>
           </div>
         </div>
       </div>
@@ -169,11 +163,11 @@ export function DocumentPreviewModal({ document, boardId, onClose, onDownloadDoc
   if (loadingRemote) content = <div className="flex h-full items-center justify-center text-white/70">Decrypting document…</div>;
   else if (remoteError) content = <div className="flex h-full items-center justify-center text-center text-white/70">{remoteError}</div>;
   else if (effectiveDocument.kind === "pdf") content = <div className="relative h-full overflow-auto"><div className="absolute right-3 top-3 z-[30] flex gap-2 rounded-full bg-black/45 p-1 backdrop-blur"><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale((s) => Math.max(0.75, s - 0.15))}>−</button><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale(1.15)}>{Math.round((pdfScale / 1.15) * 100)}%</button><button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfScale((s) => Math.min(2.5, s + 0.15))}>+</button></div><div className="px-4 pb-6 pt-14"><PdfPages dataUrl={effectiveDocument.dataUrl} scale={pdfScale} /></div></div>;
-  else if (full?.type === "image") content = <ZoomPane><img src={full.data} alt={label} className="max-h-full max-w-full object-contain" /></ZoomPane>;
+  else if (full?.type === "image") content = <ZoomPane baseWidth={1200}><img src={full.data} alt={label} className="h-auto w-full object-contain" /></ZoomPane>;
   else if (full?.type === "video") content = <div className="flex h-full items-center justify-center rounded-[28px] bg-black p-2 shadow-2xl"><video controls autoPlay poster={effectiveDocument.preview?.type === "image" ? effectiveDocument.preview.data : undefined} src={full.data} className="max-h-full w-full rounded-[22px] bg-black" /></div>;
   else if (full?.type === "audio") content = <div className="flex h-full items-center justify-center"><div className="w-full max-w-xl rounded-[28px] bg-[#1b1c20] p-6 shadow-2xl"><div className="mb-4 text-center text-sm text-white/70">Audio attachment</div><audio controls src={full.data} className="w-full" /></div></div>;
-  else if (full?.type === "html") content = <ZoomPane pageClassName="mx-auto max-w-4xl rounded-[28px] bg-white px-6 py-8 text-[#111827] shadow-2xl"><div className="doc-modal__markup doc-modal__markup--rich" dangerouslySetInnerHTML={{ __html: full.data }} /></ZoomPane>;
-  else if (full?.type === "text") content = <ZoomPane pageClassName="mx-auto max-w-4xl rounded-[28px] bg-white px-6 py-8 text-[#111827] shadow-2xl"><pre className="doc-modal__text whitespace-pre-wrap text-[15px] leading-7 text-[#111827]">{full.data}</pre></ZoomPane>;
+  else if (full?.type === "html") content = <ZoomPane baseWidth={1100} pageClassName="rounded-[28px] bg-white px-6 py-8 text-[#111827] shadow-2xl"><div className="doc-modal__markup doc-modal__markup--rich" dangerouslySetInnerHTML={{ __html: full.data }} /></ZoomPane>;
+  else if (full?.type === "text") content = <ZoomPane baseWidth={1100} pageClassName="rounded-[28px] bg-white px-6 py-8 text-[#111827] shadow-2xl"><pre className="doc-modal__text whitespace-pre-wrap text-[15px] leading-7 text-[#111827]">{full.data}</pre></ZoomPane>;
   else content = <div className="flex h-full items-center justify-center"><div className="rounded-[28px] bg-[#1b1c20] px-6 py-8 text-center text-white/70 shadow-2xl">Preview unavailable. Use Download to open the original file.</div></div>;
   const actions = <><button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open</button><button type="button" className="ghost-button button-sm pressable" onClick={() => onDownloadDocument?.(effectiveDocument, decryptBoardId)}>Download</button></>;
   return <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={onClose}>{content}</ViewerShell>;
