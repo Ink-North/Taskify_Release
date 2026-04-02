@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import type { TaskDocument, TaskDocumentPreview } from "../../lib/documents";
 import { createDocumentFromDataUrl, documentAssetCacheKey, loadDocumentPreview } from "../../lib/documents";
-import { Modal } from "../Modal";
 import { decryptAttachment } from "../../lib/attachmentCrypto";
 
 const resolvedDocumentCache = new Map<string, Promise<TaskDocument>>();
@@ -132,12 +131,21 @@ export function DocumentThumbnail({ document: doc, boardId, onClick }: { documen
   );
 }
 
-function FullScreenAssetPreview({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+function ViewerShell({ title, subtitle, actions, children, onClose }: { title: string; subtitle?: React.ReactNode; actions?: React.ReactNode; children: React.ReactNode; onClose: () => void }) {
   if (typeof document === "undefined") return null;
   return createPortal(
-    <div className="fixed inset-0 z-[120] bg-black/90 p-3" onClick={onClose}>
-      <button type="button" className="ghost-button button-sm pressable" style={{ position: "absolute", top: 12, right: 12, zIndex: 2 }} onClick={onClose}>Close</button>
-      <div className="h-full w-full pt-10" onClick={(e) => e.stopPropagation()}>{children}</div>
+    <div className="fixed inset-0 z-[120] bg-[#111214]/95 text-white" onClick={onClose}>
+      <div className="mx-auto flex h-full w-full max-w-6xl flex-col px-3 pb-4 pt-[max(14px,env(safe-area-inset-top))]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between gap-3 pb-3">
+          <button type="button" className="ghost-button button-sm pressable" onClick={onClose}>Close</button>
+          <div className="min-w-0 flex-1 text-center">
+            <div className="truncate text-sm font-medium text-white">{title}</div>
+            {subtitle ? <div className="truncate text-xs text-white/60">{subtitle}</div> : null}
+          </div>
+          <div className="flex min-w-[72px] justify-end gap-2">{actions}</div>
+        </div>
+        <div className="min-h-0 flex-1">{children}</div>
+      </div>
     </div>,
     document.body,
   );
@@ -192,13 +200,7 @@ export function DocumentPreviewModal({
   const effectiveDocument = resolvedDocument;
   const full = effectiveDocument.full;
   const sizeLabel = formatBytes(effectiveDocument.size);
-  const metaRow = (
-    <div className="flex flex-wrap items-center gap-2 text-[11px] text-secondary" style={{ marginBottom: "0.75rem" }}>
-      <span className="rounded-full border border-surface px-2 py-1">{effectiveDocument.kind.toUpperCase()}</span>
-      {sizeLabel ? <span className="rounded-full border border-surface px-2 py-1">{sizeLabel}</span> : null}
-      {effectiveDocument.encrypted ? <span className="rounded-full border border-surface px-2 py-1">Encrypted</span> : null}
-    </div>
-  );
+  const subtitle = [effectiveDocument.kind.toUpperCase(), sizeLabel, effectiveDocument.encrypted ? "Encrypted" : null].filter(Boolean).join(" • ");
 
   let content: React.ReactNode;
   if (loadingRemote) {
@@ -208,67 +210,58 @@ export function DocumentPreviewModal({
   } else if (effectiveDocument.kind === "pdf") {
     content = (
       <div className="doc-modal__content">
-        {metaRow}
-        <embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-[80vh] w-full rounded-xl border border-surface bg-white" />
-        <div style={{ marginTop: "0.75rem" }} className="flex gap-2">
-          <button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("pdf")}>Open full screen</button>
-          <button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open in browser</button>
-        </div>
+        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 rounded-[28px] bg-[#1b1c20] p-3 shadow-2xl"><embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-full w-full rounded-[22px] bg-white" /></div><div className="flex justify-center gap-2"><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("pdf")}>Full screen</button><button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open in browser</button></div></div>
       </div>
     );
   } else if (full?.type === "html") {
     content = (
       <div className="doc-modal__content">
-        {metaRow}
-        <div className="doc-modal__markup" style={{ maxHeight: "72vh", overflow: "auto", padding: "1rem", borderRadius: "1rem", border: "1px solid var(--color-border)" }} dangerouslySetInnerHTML={{ __html: full.data }} />
-        <div style={{ marginTop: "0.75rem" }}><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("html")}>Open full screen</button></div>
+        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 overflow-auto rounded-[28px] bg-white p-6 text-black shadow-2xl"><div className="doc-modal__markup" dangerouslySetInnerHTML={{ __html: full.data }} /></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("html")}>Full screen</button></div></div>
       </div>
     );
   } else if (full?.type === "text") {
     content = (
       <div className="doc-modal__content">
-        {metaRow}
-        <pre className="doc-modal__text" style={{ maxHeight: "72vh", overflow: "auto", border: "1px solid var(--color-border)", borderRadius: "1rem", padding: "1rem", background: "var(--color-surface-muted)" }}>{full.data}</pre>
-        <div style={{ marginTop: "0.75rem" }}><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("text")}>Open full screen</button></div>
+        <div className="flex h-full flex-col gap-3"><div className="min-h-0 flex-1 overflow-auto rounded-[28px] bg-white p-6 text-black shadow-2xl"><pre className="doc-modal__text whitespace-pre-wrap">{full.data}</pre></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("text")}>Full screen</button></div></div>
       </div>
     );
   } else if (full?.type === "image") {
     content = (
       <div className="doc-modal__content">
-        {metaRow}
-        <img src={full.data} alt={label} className="max-h-[72vh] w-full rounded-xl object-contain bg-surface-muted" />
-        <div style={{ marginTop: "0.75rem" }} className="flex gap-2">
-          <button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("image")}>Open full screen</button>
-          <button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open image</button>
-        </div>
+        <div className="flex h-full flex-col gap-3"><div className="flex min-h-0 flex-1 items-center justify-center rounded-[28px] bg-[#1b1c20] p-4 shadow-2xl"><img src={full.data} alt={label} className="max-h-full max-w-full rounded-[22px] object-contain" /></div><div className="flex justify-center gap-2"><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("image")}>Full screen</button><button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open image</button></div></div>
       </div>
     );
   } else if (full?.type === "audio") {
     content = (
       <div className="doc-modal__content">
-        {metaRow}
-        <div className="rounded-xl border border-surface p-4 bg-surface-muted"><audio controls src={full.data} className="w-full" /></div>
+        <div className="flex h-full items-center justify-center"><div className="w-full max-w-xl rounded-[28px] bg-[#1b1c20] p-6 shadow-2xl"><div className="mb-4 text-center text-sm text-white/70">Audio attachment</div><audio controls src={full.data} className="w-full" /></div></div>
       </div>
     );
   } else if (full?.type === "video") {
     content = (
       <div className="doc-modal__content">
-        {metaRow}
-        <video controls src={full.data} className="max-h-[72vh] w-full rounded-xl bg-black" />
-        <div style={{ marginTop: "0.75rem" }}><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("video")}>Open full screen</button></div>
+        <div className="flex h-full flex-col gap-3"><div className="flex min-h-0 flex-1 items-center justify-center rounded-[28px] bg-black p-2 shadow-2xl"><video controls src={full.data} className="max-h-full w-full rounded-[22px] bg-black" /></div><div className="flex justify-center"><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("video")}>Full screen</button></div></div>
       </div>
     );
   } else {
     content = (
       <div className="doc-modal__content">
-        {metaRow}
-        <div className="doc-modal__placeholder">Preview unavailable. Click download to open the original file.</div>
+        <div className="flex h-full items-center justify-center"><div className="rounded-[28px] bg-[#1b1c20] px-6 py-8 text-center text-white/70 shadow-2xl">Preview unavailable. Use Download to open the original file.</div></div>
       </div>
     );
   }
 
   const actions = (
-    <div className="doc-modal__action-buttons">
+    <>
+      {onOpenExternal ? (
+        <button
+          type="button"
+          className="ghost-button button-sm pressable"
+          onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}
+        >
+          Open
+        </button>
+      ) : null}
       <button
         type="button"
         className="ghost-button button-sm pressable"
@@ -276,38 +269,38 @@ export function DocumentPreviewModal({
       >
         Download
       </button>
-    </div>
+    </>
   );
 
   return (
     <>
-      <Modal onClose={onClose} title={label} actions={actions}>
+      <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={onClose}>
         {content}
-      </Modal>
+      </ViewerShell>
       {fullScreenMode === "pdf" && effectiveDocument.kind === "pdf" ? (
-        <FullScreenAssetPreview onClose={() => setFullScreenMode(null)}>
-          <embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-full w-full rounded-xl bg-white" />
-        </FullScreenAssetPreview>
+        <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={() => setFullScreenMode(null)}>
+          <div className="h-full rounded-[28px] bg-[#1b1c20] p-3"><embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-full w-full rounded-[22px] bg-white" /></div>
+        </ViewerShell>
       ) : null}
       {fullScreenMode === "image" && full?.type === "image" ? (
-        <FullScreenAssetPreview onClose={() => setFullScreenMode(null)}>
-          <img src={full.data} alt={label} className="h-full w-full object-contain" />
-        </FullScreenAssetPreview>
+        <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={() => setFullScreenMode(null)}>
+          <div className="flex h-full items-center justify-center"><img src={full.data} alt={label} className="max-h-full max-w-full object-contain" /></div>
+        </ViewerShell>
       ) : null}
       {fullScreenMode === "video" && full?.type === "video" ? (
-        <FullScreenAssetPreview onClose={() => setFullScreenMode(null)}>
-          <video controls autoPlay src={full.data} className="h-full w-full rounded-xl bg-black" />
-        </FullScreenAssetPreview>
+        <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={() => setFullScreenMode(null)}>
+          <div className="flex h-full items-center justify-center rounded-[28px] bg-black p-2"><video controls autoPlay src={full.data} className="max-h-full w-full rounded-[22px] bg-black" /></div>
+        </ViewerShell>
       ) : null}
       {fullScreenMode === "html" && full?.type === "html" ? (
-        <FullScreenAssetPreview onClose={() => setFullScreenMode(null)}>
-          <div className="h-full overflow-auto rounded-xl bg-white p-6" dangerouslySetInnerHTML={{ __html: full.data }} />
-        </FullScreenAssetPreview>
+        <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={() => setFullScreenMode(null)}>
+          <div className="h-full overflow-auto rounded-[28px] bg-white p-6 text-black" dangerouslySetInnerHTML={{ __html: full.data }} />
+        </ViewerShell>
       ) : null}
       {fullScreenMode === "text" && full?.type === "text" ? (
-        <FullScreenAssetPreview onClose={() => setFullScreenMode(null)}>
-          <pre className="h-full overflow-auto rounded-xl bg-surface p-6 text-primary whitespace-pre-wrap">{full.data}</pre>
-        </FullScreenAssetPreview>
+        <ViewerShell title={label} subtitle={subtitle} actions={actions} onClose={() => setFullScreenMode(null)}>
+          <pre className="h-full overflow-auto rounded-[28px] bg-white p-6 text-black whitespace-pre-wrap">{full.data}</pre>
+        </ViewerShell>
       ) : null}
     </>
   );
