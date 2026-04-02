@@ -80,6 +80,7 @@ export function DocumentPreviewModal({
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const full = document.full;
   const label = document.name || "Document";
+  const decryptBoardId = document.encryptionBoardId || boardId;
 
   useEffect(() => {
     let cancelled = false;
@@ -89,10 +90,17 @@ export function DocumentPreviewModal({
       setRemoteError(null);
       return;
     }
-    if (document.encrypted && boardId) {
+    if (document.encrypted && decryptBoardId) {
+      console.info("[attachment-debug] document-preview:decrypt-context", {
+        documentId: document.id,
+        documentName: document.name,
+        boardIdProp: boardId,
+        encryptionBoardId: document.encryptionBoardId,
+        decryptBoardId,
+      });
       setLoadingRemote(true);
       setRemoteError(null);
-      decryptAttachment({ boardId, url: document.remoteUrl, mimeType: document.mimeType })
+      decryptAttachment({ boardId: decryptBoardId, url: document.remoteUrl, mimeType: document.mimeType })
         .then((dataUrl) => {
           if (cancelled) return;
           setResolvedDataUrl(dataUrl);
@@ -113,7 +121,7 @@ export function DocumentPreviewModal({
     return () => {
       cancelled = true;
     };
-  }, [document, boardId]);
+  }, [document, boardId, decryptBoardId]);
 
   const effectiveDocument = resolvedDataUrl && resolvedDataUrl !== document.dataUrl
     ? { ...document, dataUrl: resolvedDataUrl }

@@ -1159,7 +1159,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       nostrSkHex,
     });
     const { dataUrl, preview, full, ...rest } = doc as any;
-    return { ...rest, remoteUrl, encrypted: true };
+    return { ...rest, remoteUrl, encrypted: true, encryptionBoardId: selectedBoard!.nostr!.boardId };
   }
 
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
