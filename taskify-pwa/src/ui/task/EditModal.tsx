@@ -1174,41 +1174,10 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   useEffect(() => {
     if (!uploadingDocumentRows.length) return;
     const interval = window.setInterval(() => {
-<<<<<<< fix/corrective-originless-indeterminate
       setUploadingDocumentRows((prev) => markStaleUploadingRowsIndeterminate(prev));
-=======
-      const now = Date.now();
-      setUploadingDocumentRows((prev) =>
-        prev.map((row) => {
-          if (row.phase !== "uploading") return row;
-          if (row.lastProgressAt == null) return row;
-          if (row.progress >= 1) return row;
-          if (now - row.lastProgressAt < 900) return row;
-          return { ...row, indeterminate: true };
-        }),
-      );
->>>>>>> New_Features_Fixes
     }, 300);
     return () => window.clearInterval(interval);
   }, [uploadingDocumentRows]);
-
-<<<<<<< fix/corrective-originless-indeterminate
-=======
-  useEffect(() => {
-    if (!uploadingDocumentRows.length) return;
-    const interval = window.setInterval(() => {
-      const now = Date.now();
-      setUploadingDocumentRows((prev) => prev.map((row) => {
-        if (row.phase !== "uploading") return row;
-        if (row.lastProgressAt == null) return row;
-        if (row.progress >= 1) return row;
-        if (now - row.lastProgressAt < 900) return row;
-        return { ...row, indeterminate: true };
-      }));
-    }, 300);
-    return () => window.clearInterval(interval);
-  }, [uploadingDocumentRows]);
->>>>>>> New_Features_Fixes
 
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
