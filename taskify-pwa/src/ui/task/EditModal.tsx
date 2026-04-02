@@ -92,6 +92,8 @@ import {
   readDocumentsFromFiles,
   type TaskDocument,
 } from "../../lib/documents";
+import { encryptAndUploadAttachment } from "../../lib/attachmentCrypto";
+import { findServerEntry, parseFileServers, type FileServerEntry } from "../../lib/fileStorage";
 import {
   buildTaskShareEnvelope,
   sendShareMessage,
@@ -213,7 +215,7 @@ function normalizeAssigneeList(value: Task["assignees"] | undefined): TaskAssign
 // They will be properly extracted in subsequent refactor steps.
 
 /* Edit modal with Advanced recurrence */
-function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, boards, onRedeemCoins, onRevealBounty, onTransferBounty, onPreviewDocument, walletConversionEnabled, walletPrimaryCurrency, bountyListEnabled, bountyListKey, onAddToBountyList, onRemoveFromBountyList, defaultRelays, nostrPK, nostrSkHex }: {
+function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, boards, onRedeemCoins, onRevealBounty, onTransferBounty, onPreviewDocument, walletConversionEnabled, walletPrimaryCurrency, bountyListEnabled, bountyListKey, onAddToBountyList, onRemoveFromBountyList, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer }: {
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
@@ -235,6 +237,8 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   defaultRelays: string[];
   nostrPK: string;
   nostrSkHex: string;
+  fileServers: string;
+  fileStorageServer: string;
 }) {
   const [title, setTitle] = useState(task.title);
   const [priority, setPriority] = useState<TaskPriority | 0>(() => normalizeTaskPriority(task.priority) ?? 0);
@@ -245,6 +249,8 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [documents, setDocuments] = useState<TaskDocument[]>(task.documents || []);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [uploadingCount, setUploadingCount] = useState(0);
+  const [uploadingLabel, setUploadingLabel] = useState<string | null>(null);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
   const [newSubtask, setNewSubtask] = useState("");
   const [selectedBoardId, setSelectedBoardId] = useState(task.boardId);
@@ -339,6 +345,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     [boards, selectedBoardId],
   );
   const selectedBoardKind = selectedBoard?.kind ?? boardKind;
+  const selectedServerEntry = useMemo<FileServerEntry>(() => {
+    const servers = parseFileServers(fileServers);
+    return findServerEntry(servers, fileStorageServer) || { url: fileStorageServer, type: "nip96" };
+  }, [fileServers, fileStorageServer]);
+  const isSharedBoard = !!selectedBoard?.nostr;
   const locationSummary = useMemo(() => {
     if (!selectedBoard) return "Select board";
     const boardLabel = selectedBoard.name || "Board";
@@ -1115,31 +1126,78 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   }, [bountyButtonActive, onAddToBountyList, onRemoveFromBountyList, task.id, taskInBountyList]);
 
 
+  async function uploadSharedImage(file: File): Promise<string> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return encryptAndUploadAttachment({
+      boardId: selectedBoard!.nostr!.boardId,
+      data: bytes,
+      mimeType: file.type || "application/octet-stream",
+      filename: file.name || "image",
+      serverEntry: selectedServerEntry,
+      nostrSkHex,
+    });
+  }
+
+  async function uploadSharedDocument(file: File, doc: TaskDocument): Promise<TaskDocument> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const remoteUrl = await encryptAndUploadAttachment({
+      boardId: selectedBoard!.nostr!.boardId,
+      data: bytes,
+      mimeType: doc.mimeType || file.type || "application/octet-stream",
+      filename: doc.name || file.name || "document",
+      serverEntry: selectedServerEntry,
+      nostrSkHex,
+    });
+    const { dataUrl, preview, full, ...rest } = doc as any;
+    return { ...rest, remoteUrl, encrypted: true };
+  }
+
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
     if (!items) return;
     const imgs = Array.from(items).filter(it => it.type.startsWith("image/"));
     if (imgs.length) {
       e.preventDefault();
-      const datas: string[] = [];
-      for (const it of imgs) {
-        const file = it.getAsFile();
-        if (file) datas.push(await fileToDataURL(file));
+      try {
+        setSaveError(null);
+        setUploadingCount((prev) => prev + imgs.length);
+        setUploadingLabel(`Uploading ${imgs.length === 1 ? "image" : "images"}…`);
+        const nextImages: string[] = [];
+        for (const it of imgs) {
+          const file = it.getAsFile();
+          if (!file) continue;
+          nextImages.push(isSharedBoard ? await uploadSharedImage(file) : await fileToDataURL(file));
+        }
+        setImages(prev => [...prev, ...nextImages]);
+      } catch (err: any) {
+        console.error("Failed to attach image", err);
+        setSaveError(err?.message || "Failed to upload image attachment.");
+      } finally {
+        setUploadingCount((prev) => Math.max(0, prev - imgs.length));
+        setUploadingLabel(null);
       }
-      setImages(prev => [...prev, ...datas]);
     }
   }
 
   async function handleDocumentAttach(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
     if (!files || !files.length) return;
+    const fileList = Array.from(files);
     try {
+      setSaveError(null);
+      setUploadingCount((prev) => prev + fileList.length);
+      setUploadingLabel(`Uploading ${fileList.length === 1 ? "attachment" : "attachments"}…`);
       const docs = await readDocumentsFromFiles(files);
-      setDocuments((prev) => [...prev, ...docs]);
-    } catch (err) {
+      const nextDocs = isSharedBoard
+        ? await Promise.all(docs.map((doc, index) => uploadSharedDocument(fileList[index], doc)))
+        : docs;
+      setDocuments((prev) => [...prev, ...nextDocs]);
+    } catch (err: any) {
       console.error("Failed to attach document", err);
-      alert("Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
+      setSaveError(err?.message || "Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
     } finally {
+      setUploadingCount((prev) => Math.max(0, prev - fileList.length));
+      setUploadingLabel(null);
       e.target.value = "";
     }
   }
@@ -1609,13 +1667,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
 
   return (
     <>
-      <Modal onClose={onCancel} showClose={false} variant="fullscreen">
+      <Modal onClose={() => { if (!saving && uploadingCount === 0) onCancel(); }} showClose={false} variant="fullscreen">
       <div className="edit-modal">
         <div className="edit-sheet__header">
           <button
             type="button"
             className="edit-sheet__action"
-            onClick={onCancel}
+            onClick={() => { if (!saving && uploadingCount === 0) onCancel(); }}
             aria-label="Close editor"
           >
             <span aria-hidden="true">×</span>
@@ -1626,10 +1684,10 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
             className="edit-sheet__action edit-sheet__action--accent"
             onClick={() => save()}
             aria-label="Save task"
-            disabled={saving}
+            disabled={saving || uploadingCount > 0}
           >
-            {saving ? (
-              <span className="text-xs px-1">Uploading…</span>
+            {saving || uploadingCount > 0 ? (
+              <span className="text-xs px-1">{uploadingLabel || "Uploading…"}</span>
             ) : (
               <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2}>
                 <path d="M5 12l4 4 10-10" strokeLinecap="round" strokeLinejoin="round" />
@@ -1644,9 +1702,9 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           </div>
         )}
 
-        {saving && (
+        {(saving || uploadingCount > 0) && (
           <div className="px-4 pt-2 text-xs text-secondary">
-            Uploading encrypted attachments to your selected file server. Please keep Taskify open until save finishes.
+            {uploadingLabel || "Uploading encrypted attachments to your selected file server."} Please keep Taskify open until this finishes.
           </div>
         )}
 

@@ -19845,6 +19845,8 @@ export default function App() {
           defaultRelays={defaultRelays}
           nostrPK={nostrPK}
           nostrSkHex={nostrSkHex}
+          fileStorageServer={settings.fileStorageServer}
+          fileServers={settings.fileServers}
         />
       )}
 
