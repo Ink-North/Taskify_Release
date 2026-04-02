@@ -1,4 +1,4 @@
-import { uploadAvatar } from "../nostr/Nip96Client";
+import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
 
 const aesKeyCache = new Map<string, Promise<CryptoKey>>();
@@ -52,7 +52,7 @@ export async function encryptAndUploadAttachment(opts: {
   combined.set(iv, 0);
   combined.set(new Uint8Array(ctBuf), iv.length);
   const blob = new Blob([combined], { type: "application/octet-stream" });
-  const upload = await uploadAvatar({
+  const upload = await uploadFile({
     serverEntry: opts.serverEntry,
     file: blob,
     filename: `${opts.filename}.enc`,
