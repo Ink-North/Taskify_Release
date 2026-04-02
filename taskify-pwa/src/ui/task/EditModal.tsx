@@ -93,6 +93,7 @@ import {
   type TaskDocument,
 } from "../../lib/documents";
 import { encryptAndUploadAttachment } from "../../lib/attachmentCrypto";
+import { createUploadingDocumentRow, removeUploadingDocumentRow, setUploadingDocumentRowPhase, startUploadingDotsTimer, updateUploadingDocumentRowProgress, type UploadingDocumentRow } from "./uploadProgress";
 import { findServerEntry, parseFileServers, type FileServerEntry } from "../../lib/fileStorage";
 import {
   buildTaskShareEnvelope,
@@ -251,12 +252,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [saveError, setSaveError] = useState<string | null>(null);
   const [uploadingCount, setUploadingCount] = useState(0);
   const [uploadingLabel, setUploadingLabel] = useState<string | null>(null);
-  const [uploadingDocumentRows, setUploadingDocumentRows] = useState<Array<{
-    id: string;
-    name: string;
-    kind: string;
-    progress: number;
-  }>>([]);
+  const [uploadingDocumentRows, setUploadingDocumentRows] = useState<UploadingDocumentRow[]>([]);
   const [uploadingDotPhase, setUploadingDotPhase] = useState(0);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
   const [newSubtask, setNewSubtask] = useState("");
@@ -1145,7 +1141,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     });
   }
 
-  async function uploadSharedDocument(file: File, doc: TaskDocument): Promise<TaskDocument> {
+  async function uploadSharedDocument(file: File, doc: TaskDocument, handlers?: { onProgress?: (progress: number) => void; onPhaseChange?: (phase: "uploading" | "processing") => void }): Promise<TaskDocument> {
     console.info("[attachment-debug] shared-document:start", {
       filename: file.name,
       fileType: file.type,
@@ -1164,27 +1160,17 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       filename: doc.name || file.name || "document",
       serverEntry: selectedServerEntry,
       nostrSkHex,
+      onProgress: (progress) => handlers?.onProgress?.(progress),
+      onPhaseChange: (phase) => handlers?.onPhaseChange?.(phase),
     });
     const { dataUrl, preview, full, ...rest } = doc as any;
     return { ...rest, remoteUrl, encrypted: true, encryptionBoardId: selectedBoard!.nostr!.boardId };
   }
 
-  function addUploadingDocumentRow(doc: TaskDocument, fallbackName: string) {
-    const id = `${doc.id}-uploading`;
-    setUploadingDocumentRows((prev) => [
-      ...prev,
-      { id, name: doc.name || fallbackName || "attachment", kind: doc.kind.toUpperCase(), progress: 0.18 },
-    ]);
-    return id;
-  }
+  useEffect(() => {
+    return startUploadingDotsTimer(uploadingDocumentRows.length, setUploadingDotPhase);
+  }, [uploadingDocumentRows.length]);
 
-  function advanceUploadingDocumentRow(id: string, progress: number) {
-    setUploadingDocumentRows((prev) => prev.map((row) => row.id === id ? { ...row, progress: Math.max(row.progress, Math.min(progress, 0.94)) } : row));
-  }
-
-  function completeUploadingDocumentRow(id: string) {
-    setUploadingDocumentRows((prev) => prev.filter((row) => row.id !== id));
-  }
 
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
@@ -1192,34 +1178,42 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     const imgs = Array.from(items).filter((it) => it.type.startsWith("image/"));
     if (!imgs.length) return;
     e.preventDefault();
-    const fileList = imgs.map((it, index) => {
-      const file = it.getAsFile();
-      if (!file) return null;
-      if (file.name) return file;
-      const extension = (file.type || "image/png").split("/")[1] || "png";
-      return new File([file], `pasted-image-${Date.now()}-${index}.${extension}`, { type: file.type || "image/png" });
-    }).filter(Boolean) as File[];
+    const fileList = imgs
+      .map((it, index) => {
+        const file = it.getAsFile();
+        if (!file) return null;
+        if (file.name) return file;
+        const extension = (file.type || "image/png").split("/")[1] || "png";
+        return new File([file], `pasted-image-${Date.now()}-${index}.${extension}`, { type: file.type || "image/png" });
+      })
+      .filter(Boolean) as File[];
     if (!fileList.length) return;
     try {
       setSaveError(null);
       setUploadingCount((prev) => prev + fileList.length);
       const nextDocs: TaskDocument[] = [];
       for (const file of fileList) {
-        const label = file.name || 'pasted image';
+        const label = file.name || "pasted image";
         setUploadingLabel(`Preparing ${label}…`);
         const docs = await readDocumentsFromFiles([file] as any);
         const doc = docs[0];
         if (!doc) throw new Error(`Could not read ${label}.`);
         if (isSharedBoard) {
           setUploadingLabel(`Uploading ${label}…`);
-          const rowId = addUploadingDocumentRow(doc, label);
+          const row = createUploadingDocumentRow(doc, label);
+          const rowId = row.id;
+          setUploadingDocumentRows((prev) => [...prev, row]);
           try {
-            advanceUploadingDocumentRow(rowId, 0.52);
-            const uploaded = await uploadSharedDocument(file, doc);
-            advanceUploadingDocumentRow(rowId, 1);
+            const uploaded = await uploadSharedDocument(file, doc, {
+              onProgress: (progress) =>
+                setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, progress)),
+              onPhaseChange: (phase) =>
+                setUploadingDocumentRows((prev) => setUploadingDocumentRowPhase(prev, rowId, phase)),
+            });
+            setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, 1));
             nextDocs.push(uploaded);
           } finally {
-            completeUploadingDocumentRow(rowId);
+            setUploadingDocumentRows((prev) => removeUploadingDocumentRow(prev, rowId));
           }
         } else {
           nextDocs.push(doc);
@@ -1245,23 +1239,27 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       const nextDocs: TaskDocument[] = [];
       for (let index = 0; index < fileList.length; index += 1) {
         const file = fileList[index];
-        const label = file.name || 'attachment';
+        const label = file.name || "attachment";
         setUploadingLabel(`Preparing ${label}…`);
         const docs = await readDocumentsFromFiles([file] as any);
         const doc = docs[0];
-        if (!doc) {
-          throw new Error(`Could not read ${label}. The selected file may not be supported.`);
-        }
+        if (!doc) throw new Error(`Could not read ${label}. The selected file may not be supported.`);
         if (isSharedBoard) {
           setUploadingLabel(`Uploading ${label}…`);
-          const rowId = addUploadingDocumentRow(doc, label);
+          const row = createUploadingDocumentRow(doc, label);
+          const rowId = row.id;
+          setUploadingDocumentRows((prev) => [...prev, row]);
           try {
-            advanceUploadingDocumentRow(rowId, 0.52);
-            const uploaded = await uploadSharedDocument(file, doc);
-            advanceUploadingDocumentRow(rowId, 1);
+            const uploaded = await uploadSharedDocument(file, doc, {
+              onProgress: (progress) =>
+                setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, progress)),
+              onPhaseChange: (phase) =>
+                setUploadingDocumentRows((prev) => setUploadingDocumentRowPhase(prev, rowId, phase)),
+            });
+            setUploadingDocumentRows((prev) => updateUploadingDocumentRowProgress(prev, rowId, 1));
             nextDocs.push(uploaded);
           } finally {
-            completeUploadingDocumentRow(rowId);
+            setUploadingDocumentRows((prev) => removeUploadingDocumentRow(prev, rowId));
           }
         } else {
           nextDocs.push(doc);
@@ -1269,42 +1267,15 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       }
       setDocuments((prev) => [...prev, ...nextDocs]);
     } catch (err: any) {
-      console.error('Failed to attach document', err);
-      setSaveError(err?.message || 'Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.');
+      console.error("Failed to attach document", err);
+      setSaveError(err?.message || "Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
     } finally {
       setUploadingCount((prev) => Math.max(0, prev - fileList.length));
       setUploadingLabel(null);
-      e.target.value = '';
+      e.target.value = "";
     }
   }
 
-  useEffect(() => {
-    if (!uploadingDocumentRows.length) {
-      setUploadingDotPhase(0);
-      return;
-    }
-    const interval = window.setInterval(() => {
-      setUploadingDotPhase((prev) => (prev + 1) % 4);
-    }, 420);
-    return () => window.clearInterval(interval);
-  }, [uploadingDocumentRows.length]);
-
-  function addUploadingDocumentRow(doc: TaskDocument, fallbackName: string) {
-    const id = `${doc.id}-uploading`;
-    setUploadingDocumentRows((prev) => [
-      ...prev,
-      { id, name: doc.name || fallbackName || "attachment", kind: doc.kind.toUpperCase(), progress: 0.18 },
-    ]);
-    return id;
-  }
-
-  function advanceUploadingDocumentRow(id: string, progress: number) {
-    setUploadingDocumentRows((prev) => prev.map((row) => row.id === id ? { ...row, progress: Math.max(row.progress, Math.min(progress, 0.94)) } : row));
-  }
-
-  function completeUploadingDocumentRow(id: string) {
-    setUploadingDocumentRows((prev) => prev.filter((row) => row.id !== id));
-  }
 
   function addSubtask(keepKeyboard = false) {
     const title = newSubtask.trim();
@@ -1903,7 +1874,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                       <div className="doc-edit-row__meta">{doc.kind}</div>
                     </div>
                     <div className="doc-edit-row__actions">
-                      <span className="doc-edit-row__status">Uploading<span className="doc-edit-row__dots">{".".repeat(uploadingDotPhase)}</span></span>
+                      <span className="doc-edit-row__status">{doc.phase === "processing" ? "Processing" : "Uploading"}<span className="doc-edit-row__dots">{".".repeat(uploadingDotPhase)}</span></span>
                     </div>
                     <div className="doc-edit-row__progress" aria-hidden="true">
                       <div className="doc-edit-row__progress-bar" style={{ width: `${Math.round(doc.progress * 100)}%` }} />
