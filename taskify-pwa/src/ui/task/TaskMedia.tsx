@@ -7,8 +7,21 @@ import type { UrlPreviewData } from "../../lib/urlPreview";
 import { extractFirstUrl, isUrlLike } from "../../lib/urlPreview";
 import { autolink, stripUrlsFromText, fallbackTitleFromUrl, useTaskPreview } from "./TaskTitle";
 import { DocumentThumbnail } from "./DocumentPreviewModal";
+import { decryptAttachment } from "../../lib/attachmentCrypto";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { decryptAttachment } from "../../lib/attachmentCrypto";
+
+function ResolvedTaskImage({ src, boardId }: { src: string; boardId?: string }) {
+  const [resolvedSrc, setResolvedSrc] = useState(src);
+  useEffect(() => {
+    let cancelled = false;
+    if (!src || src.startsWith("data:")) { setResolvedSrc(src); return; }
+    if (!boardId) { setResolvedSrc(src); return; }
+    decryptAttachment({ boardId, url: src, mimeType: "image/jpeg" }).then((next) => { if (!cancelled) setResolvedSrc(next); }).catch(() => { if (!cancelled) setResolvedSrc(src); });
+    return () => { cancelled = true; };
+  }, [src, boardId]);
+  return <img src={resolvedSrc} className="max-h-40 w-full rounded-2xl object-contain" />;
+}
 
 export function UrlPreviewCard({ preview }: { preview: UrlPreviewData; indent?: boolean }) {
   const [imageFailed, setImageFailed] = useState(false);
@@ -192,6 +205,7 @@ export function TaskMedia({
             <DocumentThumbnail
               key={doc.id}
               document={doc}
+              boardId={task.boardId}
               onClick={() => onOpenDocument?.(task, doc)}
             />
           ))}

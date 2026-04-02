@@ -178,7 +178,7 @@ import {
   MARK_HISTORY_ENTRIES_OLDER_SPENT_EVENT,
   type HistoryEntryRaw,
 } from "./lib/walletHistory";
-import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, parseFileServers, findServerEntry, serializeFileServers, DEFAULT_FILE_SERVERS } from "./lib/fileStorage";
+import { DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER, DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, parseFileServers, findServerEntry, serializeFileServers, DEFAULT_FILE_SERVERS } from "./lib/fileStorage";
 import { encryptAndUploadAttachment, parseDataUrl, decryptAttachment } from "./lib/attachmentCrypto";
 import { NostrSession } from "./nostr/NostrSession";
 import { SessionPool } from "./nostr/SessionPool";
@@ -1570,6 +1570,7 @@ type Settings = {
   walletMintBackupEnabled: boolean;
   walletContactsSyncEnabled: boolean;
   fileStorageServer: string;
+  encryptedFileStorageServer: string;
   fileServers: string; // JSON-serialized FileServerEntry[]
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
@@ -3926,6 +3927,12 @@ function useSettings() {
             ? parsed.fileStorageServer.trim()
             : DEFAULT_FILE_STORAGE_SERVER,
         ) || DEFAULT_FILE_STORAGE_SERVER;
+      const encryptedFileStorageServer =
+        normalizeFileServerUrl(
+          typeof parsed?.encryptedFileStorageServer === "string" && parsed.encryptedFileStorageServer.trim()
+            ? parsed.encryptedFileStorageServer.trim()
+            : DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
+        ) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
       const fileServers = (() => {
         if (typeof parsed?.fileServers === "string" && parsed.fileServers.trim()) {
           return parsed.fileServers.trim();
@@ -4034,6 +4041,7 @@ function useSettings() {
           : false,
         walletContactsSyncEnabled,
         fileStorageServer,
+        encryptedFileStorageServer,
         fileServers: typeof parsed?.fileServers === "string" && parsed.fileServers.trim()
           ? parsed.fileServers.trim()
           : serializeFileServers(DEFAULT_FILE_SERVERS),
@@ -4071,6 +4079,7 @@ function useSettings() {
         walletPaymentRequestsBackgroundChecksEnabled: true,
         walletContactsSyncEnabled: true,
         fileStorageServer: DEFAULT_FILE_STORAGE_SERVER,
+        encryptedFileStorageServer: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
         fileServers: serializeFileServers(DEFAULT_FILE_SERVERS),
         npubCashLightningAddressEnabled: true,
         npubCashAutoClaim: true,
@@ -4121,6 +4130,19 @@ function useSettings() {
       } else {
         next.fileStorageServer =
           normalizeFileServerUrl(next.fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER;
+      }
+      if (Object.prototype.hasOwnProperty.call(s, "encryptedFileStorageServer")) {
+        const rawServer = (s as any).encryptedFileStorageServer;
+        const normalizedServer =
+          typeof rawServer === "string" && rawServer.trim()
+            ? normalizeFileServerUrl(rawServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER
+            : DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
+        next.encryptedFileStorageServer = normalizedServer;
+      } else if (!next.encryptedFileStorageServer) {
+        next.encryptedFileStorageServer = DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
+      } else {
+        next.encryptedFileStorageServer =
+          normalizeFileServerUrl(next.encryptedFileStorageServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
       }
       if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
         // fileServers changed: validate and keep in sync
@@ -12203,7 +12225,7 @@ export default function App() {
     const servers = parseFileServers(settings.fileServers);
     const serverEntry = findServerEntry(servers, settings.fileStorageServer)
       ?? servers[0]
-      ?? { url: settings.fileStorageServer, type: "nip96" as const };
+      ?? { url: settings.encryptedFileStorageServer, type: "nip96" as const };
 
     const nextImages = typeof params.images === "undefined" ? null : await Promise.all((params.images || []).map(async (img, index) => {
       if (!img || !img.startsWith("data:")) return img; // already a remote URL
