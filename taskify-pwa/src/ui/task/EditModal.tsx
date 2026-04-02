@@ -257,6 +257,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     kind: string;
     progress: number;
   }>>([]);
+  const [uploadingDotPhase, setUploadingDotPhase] = useState(0);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
   const [newSubtask, setNewSubtask] = useState("");
   const [selectedBoardId, setSelectedBoardId] = useState(task.boardId);
@@ -1277,6 +1278,34 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     }
   }
 
+  useEffect(() => {
+    if (!uploadingDocumentRows.length) {
+      setUploadingDotPhase(0);
+      return;
+    }
+    const interval = window.setInterval(() => {
+      setUploadingDotPhase((prev) => (prev + 1) % 4);
+    }, 420);
+    return () => window.clearInterval(interval);
+  }, [uploadingDocumentRows.length]);
+
+  function addUploadingDocumentRow(doc: TaskDocument, fallbackName: string) {
+    const id = `${doc.id}-uploading`;
+    setUploadingDocumentRows((prev) => [
+      ...prev,
+      { id, name: doc.name || fallbackName || "attachment", kind: doc.kind.toUpperCase(), progress: 0.18 },
+    ]);
+    return id;
+  }
+
+  function advanceUploadingDocumentRow(id: string, progress: number) {
+    setUploadingDocumentRows((prev) => prev.map((row) => row.id === id ? { ...row, progress: Math.max(row.progress, Math.min(progress, 0.94)) } : row));
+  }
+
+  function completeUploadingDocumentRow(id: string) {
+    setUploadingDocumentRows((prev) => prev.filter((row) => row.id !== id));
+  }
+
   function addSubtask(keepKeyboard = false) {
     const title = newSubtask.trim();
     if (!title) return;
@@ -1874,7 +1903,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                       <div className="doc-edit-row__meta">{doc.kind}</div>
                     </div>
                     <div className="doc-edit-row__actions">
-                      <span className="doc-edit-row__status">Uploading</span>
+                      <span className="doc-edit-row__status">Uploading<span className="doc-edit-row__dots">{".".repeat(uploadingDotPhase)}</span></span>
                     </div>
                     <div className="doc-edit-row__progress" aria-hidden="true">
                       <div className="doc-edit-row__progress-bar" style={{ width: `${Math.round(doc.progress * 100)}%` }} />
