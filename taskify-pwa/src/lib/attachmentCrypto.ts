@@ -12,7 +12,6 @@ async function deriveBoardAesKey(boardId: string): Promise<CryptoKey> {
   const cached = aesKeyCache.get(boardId);
   if (cached) return cached;
   const promise = (async () => {
-    attachmentDebug("decrypt:start", { boardId: opts.boardId, url: opts.url, mimeType: opts.mimeType });
     const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(boardId));
     return crypto.subtle.importKey("raw", hash, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
   })();
@@ -62,6 +61,8 @@ export async function encryptAndUploadAttachment(opts: {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ctBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, opts.data);
   const combined = new Uint8Array(iv.length + ctBuf.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(ctBuf), iv.length);
   attachmentDebug("encrypt:complete", {
     filename: opts.filename,
     plaintextBytes: opts.data.byteLength,
@@ -70,8 +71,6 @@ export async function encryptAndUploadAttachment(opts: {
     uploadFilename: `${opts.filename}.enc`,
     plaintextUploaded: false,
   });
-  combined.set(iv, 0);
-  combined.set(new Uint8Array(ctBuf), iv.length);
   const blob = new Blob([combined], { type: "application/octet-stream" });
   const upload = await uploadFile({
     debugMeta: {
@@ -108,6 +107,7 @@ export async function decryptAttachment(opts: {
   const cached = decryptDataUrlCache.get(cacheKey);
   if (cached) return cached;
   const promise = (async () => {
+    attachmentDebug("decrypt:start", { boardId: opts.boardId, url: opts.url, mimeType: opts.mimeType });
     const res = await fetch(opts.url);
     attachmentDebug("decrypt:fetch", { url: opts.url, status: res.status, ok: res.ok });
     if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
