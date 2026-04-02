@@ -6610,3 +6610,24 @@ html.light .wallet-modal__unit {
   font-size: 12px;
   font-weight: 600;
 }
+
+.doc-modal__markup--mobile-safe,
+.doc-modal__markup--mobile-safe * {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.doc-modal__markup--mobile-safe pre,
+.doc-modal__markup--mobile-safe code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.doc-modal__markup--mobile-safe pre {
+  overflow-x: auto;
+}
+.doc-modal__markup--mobile-safe img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}

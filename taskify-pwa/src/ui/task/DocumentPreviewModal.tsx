@@ -139,13 +139,11 @@ export function DocumentPreviewModal({
   boardId,
   onClose,
   onDownloadDocument,
-  onOpenExternal,
 }: {
   document: TaskDocument;
   boardId?: string;
   onClose: () => void;
   onDownloadDocument?: (doc: TaskDocument, boardId?: string) => void;
-  onOpenExternal?: (doc: TaskDocument, boardId?: string) => void;
 }) {
   const [resolvedDocument, setResolvedDocument] = useState<TaskDocument>(document);
   const [loadingRemote, setLoadingRemote] = useState(false);
@@ -186,15 +184,8 @@ export function DocumentPreviewModal({
     [doc],
   );
 
-  const actions = (
+const actions = (
     <>
-      <button
-        type="button"
-        className="ghost-button button-sm pressable"
-        onClick={() => onOpenExternal?.(doc, decryptBoardId)}
-      >
-        Open
-      </button>
       <button
         type="button"
         className="ghost-button button-sm pressable"
