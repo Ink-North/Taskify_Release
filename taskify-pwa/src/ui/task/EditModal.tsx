@@ -93,7 +93,7 @@ import {
   type TaskDocument,
 } from "../../lib/documents";
 import { encryptAndUploadAttachment } from "../../lib/attachmentCrypto";
-import { createUploadingDocumentRow, removeUploadingDocumentRow, setUploadingDocumentRowPhase, startUploadingDotsTimer, updateUploadingDocumentRowProgress, type UploadingDocumentRow } from "./uploadProgress";
+import { createUploadingDocumentRow, markStaleUploadingRowsIndeterminate, removeUploadingDocumentRow, setUploadingDocumentRowPhase, startUploadingDotsTimer, updateUploadingDocumentRowProgress, type UploadingDocumentRow } from "./uploadProgress";
 import { findServerEntry, parseFileServers, type FileServerEntry } from "../../lib/fileStorage";
 import {
   buildTaskShareEnvelope,
@@ -1174,6 +1174,9 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   useEffect(() => {
     if (!uploadingDocumentRows.length) return;
     const interval = window.setInterval(() => {
+<<<<<<< fix/corrective-originless-indeterminate
+      setUploadingDocumentRows((prev) => markStaleUploadingRowsIndeterminate(prev));
+=======
       const now = Date.now();
       setUploadingDocumentRows((prev) =>
         prev.map((row) => {
@@ -1184,10 +1187,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           return { ...row, indeterminate: true };
         }),
       );
+>>>>>>> New_Features_Fixes
     }, 300);
     return () => window.clearInterval(interval);
   }, [uploadingDocumentRows]);
 
+<<<<<<< fix/corrective-originless-indeterminate
+=======
   useEffect(() => {
     if (!uploadingDocumentRows.length) return;
     const interval = window.setInterval(() => {
@@ -1202,6 +1208,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     }, 300);
     return () => window.clearInterval(interval);
   }, [uploadingDocumentRows]);
+>>>>>>> New_Features_Fixes
 
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
