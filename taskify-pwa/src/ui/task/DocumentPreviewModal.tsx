@@ -168,10 +168,35 @@ export function DocumentPreviewModal({
     }
     setLoadingRemote(true);
     setRemoteError(null);
+    console.info("[attachment-debug] preview:resolve:start", {
+      id: document.id,
+      name: document.name,
+      kind: document.kind,
+      mimeType: document.mimeType,
+      encrypted: document.encrypted,
+      remoteUrl: document.remoteUrl,
+      boardId,
+      encryptionBoardId: document.encryptionBoardId,
+    });
     resolveDocumentAsset(document, boardId)
-      .then((resolved) => { if (!cancelled) { setResolvedDocument(resolved); setLoadingRemote(false); } })
+      .then((resolved) => {
+        if (cancelled) return;
+        console.info("[attachment-debug] preview:resolve:success", {
+          id: resolved.id,
+          kind: resolved.kind,
+          fullType: resolved.full?.type,
+          previewType: resolved.preview?.type,
+          dataUrlPrefix: resolved.dataUrl?.slice(0, 32),
+        });
+        setResolvedDocument(resolved);
+        setLoadingRemote(false);
+      })
       .catch((err: unknown) => {
         if (!cancelled) {
+          console.info("[attachment-debug] preview:resolve:error", {
+            id: document.id,
+            message: (err as Error)?.message || String(err),
+          });
           setRemoteError((err as Error)?.message || "Failed to decrypt document");
           setLoadingRemote(false);
         }
