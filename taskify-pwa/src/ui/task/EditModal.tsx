@@ -256,6 +256,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     name: string;
     kind: string;
     progress: number;
+    phase: "uploading" | "processing";
   }>>([]);
   const [uploadingDotPhase, setUploadingDotPhase] = useState(0);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
@@ -1145,7 +1146,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     });
   }
 
-  async function uploadSharedDocument(file: File, doc: TaskDocument, onProgress?: (progress: number) => void): Promise<TaskDocument> {
+  async function uploadSharedDocument(file: File, doc: TaskDocument, handlers?: { onProgress?: (progress: number) => void; onPhaseChange?: (phase: "uploading" | "processing") => void }): Promise<TaskDocument> {
     console.info("[attachment-debug] shared-document:start", {
       filename: file.name,
       fileType: file.type,
@@ -1164,7 +1165,8 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       filename: doc.name || file.name || "document",
       serverEntry: selectedServerEntry,
       nostrSkHex,
-      onProgress: (progress) => onProgress?.(progress),
+      onProgress: (progress) => handlers?.onProgress?.(progress),
+      onPhaseChange: (phase) => handlers?.onPhaseChange?.(phase),
     });
     const { dataUrl, preview, full, ...rest } = doc as any;
     return { ...rest, remoteUrl, encrypted: true, encryptionBoardId: selectedBoard!.nostr!.boardId };
@@ -1174,7 +1176,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     const id = `${doc.id}-uploading`;
     setUploadingDocumentRows((prev) => [
       ...prev,
-      { id, name: doc.name || fallbackName || "attachment", kind: doc.kind.toUpperCase(), progress: 0 },
+      { id, name: doc.name || fallbackName || "attachment", kind: doc.kind.toUpperCase(), progress: 0, phase: "uploading" },
     ]);
     return id;
   }
@@ -1182,6 +1184,12 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   function advanceUploadingDocumentRow(id: string, progress: number) {
     setUploadingDocumentRows((prev) =>
       prev.map((row) => (row.id === id ? { ...row, progress: Math.max(0, Math.min(progress, 1)) } : row)),
+    );
+  }
+
+  function setUploadingDocumentRowPhase(id: string, phase: "uploading" | "processing") {
+    setUploadingDocumentRows((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, phase, progress: phase === "processing" ? Math.max(row.progress, 1) : row.progress } : row)),
     );
   }
 
@@ -1230,7 +1238,10 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           setUploadingLabel(`Uploading ${label}…`);
           const rowId = addUploadingDocumentRow(doc, label);
           try {
-            const uploaded = await uploadSharedDocument(file, doc, (progress) => advanceUploadingDocumentRow(rowId, progress));
+            const uploaded = await uploadSharedDocument(file, doc, {
+              onProgress: (progress) => advanceUploadingDocumentRow(rowId, progress),
+              onPhaseChange: (phase) => setUploadingDocumentRowPhase(rowId, phase),
+            });
             advanceUploadingDocumentRow(rowId, 1);
             nextDocs.push(uploaded);
           } finally {
@@ -1269,7 +1280,10 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           setUploadingLabel(`Uploading ${label}…`);
           const rowId = addUploadingDocumentRow(doc, label);
           try {
-            const uploaded = await uploadSharedDocument(file, doc, (progress) => advanceUploadingDocumentRow(rowId, progress));
+            const uploaded = await uploadSharedDocument(file, doc, {
+              onProgress: (progress) => advanceUploadingDocumentRow(rowId, progress),
+              onPhaseChange: (phase) => setUploadingDocumentRowPhase(rowId, phase),
+            });
             advanceUploadingDocumentRow(rowId, 1);
             nextDocs.push(uploaded);
           } finally {
@@ -1888,7 +1902,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                       <div className="doc-edit-row__meta">{doc.kind}</div>
                     </div>
                     <div className="doc-edit-row__actions">
-                      <span className="doc-edit-row__status">Uploading<span className="doc-edit-row__dots">{".".repeat(uploadingDotPhase)}</span></span>
+                      <span className="doc-edit-row__status">{doc.phase === "processing" ? "Processing" : "Uploading"}<span className="doc-edit-row__dots">{".".repeat(uploadingDotPhase)}</span></span>
                     </div>
                     <div className="doc-edit-row__progress" aria-hidden="true">
                       <div className="doc-edit-row__progress-bar" style={{ width: `${Math.round(doc.progress * 100)}%` }} />
