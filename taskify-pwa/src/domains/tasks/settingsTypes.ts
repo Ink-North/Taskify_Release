@@ -59,6 +59,7 @@ export type Settings = {
   fileStorageServer: string;
   encryptedFileStorageServer: string;
   fileServers: string; // JSON-serialized FileServerEntry[]
+  encryptedFileServers: string; // JSON-serialized FileServerEntry[]
   npubCashLightningAddressEnabled: boolean;
   npubCashAutoClaim: boolean;
   cloudBackupsEnabled: boolean;

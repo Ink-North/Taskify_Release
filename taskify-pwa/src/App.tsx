@@ -4044,7 +4044,10 @@ function useSettings() {
         encryptedFileStorageServer,
         fileServers: typeof parsed?.fileServers === "string" && parsed.fileServers.trim()
           ? parsed.fileServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS),
+          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS),
+        encryptedFileServers: typeof parsed?.encryptedFileServers === "string" && parsed.encryptedFileServers.trim()
+          ? parsed.encryptedFileServers.trim()
+          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless")),
         walletMintBackupEnabled,
         npubCashLightningAddressEnabled,
         npubCashAutoClaim: npubCashLightningAddressEnabled ? npubCashAutoClaim : false,
@@ -4080,7 +4083,8 @@ function useSettings() {
         walletContactsSyncEnabled: true,
         fileStorageServer: DEFAULT_FILE_STORAGE_SERVER,
         encryptedFileStorageServer: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
-        fileServers: serializeFileServers(DEFAULT_FILE_SERVERS),
+        fileServers: serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS),
+        encryptedFileServers: serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless")),
         npubCashLightningAddressEnabled: true,
         npubCashAutoClaim: true,
         cloudBackupsEnabled: false,
@@ -4145,13 +4149,20 @@ function useSettings() {
           normalizeFileServerUrl(next.encryptedFileStorageServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
       }
       if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
-        // fileServers changed: validate and keep in sync
         const rawServers = (s as any).fileServers;
         next.fileServers = typeof rawServers === "string" && rawServers.trim()
           ? rawServers.trim()
-          : serializeFileServers(DEFAULT_FILE_SERVERS);
+          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS);
       } else if (!next.fileServers) {
-        next.fileServers = serializeFileServers(DEFAULT_FILE_SERVERS);
+        next.fileServers = serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type !== "originless") || DEFAULT_FILE_SERVERS);
+      }
+      if (Object.prototype.hasOwnProperty.call(s, "encryptedFileServers")) {
+        const rawServers = (s as any).encryptedFileServers;
+        next.encryptedFileServers = typeof rawServers === "string" && rawServers.trim()
+          ? rawServers.trim()
+          : serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless"));
+      } else if (!next.encryptedFileServers) {
+        next.encryptedFileServers = serializeFileServers(DEFAULT_FILE_SERVERS.filter((s) => s.type === "originless"));
       }
       if (!next.backgroundImage) {
         next.backgroundImage = null;
@@ -12222,7 +12233,7 @@ export default function App() {
   async function prepareAttachmentsForPublish(
     params: { images?: string[]; documents?: TaskDocument[]; boardId: string }
   ): Promise<{ images: string[] | null; documents: any[] | null }> {
-    const servers = parseFileServers(settings.fileServers);
+    const servers = parseFileServers(settings.encryptedFileServers || settings.fileServers);
     const serverEntry = findServerEntry(servers, settings.fileStorageServer)
       ?? servers[0]
       ?? { url: settings.encryptedFileStorageServer, type: "nip96" as const };
@@ -19891,8 +19902,8 @@ export default function App() {
           defaultRelays={defaultRelays}
           nostrPK={nostrPK}
           nostrSkHex={nostrSkHex}
-          fileServers={settings.fileServers}
-          fileStorageServer={settings.fileStorageServer}
+          fileServers={settings.encryptedFileServers || settings.fileServers}
+          fileStorageServer={settings.encryptedFileStorageServer}
         />
       )}
 
