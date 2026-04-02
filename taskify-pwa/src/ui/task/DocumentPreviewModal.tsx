@@ -32,11 +32,17 @@ async function resolveDocumentAsset(doc: TaskDocument, boardId?: string): Promis
     const dataUrl = doc.encrypted && decryptBoardId
       ? await decryptAttachment({ boardId: decryptBoardId, url: doc.remoteUrl!, mimeType: doc.mimeType })
       : doc.remoteUrl!;
-    return createDocumentFromDataUrl({
+    const resolved = await createDocumentFromDataUrl({
       id: doc.id, name: doc.name, mimeType: doc.mimeType, dataUrl,
       createdAt: doc.createdAt, size: doc.size, remoteUrl: doc.remoteUrl,
       encrypted: doc.encrypted, encryptionBoardId: doc.encryptionBoardId || decryptBoardId,
     });
+    return {
+      ...resolved,
+      remoteUrl: doc.remoteUrl,
+      encrypted: doc.encrypted,
+      encryptionBoardId: doc.encryptionBoardId || decryptBoardId,
+    };
   })().catch((err) => { resolvedDocumentCache.delete(cacheKey); throw err; });
   resolvedDocumentCache.set(cacheKey, promise);
   return promise;
