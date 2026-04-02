@@ -1165,27 +1165,41 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
     if (!items) return;
-    const imgs = Array.from(items).filter(it => it.type.startsWith("image/"));
-    if (imgs.length) {
-      e.preventDefault();
-      try {
-        setSaveError(null);
-        setUploadingCount((prev) => prev + imgs.length);
-        setUploadingLabel(`Uploading ${imgs.length === 1 ? "image" : "images"}…`);
-        const nextImages: string[] = [];
-        for (const it of imgs) {
-          const file = it.getAsFile();
-          if (!file) continue;
-          nextImages.push(isSharedBoard ? await uploadSharedImage(file) : await fileToDataURL(file));
+    const imgs = Array.from(items).filter((it) => it.type.startsWith("image/"));
+    if (!imgs.length) return;
+    e.preventDefault();
+    const fileList = imgs.map((it, index) => {
+      const file = it.getAsFile();
+      if (!file) return null;
+      if (file.name) return file;
+      const extension = (file.type || "image/png").split("/")[1] || "png";
+      return new File([file], `pasted-image-${Date.now()}-${index}.${extension}`, { type: file.type || "image/png" });
+    }).filter(Boolean) as File[];
+    if (!fileList.length) return;
+    try {
+      setSaveError(null);
+      setUploadingCount((prev) => prev + fileList.length);
+      const nextDocs: TaskDocument[] = [];
+      for (const file of fileList) {
+        const label = file.name || 'pasted image';
+        setUploadingLabel(`Preparing ${label}…`);
+        const docs = await readDocumentsFromFiles([file] as any);
+        const doc = docs[0];
+        if (!doc) throw new Error(`Could not read ${label}.`);
+        if (isSharedBoard) {
+          setUploadingLabel(`Uploading ${label}…`);
+          nextDocs.push(await uploadSharedDocument(file, doc));
+        } else {
+          nextDocs.push(doc);
         }
-        setImages(prev => [...prev, ...nextImages]);
-      } catch (err: any) {
-        console.error("Failed to attach image", err);
-        setSaveError(err?.message || "Failed to upload image attachment.");
-      } finally {
-        setUploadingCount((prev) => Math.max(0, prev - imgs.length));
-        setUploadingLabel(null);
       }
+      setDocuments((prev) => [...prev, ...nextDocs]);
+    } catch (err: any) {
+      console.error("Failed to attach pasted image", err);
+      setSaveError(err?.message || "Failed to upload pasted image attachment.");
+    } finally {
+      setUploadingCount((prev) => Math.max(0, prev - fileList.length));
+      setUploadingLabel(null);
     }
   }
 

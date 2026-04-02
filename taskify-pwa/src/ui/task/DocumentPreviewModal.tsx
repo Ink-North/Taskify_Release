@@ -7,6 +7,15 @@ import { decryptAttachment } from "../../lib/attachmentCrypto";
 
 const resolvedDocumentCache = new Map<string, Promise<TaskDocument>>();
 
+function formatBytes(value?: number): string | null {
+  if (!value || !Number.isFinite(value)) return null;
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+  return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
+}
+
 async function resolveDocumentAsset(doc: TaskDocument, boardId?: string): Promise<TaskDocument> {
   if (!doc.remoteUrl) return doc;
   const decryptBoardId = doc.encryptionBoardId || boardId;
@@ -123,14 +132,12 @@ export function DocumentThumbnail({ document: doc, boardId, onClick }: { documen
   );
 }
 
-function PdfFullScreenPreview({ src, label, onClose }: { src: string; label: string; onClose: () => void }) {
+function FullScreenAssetPreview({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   if (typeof document === "undefined") return null;
   return createPortal(
     <div className="fixed inset-0 z-[120] bg-black/90 p-3" onClick={onClose}>
       <button type="button" className="ghost-button button-sm pressable" style={{ position: "absolute", top: 12, right: 12, zIndex: 2 }} onClick={onClose}>Close</button>
-      <div className="h-full w-full pt-10" onClick={(e) => e.stopPropagation()}>
-        <embed src={src} type="application/pdf" className="h-full w-full rounded-xl bg-white" />
-      </div>
+      <div className="h-full w-full pt-10" onClick={(e) => e.stopPropagation()}>{children}</div>
     </div>,
     document.body,
   );
@@ -152,7 +159,7 @@ export function DocumentPreviewModal({
   const [resolvedDocument, setResolvedDocument] = useState<TaskDocument>(document);
   const [loadingRemote, setLoadingRemote] = useState(false);
   const [remoteError, setRemoteError] = useState<string | null>(null);
-  const [pdfFullScreen, setPdfFullScreen] = useState(false);
+  const [fullScreenMode, setFullScreenMode] = useState<null | "pdf" | "image" | "video" | "html" | "text">(null);
   const label = document.name || "Document";
   const decryptBoardId = document.encryptionBoardId || boardId;
 
@@ -184,6 +191,14 @@ export function DocumentPreviewModal({
 
   const effectiveDocument = resolvedDocument;
   const full = effectiveDocument.full;
+  const sizeLabel = formatBytes(effectiveDocument.size);
+  const metaRow = (
+    <div className="flex flex-wrap items-center gap-2 text-[11px] text-secondary" style={{ marginBottom: "0.75rem" }}>
+      <span className="rounded-full border border-surface px-2 py-1">{effectiveDocument.kind.toUpperCase()}</span>
+      {sizeLabel ? <span className="rounded-full border border-surface px-2 py-1">{sizeLabel}</span> : null}
+      {effectiveDocument.encrypted ? <span className="rounded-full border border-surface px-2 py-1">Encrypted</span> : null}
+    </div>
+  );
 
   let content: React.ReactNode;
   if (loadingRemote) {
@@ -193,51 +208,61 @@ export function DocumentPreviewModal({
   } else if (effectiveDocument.kind === "pdf") {
     content = (
       <div className="doc-modal__content">
+        {metaRow}
         <embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-[80vh] w-full rounded-xl border border-surface bg-white" />
-        <div style={{ marginTop: "0.75rem" }}>
-          <button type="button" className="ghost-button button-sm pressable" onClick={() => setPdfFullScreen(true)}>Open full screen</button>
+        <div style={{ marginTop: "0.75rem" }} className="flex gap-2">
+          <button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("pdf")}>Open full screen</button>
+          <button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open in browser</button>
         </div>
       </div>
     );
   } else if (full?.type === "html") {
     content = (
       <div className="doc-modal__content">
-        <div
-          className="doc-modal__markup"
-          dangerouslySetInnerHTML={{ __html: full.data }}
-        />
+        {metaRow}
+        <div className="doc-modal__markup" style={{ maxHeight: "72vh", overflow: "auto", padding: "1rem", borderRadius: "1rem", border: "1px solid var(--color-border)" }} dangerouslySetInnerHTML={{ __html: full.data }} />
+        <div style={{ marginTop: "0.75rem" }}><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("html")}>Open full screen</button></div>
       </div>
     );
   } else if (full?.type === "text") {
     content = (
       <div className="doc-modal__content">
-        <pre className="doc-modal__text">{full.data}</pre>
+        {metaRow}
+        <pre className="doc-modal__text" style={{ maxHeight: "72vh", overflow: "auto", border: "1px solid var(--color-border)", borderRadius: "1rem", padding: "1rem", background: "var(--color-surface-muted)" }}>{full.data}</pre>
+        <div style={{ marginTop: "0.75rem" }}><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("text")}>Open full screen</button></div>
       </div>
     );
   } else if (full?.type === "image") {
     content = (
       <div className="doc-modal__content">
-        <img src={full.data} alt={label} className="max-h-[70vh] w-full object-contain" />
+        {metaRow}
+        <img src={full.data} alt={label} className="max-h-[72vh] w-full rounded-xl object-contain bg-surface-muted" />
+        <div style={{ marginTop: "0.75rem" }} className="flex gap-2">
+          <button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("image")}>Open full screen</button>
+          <button type="button" className="ghost-button button-sm pressable" onClick={() => onOpenExternal?.(effectiveDocument, decryptBoardId)}>Open image</button>
+        </div>
       </div>
     );
   } else if (full?.type === "audio") {
     content = (
       <div className="doc-modal__content">
-        <audio controls src={full.data} className="w-full" />
+        {metaRow}
+        <div className="rounded-xl border border-surface p-4 bg-surface-muted"><audio controls src={full.data} className="w-full" /></div>
       </div>
     );
   } else if (full?.type === "video") {
     content = (
       <div className="doc-modal__content">
-        <video controls src={full.data} className="max-h-[70vh] w-full" />
+        {metaRow}
+        <video controls src={full.data} className="max-h-[72vh] w-full rounded-xl bg-black" />
+        <div style={{ marginTop: "0.75rem" }}><button type="button" className="ghost-button button-sm pressable" onClick={() => setFullScreenMode("video")}>Open full screen</button></div>
       </div>
     );
   } else {
     content = (
       <div className="doc-modal__content">
-        <div className="doc-modal__placeholder">
-          Preview unavailable. Click download to open the original file.
-        </div>
+        {metaRow}
+        <div className="doc-modal__placeholder">Preview unavailable. Click download to open the original file.</div>
       </div>
     );
   }
@@ -259,8 +284,30 @@ export function DocumentPreviewModal({
       <Modal onClose={onClose} title={label} actions={actions}>
         {content}
       </Modal>
-      {pdfFullScreen && effectiveDocument.kind === "pdf" && effectiveDocument.dataUrl ? (
-        <PdfFullScreenPreview src={effectiveDocument.dataUrl} label={label} onClose={() => setPdfFullScreen(false)} />
+      {fullScreenMode === "pdf" && effectiveDocument.kind === "pdf" ? (
+        <FullScreenAssetPreview onClose={() => setFullScreenMode(null)}>
+          <embed src={effectiveDocument.dataUrl} type="application/pdf" className="h-full w-full rounded-xl bg-white" />
+        </FullScreenAssetPreview>
+      ) : null}
+      {fullScreenMode === "image" && full?.type === "image" ? (
+        <FullScreenAssetPreview onClose={() => setFullScreenMode(null)}>
+          <img src={full.data} alt={label} className="h-full w-full object-contain" />
+        </FullScreenAssetPreview>
+      ) : null}
+      {fullScreenMode === "video" && full?.type === "video" ? (
+        <FullScreenAssetPreview onClose={() => setFullScreenMode(null)}>
+          <video controls autoPlay src={full.data} className="h-full w-full rounded-xl bg-black" />
+        </FullScreenAssetPreview>
+      ) : null}
+      {fullScreenMode === "html" && full?.type === "html" ? (
+        <FullScreenAssetPreview onClose={() => setFullScreenMode(null)}>
+          <div className="h-full overflow-auto rounded-xl bg-white p-6" dangerouslySetInnerHTML={{ __html: full.data }} />
+        </FullScreenAssetPreview>
+      ) : null}
+      {fullScreenMode === "text" && full?.type === "text" ? (
+        <FullScreenAssetPreview onClose={() => setFullScreenMode(null)}>
+          <pre className="h-full overflow-auto rounded-xl bg-surface p-6 text-primary whitespace-pre-wrap">{full.data}</pre>
+        </FullScreenAssetPreview>
       ) : null}
     </>
   );
