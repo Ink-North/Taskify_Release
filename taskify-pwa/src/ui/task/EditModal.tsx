@@ -247,6 +247,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [images, setImages] = useState<string[]>(task.images || []);
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const [documents, setDocuments] = useState<TaskDocument[]>(task.documents || []);
+  type UploadingAttachment = {
+    id: string;
+    name: string;
+    kind: string;
+    progress: number;
+  };
+  const [uploadingAttachments, setUploadingAttachments] = useState<UploadingAttachment[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [uploadingCount, setUploadingCount] = useState(0);
@@ -1162,6 +1169,20 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     return { ...rest, remoteUrl, encrypted: true, encryptionBoardId: selectedBoard!.nostr!.boardId };
   }
 
+  function addUploadingAttachment(doc: TaskDocument, fallbackName: string) {
+    const entry = { id: doc.id, name: doc.name || fallbackName || "attachment", kind: doc.kind.toUpperCase(), progress: 0.12 };
+    setUploadingAttachments((prev) => [...prev, entry]);
+    return entry.id;
+  }
+
+  function setUploadingAttachmentProgress(id: string, progress: number) {
+    setUploadingAttachments((prev) => prev.map((item) => item.id === id ? { ...item, progress: Math.max(item.progress, Math.min(progress, 0.94)) } : item));
+  }
+
+  function removeUploadingAttachment(id: string) {
+    setUploadingAttachments((prev) => prev.filter((item) => item.id !== id));
+  }
+
   async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -1188,7 +1209,15 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
         if (!doc) throw new Error(`Could not read ${label}.`);
         if (isSharedBoard) {
           setUploadingLabel(`Uploading ${label}…`);
-          nextDocs.push(await uploadSharedDocument(file, doc));
+          const uploadId = addUploadingAttachment(doc, label);
+          try {
+            setUploadingAttachmentProgress(uploadId, 0.45);
+            const uploaded = await uploadSharedDocument(file, doc);
+            setUploadingAttachmentProgress(uploadId, 1);
+            nextDocs.push(uploaded);
+          } finally {
+            removeUploadingAttachment(uploadId);
+          }
         } else {
           nextDocs.push(doc);
         }
@@ -1222,7 +1251,15 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
         }
         if (isSharedBoard) {
           setUploadingLabel(`Uploading ${label}…`);
-          nextDocs.push(await uploadSharedDocument(file, doc));
+          const uploadId = addUploadingAttachment(doc, label);
+          try {
+            setUploadingAttachmentProgress(uploadId, 0.45);
+            const uploaded = await uploadSharedDocument(file, doc);
+            setUploadingAttachmentProgress(uploadId, 1);
+            nextDocs.push(uploaded);
+          } finally {
+            removeUploadingAttachment(uploadId);
+          }
         } else {
           nextDocs.push(doc);
         }
@@ -1831,8 +1868,22 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 ))}
               </div>
             )}
-            {documents.length > 0 && (
+            {(uploadingAttachments.length > 0 || documents.length > 0) && (
               <ul className="space-y-1">
+                {uploadingAttachments.map((doc) => (
+                  <li key={doc.id} className="doc-edit-row doc-edit-row--uploading">
+                    <div className="doc-edit-row__info">
+                      <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
+                      <div className="doc-edit-row__meta">{doc.kind}</div>
+                    </div>
+                    <div className="doc-edit-row__actions">
+                      <span className="doc-edit-row__status">Uploading</span>
+                    </div>
+                    <div className="doc-edit-row__progress" aria-hidden="true">
+                      <div className="doc-edit-row__progress-bar" style={{ width: `${Math.round(doc.progress * 100)}%` }} />
+                    </div>
+                  </li>
+                ))}
                 {documents.map((doc) => (
                   <li key={doc.id} className="doc-edit-row">
                     <div className="doc-edit-row__info">
