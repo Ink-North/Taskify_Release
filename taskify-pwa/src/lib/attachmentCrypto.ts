@@ -68,7 +68,7 @@ export async function encryptAndUploadAttachment(opts: {
     plaintextBytes: opts.data.byteLength,
     ciphertextBytes: combined.byteLength,
     uploadContentType: "application/octet-stream",
-    uploadFilename: `${opts.filename}.enc`,
+    uploadFilename: opts.filename,
     plaintextUploaded: false,
   });
   const blob = new Blob([combined], { type: "application/octet-stream" });
@@ -84,7 +84,7 @@ export async function encryptAndUploadAttachment(opts: {
     },
     serverEntry: opts.serverEntry,
     file: blob,
-    filename: `${opts.filename}.enc`,
+    filename: opts.filename,
     contentType: "application/octet-stream",
     signer: opts.nostrSkHex,
     signal: opts.signal,
