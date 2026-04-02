@@ -6643,7 +6643,7 @@ html.light .wallet-modal__unit {
   justify-content: flex-end;
   font-size: 0.8rem;
   font-weight: 600;
-  color: var(--accent-primary);
+  color: var(--accent);
 }
 .doc-edit-row__dots {
   display: inline-block;
@@ -6657,7 +6657,7 @@ html.light .wallet-modal__unit {
   bottom: 0.35rem;
   height: 4px;
   border-radius: 999px;
-  background: rgba(255,255,255,0.08);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   overflow: hidden;
 }
 .doc-edit-row__progress-bar {
@@ -6665,7 +6665,6 @@ html.light .wallet-modal__unit {
   height: 100%;
   min-width: 12px;
   border-radius: inherit;
-  background: var(--accent-primary);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-primary) 24%, transparent), 0 0 10px color-mix(in srgb, var(--accent-primary) 35%, transparent);
-  transition: width 240ms ease;
+  background: var(--accent);
+  transition: width 220ms ease;
 }
