@@ -108,6 +108,7 @@ async function pollProcessingUrl(url: string, headers: HeadersInit, timeoutMs: n
   while (Date.now() - started < timeoutMs) {
     const res = await fetch(absoluteUrl, { headers });
     const data = await parseJsonSafe(res);
+  console.info("[attachment-debug] upload:blossom:response", { status: res.status, ok: res.ok, data });
     lastData = data;
     if (res.status !== 202) {
       return { status: res.status, data };
@@ -144,7 +145,13 @@ export async function uploadFileToNip96(options: {
   signal?: AbortSignal;
 }): Promise<Nip96UploadResult> {
   const info = await discoverNip96Server(options.serverUrl);
-  console.info("[nip96] Uploading file", { server: info.baseUrl, apiUrl: info.apiUrl });
+  console.info("[attachment-debug] upload:nip96:start", {
+    server: info.baseUrl,
+    apiUrl: info.apiUrl,
+    filename: options.filename,
+    contentType: options.contentType || options.file.type || "application/octet-stream",
+    blobBytes: options.file.size,
+  });
 
   const uploadFile =
     options.file instanceof File
@@ -173,6 +180,7 @@ export async function uploadFileToNip96(options: {
   });
 
   let data = await parseJsonSafe(res);
+  console.info("[attachment-debug] upload:nip96:response", { status: res.status, ok: res.ok, data });
   if (res.status === 202 && data?.processing_url) {
     const processingUrl = new URL(data.processing_url, info.apiUrl).toString();
     const poll = await pollProcessingUrl(processingUrl, headers, options.timeoutMs ?? 12000);
@@ -190,7 +198,7 @@ export async function uploadFileToNip96(options: {
   }
 
   const nip94 = (data?.nip94_event || data?.nip94) as NostrEvent | null | undefined;
-  console.info("[nip96] Upload complete", { url: pictureUrl });
+  console.info("[attachment-debug] upload:nip96:complete", { url: pictureUrl, response: data });
 
   return {
     url: pictureUrl,
@@ -240,6 +248,20 @@ export async function uploadFileToBlossom(options: {
   const bytes = new Uint8Array(await options.file.arrayBuffer());
   const fileHash = bytesToHex(sha256(bytes));
   const uploadUrl = `${normalizeFileServerUrl(options.serverUrl) || options.serverUrl}/upload`;
+  console.info("[attachment-debug] upload:originless:start", {
+    server: options.serverUrl,
+    uploadUrl,
+    filename: options.filename,
+    blobBytes: options.file.size,
+    contentType: options.file.type || "application/octet-stream",
+  });
+  console.info("[attachment-debug] upload:blossom:start", {
+    server: options.serverUrl,
+    uploadUrl,
+    filename: options.filename,
+    contentType: options.contentType || options.file.type || "application/octet-stream",
+    blobBytes: options.file.size,
+  });
   const res = await fetch(uploadUrl, {
     method: "PUT",
     headers: {
@@ -253,6 +275,8 @@ export async function uploadFileToBlossom(options: {
   if (!res.ok) throw new Error(data?.message || `Blossom upload failed (${res.status})`);
   const url = typeof data?.url === "string" ? data.url.trim() : "";
   if (!url) throw new Error("Blossom upload response did not include a url.");
+  console.info("[attachment-debug] upload:blossom:complete", { url, response: data });
+  console.info("[attachment-debug] upload:originless:complete", { url, response: data });
   return { url, nip94: null };
 }
 
@@ -273,6 +297,7 @@ export async function uploadFileToOriginless(options: {
     signal: options.signal,
   });
   const data = await parseJsonSafe(res);
+  console.info("[attachment-debug] upload:originless:response", { status: res.status, ok: res.ok, data });
   if (!res.ok) throw new Error(data?.message || `Originless upload failed (${res.status})`);
   const url = typeof data?.url === "string" ? data.url.trim() : "";
   if (!url) throw new Error("Originless upload response did not include a url.");
@@ -288,10 +313,19 @@ export type UploadFileOptions = {
   contentType?: string;
   signer?: string | Uint8Array;
   signal?: AbortSignal;
+  debugMeta?: Record<string, unknown>;
 };
 
 export async function uploadFile(options: UploadFileOptions): Promise<{ url: string; nip94: NostrEvent | null }> {
-  const { serverEntry, file, filename, contentType, signer, signal } = options;
+  const { serverEntry, file, filename, contentType, signer, signal, debugMeta } = options;
+  console.info("[attachment-debug] upload:dispatch", {
+    serverType: serverEntry.type,
+    serverUrl: serverEntry.url,
+    filename,
+    contentType: contentType || file.type || "application/octet-stream",
+    blobBytes: file.size,
+    debugMeta,
+  });
   if (serverEntry.type === "blossom") {
     if (!signer) throw new Error("signer is required for Blossom uploads");
     const result = await uploadFileToBlossom({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal });
