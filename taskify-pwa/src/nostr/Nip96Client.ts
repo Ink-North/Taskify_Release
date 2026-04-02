@@ -37,12 +37,6 @@ function encodeBase64(value: string): string {
   return value;
 }
 
-/** Base64url encoding (URL-safe, no padding) required by BUD-11 */
-function encodeBase64Url(value: string): string {
-  const b64 = encodeBase64(value);
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 async function parseJsonSafe(response: Response): Promise<any> {
   try {
     return await response.json();
@@ -97,26 +91,6 @@ function buildNip98AuthHeader(url: string, method: string, payloadHashHex: strin
   const event = finalizeEvent(template, signerBytes);
   const encoded = encodeBase64(JSON.stringify(event));
   return `Nostr ${encoded}`;
-}
-
-function buildBlossomAuthHeader(sha256hex: string, signer: string | Uint8Array): string {
-  const signerBytes =
-    typeof signer === "string"
-      ? hexToBytes(signer.startsWith("0x") ? signer.slice(2) : signer)
-      : signer;
-  const expiration = Math.floor(Date.now() / 1000) + 300;
-  const template: EventTemplate = {
-    kind: 24242,
-    content: "Upload Blob",
-    tags: [
-      ["t", "upload"],
-      ["x", sha256hex],
-      ["expiration", String(expiration)],
-    ],
-    created_at: Math.floor(Date.now() / 1000),
-  };
-  const event = finalizeEvent(template, signerBytes);
-  return `Nostr ${encodeBase64Url(JSON.stringify(event))}`;
 }
 
 async function pollProcessingUrl(url: string, headers: HeadersInit, timeoutMs: number): Promise<{ status: number; data: any }> {

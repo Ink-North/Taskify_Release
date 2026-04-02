@@ -23,8 +23,6 @@ export type TaskDocument = {
   createdAt: string;
   preview?: TaskDocumentPreview;
   full?: TaskDocumentFull;
-  remoteUrl?: string;
-  encrypted?: boolean;
 };
 
 const EXTENSION_TO_KIND: Record<string, TaskDocumentKind> = {
