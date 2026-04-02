@@ -301,19 +301,75 @@ export async function uploadFileToOriginless(options: {
   signal?: AbortSignal;
 }): Promise<{ url: string; nip94: null }> {
   const uploadUrl = `${normalizeFileServerUrl(options.serverUrl) || options.serverUrl}/upload`;
+  const attempts: Array<{ label: string; init: RequestInit }> = [];
+
   const form = new FormData();
   form.append("file", options.file, options.filename || "file");
-  const res = await fetch(uploadUrl, {
-    method: "POST",
-    body: form,
-    signal: options.signal,
+  attempts.push({
+    label: "multipart",
+    init: {
+      method: "POST",
+      body: form,
+      signal: options.signal,
+      mode: "cors",
+      credentials: "omit",
+    },
   });
-  const data = await parseJsonSafe(res);
-  console.info("[attachment-debug] upload:originless:response", { status: res.status, ok: res.ok, data: flattenDebugError(data) });
-  if (!res.ok) throw new Error(data?.message || `Originless upload failed (${res.status})`);
-  const url = typeof data?.url === "string" ? data.url.trim() : "";
-  if (!url) throw new Error("Originless upload response did not include a url.");
-  return { url, nip94: null };
+
+  attempts.push({
+    label: "raw-octet-stream",
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: options.file,
+      signal: options.signal,
+      mode: "cors",
+      credentials: "omit",
+    },
+  });
+
+  let lastError: unknown = null;
+  for (const attempt of attempts) {
+    console.info("[attachment-debug] upload:originless:start", {
+      server: options.serverUrl,
+      uploadUrl,
+      filename: options.filename,
+      blobBytes: options.file.size,
+      blobType: options.file.type || "application/octet-stream",
+      attempt: attempt.label,
+      headers: attempt.init.headers ? Object.keys(attempt.init.headers as Record<string, string>) : [],
+      mode: attempt.init.mode,
+      credentials: attempt.init.credentials,
+    });
+    try {
+      const res = await fetch(uploadUrl, attempt.init);
+      const data = await parseJsonSafe(res);
+      console.info("[attachment-debug] upload:originless:response", {
+        attempt: attempt.label,
+        status: res.status,
+        ok: res.ok,
+        finalUrl: res.url,
+        data: flattenDebugError(data),
+      });
+      if (!res.ok) throw new Error(data?.message || `Originless upload failed (${res.status})`);
+      const url = typeof data?.url === "string" ? data.url.trim() : "";
+      if (!url) throw new Error("Originless upload response did not include a url.");
+      return { url, nip94: null };
+    } catch (err) {
+      lastError = err;
+      console.info("[attachment-debug] upload:originless:error", {
+        attempt: attempt.label,
+        server: options.serverUrl,
+        uploadUrl,
+        name: err instanceof Error ? err.name : typeof err,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      if (!(err instanceof TypeError)) {
+        throw err;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Originless upload failed");
 }
 
 // ── Unified dispatcher ────────────────────────────────────────────────────────
