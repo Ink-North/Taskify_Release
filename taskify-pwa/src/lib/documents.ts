@@ -262,7 +262,7 @@ function arrayBufferFromDataUrl(dataUrl: string): ArrayBuffer {
 
 let pdfjsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
 
-async function ensurePdfjs() {
+export async function ensurePdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = import("pdfjs-dist").then(async (module) => {
       try {
@@ -295,6 +295,36 @@ async function generatePdfPreview(buffer: ArrayBuffer): Promise<string | undefin
     if (!ctx) return undefined;
     await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise;
     return canvas.toDataURL("image/png");
+  } catch {
+    return undefined;
+  }
+}
+
+
+async function generateVideoPreview(dataUrl: string): Promise<string | undefined> {
+  if (typeof document === "undefined") return undefined;
+  try {
+    const video = document.createElement("video");
+    video.src = dataUrl;
+    video.muted = true;
+    video.playsInline = true;
+    video.crossOrigin = "anonymous";
+    await new Promise<void>((resolve, reject) => {
+      video.addEventListener("loadeddata", () => resolve(), { once: true });
+      video.addEventListener("error", () => reject(new Error("video preview failed")), { once: true });
+    });
+    video.currentTime = Math.min(0.1, Number.isFinite(video.duration) ? video.duration / 2 : 0.1);
+    await new Promise<void>((resolve) => {
+      video.addEventListener("seeked", () => resolve(), { once: true });
+      setTimeout(resolve, 250);
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 320;
+    canvas.height = video.videoHeight || 180;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return undefined;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.82);
   } catch {
     return undefined;
   }
@@ -657,6 +687,8 @@ export async function createDocumentFromDataUrl(input: {
   } else if (isAudioKind(kind)) {
     base.full = { type: "audio", data: input.dataUrl };
   } else if (isVideoKind(kind)) {
+    const previewImage = await generateVideoPreview(input.dataUrl);
+    if (previewImage) base.preview = { type: "image", data: previewImage };
     base.full = { type: "video", data: input.dataUrl };
   }
 
