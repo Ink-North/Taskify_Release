@@ -729,7 +729,9 @@ public final class DataController: ObservableObject {
 
     private func refreshCalendarEvents(boardId: String) async {
         guard let pool = relayPool else { return }
-        let bTag = boardTagHash(boardId)
+        // Must use sharedBoardId to compute bTag — matches what PWA writes into "#b" tags.
+        let sharedId = sharedBoardId(forBoardId: boardId)
+        let bTag = boardTagHash(sharedId)
         let events = await pool.fetchEvents(
             filters: [[
                 "kinds": [TaskifyEventKind.calendarEvent.rawValue],
@@ -940,7 +942,9 @@ public final class DataController: ObservableObject {
         let uniqueBoardIds = boardIds.filter { seen.insert($0).inserted }
         guard !uniqueBoardIds.isEmpty else { return }
 
-        let boardTags = uniqueBoardIds.map(boardTagHash)
+        // Map each boardId through sharedBoardId before hashing so the filter tag
+        // matches the "#d" / "#b" tags the PWA writes (based on nostr.boardId, not board.id).
+        let boardTags = uniqueBoardIds.map { boardTagHash(sharedBoardId(forBoardId: $0)) }
         let boardTagMap = Dictionary(uniqueKeysWithValues: zip(boardTags, uniqueBoardIds))
         let filters: [[String: Any]] = [
             [

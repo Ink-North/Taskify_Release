@@ -102,19 +102,44 @@ public enum NIP44 {
     }
 
     private static func deriveMessageKeys(conversationKey: Data, nonce: Data) throws -> MessageKeys {
-        // HKDF-SHA256(ikm=conversationKey, salt=nonce, info="nip44-v2", len=76)
-        let hkdfKey = HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: conversationKey),
-            salt: nonce,
-            info: Data("nip44-v2".utf8),
-            outputByteCount: 76
-        )
-        let keyBytes = hkdfKey.withUnsafeBytes { Data($0) }
+        // NIP-44 v2 message key derivation:
+        //   keys = HKDF-Expand(PRK=conversationKey, info=nonce, L=76)
+        //
+        // The conversationKey passed in IS already the PRK — it was produced by
+        // HKDF-Extract externally (NostrSDK.NIP44v2.conversationKey / getConversationKey
+        // in nostr-tools), so only the Expand step belongs here.
+        //
+        // nostr-tools reference: hkdf_expand(sha256, conversationKey, nonce, 76)
+        //
+        // CryptoKit's HKDF.deriveKey runs Extract + Expand together and re-derives
+        // a different PRK, producing the wrong 76 bytes. We implement RFC 5869 §2.3
+        // Expand-only directly to match nostr-tools byte-for-byte.
+        let keyBytes = hkdfExpandSHA256(prk: conversationKey, info: nonce, outputLength: 76)
         return MessageKeys(
             chachaKey: keyBytes[0..<32],
             chachaNonce: keyBytes[32..<44],
             hmacKey: keyBytes[44..<76]
         )
+    }
+
+    /// RFC 5869 §2.3 HKDF-Expand using HMAC-SHA256.
+    /// T(0) = ""; T(i) = HMAC-SHA256(PRK, T(i-1) || info || i_byte)
+    /// Matches @noble/hashes hkdf_expand(sha256, prk, info, length) used by nostr-tools.
+    private static func hkdfExpandSHA256(prk: Data, info: Data, outputLength: Int) -> Data {
+        let prkKey = SymmetricKey(data: prk)
+        var okm = Data()
+        var t = Data()   // T(0) = empty
+        var counter: UInt8 = 0
+        while okm.count < outputLength {
+            counter += 1
+            var input = Data()
+            input.append(t)        // T(i-1)
+            input.append(info)     // info = nonce (32 bytes)
+            input.append(counter)  // 1-byte counter
+            t = Data(HMAC<SHA256>.authenticationCode(for: input, using: prkKey))
+            okm.append(t)
+        }
+        return Data(okm.prefix(outputLength))
     }
 
     // MARK: - Bare ChaCha20 (RFC 7539)
@@ -205,18 +230,37 @@ public enum NIP44 {
     static func unpad(_ padded: Data) throws -> String {
         guard padded.count >= 2 else { throw NIP44Error.invalidPadding }
         let len = Int(padded[0]) << 8 | Int(padded[1])
-        guard len >= 0, 2 + len <= padded.count else { throw NIP44Error.invalidPadding }
+        // Spec: 1 ≤ len ≤ 65535, and the buffer must be exactly 2 + calcPaddedLength(len).
+        // Rejecting a wrong total length catches any calcPaddedLength divergence early
+        // and avoids silent truncation of data encrypted by a non-compliant implementation.
+        guard len >= 1, len <= 65535,
+              padded.count == 2 + calcPaddedLength(len) else {
+            throw NIP44Error.invalidPadding
+        }
         let utf8 = padded[2..<(2 + len)]
         guard let str = String(data: utf8, encoding: .utf8) else { throw NIP44Error.invalidUTF8 }
         return str
     }
 
-    /// NIP-44 padding: smallest power-of-2 multiple of 32 that fits len+2, clamped to [32, 65535].
+    /// NIP-44 v2 padded length — exact port of calcPaddedLen from nostr-tools nip44.ts.
+    ///
+    /// nostr-tools reference:
+    ///   if (len <= 32) return 32;
+    ///   const nextPower = 1 << Math.floor(Math.log2(len - 1)) + 1;
+    ///   const chunk = nextPower <= 256 ? 32 : nextPower / 8;
+    ///   return chunk * (Math.floor((len - 1) / chunk) + 1);
+    ///
+    /// Integer bit-counting avoids floating-point precision issues (e.g. log2(64) ≈ 5.9999…).
     static func calcPaddedLength(_ len: Int) -> Int {
-        guard len > 0 else { return 32 }
-        let chunk = 32
-        let nextPow2 = Int(pow(2.0, ceil(log2(Double(len + 2)))))
-        return max(32, min(65535, (max(nextPow2, chunk) + chunk - 1) / chunk * chunk))
+        guard len >= 1 else { return 32 }
+        if len <= 32 { return 32 }
+        // floor(log2(len - 1)) + 1  via bit-length of (len - 1)
+        var v = len - 1
+        var bits = 0
+        while v > 0 { v >>= 1; bits += 1 }
+        let nextPower = 1 << bits           // 1 << (floor(log2(len-1)) + 1)
+        let chunk = nextPower <= 256 ? 32 : nextPower / 8
+        return chunk * ((len - 1) / chunk + 1)
     }
 }
 
