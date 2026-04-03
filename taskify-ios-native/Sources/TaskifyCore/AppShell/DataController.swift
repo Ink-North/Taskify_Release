@@ -723,8 +723,10 @@ public final class DataController: ObservableObject {
         ])
 
         guard let latest = events.max(by: { $0.created_at < $1.created_at }) else { return }
-        let resolvedBoardId = self.boardId(forBoardDefinitionEvent: latest, boardTagMap: tagMap) ?? boardId
-        applyIncomingBoardDefinition(latest, boardId: resolvedBoardId)
+        // boardId(forBoardDefinitionEvent:) now returns the sharedId (used for crypto).
+        // Fall back to the sharedId we already computed for this board.
+        let resolvedSharedId = self.boardId(forBoardDefinitionEvent: latest, boardTagMap: tagMap) ?? sharedId
+        applyIncomingBoardDefinition(latest, boardId: resolvedSharedId)
     }
 
     private func refreshCalendarEvents(boardId: String) async {
@@ -745,13 +747,22 @@ public final class DataController: ObservableObject {
         mergeIncomingCalendarEvents(events, boardId: boardId)
     }
 
+    /// Applies an incoming kind-30300 board definition event.
+    ///
+    /// - Parameter boardId: The sharedBoardId resolved from the event's "d"/"b" tag.
+    ///   This is the UUID used for crypto (encryptTaskPayload key derivation) — NOT
+    ///   necessarily the local SwiftData board.id.
     private func applyIncomingBoardDefinition(_ event: NostrEvent, boardId: String) {
-        let board = fetchOrCreateBoard(boardId: boardId)
-        let sharedId = self.boardId(forBoardDefinitionEvent: event, boardTagMap: boardTagMap()) ?? sharedBoardId(for: board)
+        // boardId here IS the sharedBoardId (returned by boardTagMap/boardId(forBoardDefinitionEvent:)).
+        // Look up (or create) the local SwiftData board. Prefer matching on sharedBoardId first,
+        // then fall back to board.id — handles both "joined board" and "created board" cases.
+        let board = fetchBoardBySharedId(boardId) ?? fetchOrCreateBoard(boardId: boardId)
+        let sharedId = boardId  // already the sharedId — no need to re-derive from the event
+        let localBoardId = board.id  // local SwiftData id — used for SwiftData lookups / UI
         board.sharedBoardId = sharedId
         if let last = board.metadataCreatedAt, event.created_at < last { return }
 
-        let previousScope = activeBoardId == boardId ? activeSourceBoardIds(for: boardId) : []
+        let previousScope = activeBoardId == localBoardId ? activeSourceBoardIds(for: localBoardId) : []
         let decoded: BoardDefinitionPayload?
         if let plaintext = try? decryptTaskPayload(event.content, boardId: sharedId) {
             decoded = BoardDefinitionCodec.decode(plaintext)
@@ -767,8 +778,8 @@ public final class DataController: ObservableObject {
         }
         if let name = normalizedBoardName(metadata.name) {
             board.name = name
-            syncProfileBoardName(boardId: boardId, name: name)
-            syncStoredBoardNameReferences(boardId: boardId, name: name)
+            syncProfileBoardName(boardId: localBoardId, name: name)
+            syncStoredBoardNameReferences(boardId: localBoardId, name: name)
         }
         if let clearCompletedDisabled = metadata.clearCompletedDisabled {
             board.clearCompletedDisabled = clearCompletedDisabled
@@ -777,7 +788,7 @@ public final class DataController: ObservableObject {
             board.columnsJSON = encodeJSONString(columns)
         }
         if let children = metadata.children {
-            let normalizedChildren = normalizeCompoundChildren(children, parentBoardId: boardId)
+            let normalizedChildren = normalizeCompoundChildren(children, parentBoardId: localBoardId)
             board.childrenJSON = encodeJSONString(normalizedChildren)
             createCompoundChildStubs(normalizedChildren, relayHints: effectiveRelays(for: board))
         }
@@ -802,8 +813,8 @@ public final class DataController: ObservableObject {
         boardDefinitionsVersion &+= 1
         _ = refreshActiveBoardItems()
 
-        let updatedScope = activeBoardId == boardId ? activeSourceBoardIds(for: boardId) : []
-        if activeBoardId == boardId, updatedScope != previousScope, let activeBoardId {
+        let updatedScope = activeBoardId == localBoardId ? activeSourceBoardIds(for: localBoardId) : []
+        if activeBoardId == localBoardId, updatedScope != previousScope, let activeBoardId {
             Task { [weak self] in
                 guard let self else { return }
                 let _ = await self.subscribeToBoard(activeBoardId)
@@ -944,8 +955,10 @@ public final class DataController: ObservableObject {
 
         // Map each boardId through sharedBoardId before hashing so the filter tag
         // matches the "#d" / "#b" tags the PWA writes (based on nostr.boardId, not board.id).
-        let boardTags = uniqueBoardIds.map { boardTagHash(sharedBoardId(forBoardId: $0)) }
-        let boardTagMap = Dictionary(uniqueKeysWithValues: zip(boardTags, uniqueBoardIds))
+        // The local map mirrors the global boardTagMap(): bTag → sharedId (for crypto).
+        let sharedIds = uniqueBoardIds.map { sharedBoardId(forBoardId: $0) }
+        let boardTags = sharedIds.map { boardTagHash($0) }
+        let boardTagMap = Dictionary(uniqueKeysWithValues: zip(boardTags, sharedIds))
         let filters: [[String: Any]] = [
             [
                 "kinds": [TaskifyEventKind.boardDefinition.rawValue],
@@ -1081,30 +1094,41 @@ public final class DataController: ObservableObject {
         return sharedBoardId(for: board)
     }
 
+    /// Maps bTag (SHA-256 hex of sharedBoardId) → sharedBoardId.
+    ///
+    /// All callers that need the sharedId for crypto (encryptTaskPayload / decryptTaskPayload)
+    /// must use the sharedBoardId as the key — that is what the PWA used when encrypting.
+    /// SwiftData lookups use fetchBoardModel(id:) against the local board.id separately.
     private func boardTagMap() -> [String: String] {
-        Dictionary(uniqueKeysWithValues: fetchStoredBoards().flatMap { board -> [(String, String)] in
+        var result: [String: String] = [:]
+        for board in fetchStoredBoards() {
             let sharedId = sharedBoardId(for: board)
-            let tag = boardTagHash(sharedId)
-            var pairs: [(String, String)] = [(tag, board.id)]
+            // Primary: bTag(sharedId) → sharedId
+            result[boardTagHash(sharedId)] = sharedId
+            // Alias: bTag(board.id) → sharedId, so events tagged with either hash resolve correctly.
             if board.id != sharedId {
-                pairs.append((boardTagHash(board.id), board.id))
+                result[boardTagHash(board.id)] = sharedId
             }
-            return pairs
-        })
+        }
+        return result
+    }
+
+    /// Returns the sharedBoardId for a board definition event by matching its "d" or "b" tag.
+    /// The returned value is the shared UUID used for crypto — NOT the local SwiftData board.id.
+    /// Callers that need the local board.id must call fetchBoardModel(sharedId:) or
+    /// look up the board separately.
+    private func boardId(forBoardDefinitionEvent event: NostrEvent, boardTagMap: [String: String]) -> String? {
+        if let dTag = event.tagValue("d"), let sharedId = boardTagMap[dTag] {
+            return sharedId
+        }
+        if let bTag = event.tagValue("b"), let sharedId = boardTagMap[bTag] {
+            return sharedId
+        }
+        return nil
     }
 
     private func effectiveRelays(for board: TaskifyBoard) -> [String] {
         normalizeRelayList((profile?.relays ?? []) + decodedStringArray(board.relayHintsJSON))
-    }
-
-    private func boardId(forBoardDefinitionEvent event: NostrEvent, boardTagMap: [String: String]) -> String? {
-        if let dTag = event.tagValue("d"), let boardId = boardTagMap[dTag] {
-            return boardId
-        }
-        if let bTag = event.tagValue("b"), let boardId = boardTagMap[bTag] {
-            return boardId
-        }
-        return nil
     }
 
     private func syncProfileBoardName(boardId: String, name: String) {
@@ -1188,6 +1212,20 @@ public final class DataController: ObservableObject {
             predicate: #Predicate<TaskifyBoard> { b in b.id == id }
         )
         return try? ctx.fetch(descriptor).first
+    }
+
+    /// Finds the local TaskifyBoard whose sharedBoardId matches the given shared UUID.
+    /// Falls back to matching on board.id for boards where id == sharedBoardId.
+    private func fetchBoardBySharedId(_ sharedId: String) -> TaskifyBoard? {
+        guard let ctx = modelContext else { return nil }
+        let descriptor = FetchDescriptor<TaskifyBoard>()
+        let boards = (try? ctx.fetch(descriptor)) ?? []
+        // Prefer explicit sharedBoardId match first
+        if let match = boards.first(where: { $0.sharedBoardId == sharedId }) {
+            return match
+        }
+        // Fall back to board.id match (covers boards where sharedBoardId == id)
+        return boards.first(where: { $0.id == sharedId })
     }
 
     private func fetchStoredBoards() -> [TaskifyBoard] {
