@@ -617,7 +617,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>16</string>
+				<string>17</string>
 				<key>ENABLE_PREVIEWS</key>
 				<string>YES</string>
 				<key>GENERATE_INFOPLIST_FILE</key>
@@ -676,7 +676,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>16</string>
+				<string>17</string>
 				<key>ENABLE_PREVIEWS</key>
 				<string>YES</string>
 				<key>GENERATE_INFOPLIST_FILE</key>
