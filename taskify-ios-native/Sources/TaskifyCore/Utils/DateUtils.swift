@@ -1,204 +1,112 @@
 import Foundation
 
-// MARK: - Date Utilities
+public enum DateUtils {
+    public static let isoDatePattern = /^\d{4}-\d{2}-\d{2}$/
+    public static let msPerDay = 86_400_000
 
-public struct DateUtils {
-    /// ISO date pattern (YYYY-MM-DD)
-    public static let ISO_DATE_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$"
-
-    /// Milliseconds per day
-    public static let MS_PER_DAY = 86400000
-
-    /// Parse a date string in ISO format
-    public static func parseISODate(_ string: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withYear, .withMonth, .withDay, .withFractionalSeconds]
-        return formatter.date(from: string)
-    }
-
-    /// Format a date to ISO date string (YYYY-MM-DD)
-    public static func formatISODate(_ date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withYear, .withMonth, .withDay]
-        return formatter.string(from: date)
-    }
-
-    /// Format a date to ISO date time string with timezone
-    public static func formatISODateTime(_ date: Date, timeZone: TimeZone? = nil) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withYear, .withMonth, .withDay, .withTime, .withTimeZone]
-        if let tz = timeZone {
-            formatter.timeZone = tz
-        }
-        return formatter.string(from: date)
-    }
-
-    /// Parse a date time string
-    public static func parseISODateTime(_ string: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withYear, .withMonth, .withDay, .withTime, .withTimeZone]
-        return formatter.date(from: string)
-    }
-
-    /// Get date part only (YYYY-MM-DD)
-    public static func isoDatePart(_ isoDateTime: String, timeZone: TimeZone? = nil) -> String {
-        guard let date = parseISODateTime(isoDateTime) else {
-            return ""
-        }
-        return formatISODate(date)
-    }
-
-    /// Get time part only (HH:MM:SS)
-    public static func isoTimePart(_ isoDateTime: String, timeZone: TimeZone? = nil) -> String {
-        guard let date = parseISODateTime(isoDateTime) else {
-            return ""
-        }
-
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        if let tz = timeZone {
-            formatter.timeZone = tz
-        }
-        return formatter.string(from: date)
-    }
-
-    /// Start of day at midnight UTC
     public static func startOfDay(_ date: Date) -> Date {
-        return Calendar(identifier: .gregorian).startOfDay(for: date)
+        Calendar(identifier: .gregorian).startOfDay(for: date)
     }
 
-    /// Parse date key (YYYY-MM-DD) to date components
-    public static func parseDateKey(_ key: String) -> (year: Int, month: Int, day: Int)? {
-        let pattern = "^\\d{4}-\\d{2}-\\d{2}$"
-        guard Regex(pattern).matches(key) else {
-            return nil
-        }
+    public static func normalizeTimeZone(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, TimeZone(identifier: trimmed) != nil else { return nil }
+        return trimmed
+    }
 
-        let components = key.split(separator: "-").map { String($0) }
-        guard components.count == 3,
-              let year = Int(components[0]),
-              let month = Int(components[1]),
-              let day = Int(components[2]) else {
-            return nil
-        }
+    public static func formatDateKeyFromParts(year: Int, month: Int, day: Int) -> String {
+        String(format: "%04d-%02d-%02d", year, month, day)
+    }
 
+    public static func formatDateKeyLocal(_ date: Date) -> String {
+        let c = Calendar(identifier: .gregorian).dateComponents([.year, .month, .day], from: date)
+        return formatDateKeyFromParts(year: c.year ?? 1970, month: c.month ?? 1, day: c.day ?? 1)
+    }
+
+    public static func parseDateKey(_ value: String) -> (year: Int, month: Int, day: Int)? {
+        guard value.wholeMatch(of: isoDatePattern) != nil else { return nil }
+        let parts = value.split(separator: "-")
+        guard parts.count == 3,
+              let year = Int(parts[0]),
+              let month = Int(parts[1]),
+              let day = Int(parts[2]) else { return nil }
         return (year, month, day)
     }
 
-    /// Format date parts to date key (YYYY-MM-DD)
-    public static func formatDateKeyFromParts(year: Int, month: Int, day: Int) -> String {
-        return String(format: "%04d-%02d-%02d", year, month, day)
-    }
-
-    /// Create ISO datetime from date and time parts
-    public static func isoFromDateTime(_ dateKey: String, time: String? = nil, timeZone: TimeZone? = nil) -> String {
-        guard let dateParts = parseDateKey(dateKey),
-              let date = DateComponents(year: dateParts.year,
-                                        month: dateParts.month,
-                                        day: dateParts.day).date else {
-            return dateKey
+    public static func isoDatePart(_ iso: String, timeZone: String? = nil) -> String {
+        if iso.wholeMatch(of: isoDatePattern) != nil { return iso }
+        guard let date = ISO8601DateFormatter.taskify.date(from: iso) ?? ISO8601DateFormatter.taskifyFractional.date(from: iso) else {
+            return formatDateKeyLocal(Date())
         }
-
-        if let time = time {
-            let timeFormatter = DateFormatter()
-            timeFormatter.dateFormat = "HH:mm:ss"
-            if let timeDate = timeFormatter.date(from: time) {
-                let combined = Calendar.current.date(byAdding: .second, value: 0, to: date.addingTimeInterval(timeDate.timeIntervalSince1970))
-                return formatISODateTime(combined, timeZone: timeZone)
-            }
+        if let timeZone = normalizeTimeZone(timeZone) {
+            return formatDateKeyInTimeZone(date, timeZone: timeZone)
         }
-
-        return formatISODateTime(date, timeZone: timeZone)
+        return formatDateKeyLocal(date)
     }
 
-    /// Normalize timezone to a valid IANA timezone string
-    public static func normalizeTimeZone(_ tz: String?) -> String? {
-        guard let tz = tz, !tz.isEmpty else {
-            return nil
+    public static func isoTimePart(_ iso: String, timeZone: String? = nil) -> String {
+        guard let date = ISO8601DateFormatter.taskify.date(from: iso) ?? ISO8601DateFormatter.taskifyFractional.date(from: iso) else {
+            return ""
         }
-
-        // Try to create a TimeZone
-        let identifier = tz.lowercased()
-        if TimeZone(identifier: identifier) != nil {
-            return identifier
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        if let timeZone = normalizeTimeZone(timeZone) {
+            formatter.timeZone = TimeZone(identifier: timeZone)
         }
-
-        return nil
+        return formatter.string(from: date)
     }
 
-    /// Get current timezone
-    public static func currentTimeZone() -> TimeZone {
-        return .current
-    }
-
-    /// Get current date as ISO string
-    public static func currentISODate() -> String {
-        return formatISODate(Date())
-    }
-
-    /// Get current date time as ISO string
-    public static func currentISODateTime() -> String {
-        return formatISODateTime(Date())
-    }
-
-    /// Get current date time with optional timezone as ISO string
-    public static func currentISODateTime(timeZone: TimeZone? = nil) -> String {
-        return formatISODateTime(Date(), timeZone: timeZone)
-    }
-
-    /// Convert milliseconds since epoch to Date
-    public static func dateFromMilliseconds(_ ms: Int) -> Date {
-        return Date(timeIntervalSince1970: TimeInterval(ms) / 1000.0)
-    }
-
-    /// Convert Date to milliseconds since epoch
-    public static func millisecondsFromDate(_ date: Date) -> Int {
-        return Int(date.timeIntervalSince1970 * 1000.0)
-    }
-
-    /// Add days to a date
-    public static func addDays(_ date: Date, days: Int) -> Date {
-        return Calendar.current.date(byAdding: .day, value: days, to: date) ?? date
-    }
-
-    /// Add hours to a date
-    public static func addHours(_ date: Date, hours: Int) -> Date {
-        return Calendar.current.date(byAdding: .hour, value: hours, to: date) ?? date
-    }
-
-    /// Add weeks to a date
-    public static func addWeeks(_ date: Date, weeks: Int) -> Date {
-        return Calendar.current.date(byAdding: .weekOfYear, value: weeks, to: date) ?? date
-    }
-
-    /// Get start of week based on weekStartDay
-    public static func startOfWeek(_ date: Date, weekStartDay: Int = 1) -> Date {
-        let calendar = Calendar(identifier: .gregorian)
-        var components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
-        guard let weekDate = calendar.date(from: components) else {
-            return date
+    public static func isoTimePartUtc(_ iso: String) -> String {
+        if iso.count >= 16 {
+            let start = iso.index(iso.startIndex, offsetBy: 11)
+            let end = iso.index(start, offsetBy: 5, limitedBy: iso.endIndex) ?? iso.endIndex
+            return String(iso[start..<end])
         }
-
-        // Adjust to target week start day
-        var startComponents = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: weekDate)
-        startComponents.weekday = weekStartDay
-        startComponents.weekOfMonth = nil // Reset to first week of the year
-
-        return calendar.date(from: startComponents) ?? weekDate
+        return ""
     }
 
-    /// Get end of week
-    public static func endOfWeek(_ date: Date, weekStartDay: Int = 1) -> Date {
-        return addDays(startOfWeek(date, weekStartDay: weekStartDay), days: 6)
+    public static func isoFromDateTime(_ dateKey: String, time: String? = nil, timeZone: String? = nil) -> String {
+        guard let parsed = parseDateKey(dateKey) else { return dateKey }
+        let hhmm = parseTimeValue(time ?? "00:00") ?? (0, 0)
+        var components = DateComponents()
+        components.calendar = Calendar(identifier: .gregorian)
+        components.year = parsed.year
+        components.month = parsed.month
+        components.day = parsed.day
+        components.hour = hhmm.hour
+        components.minute = hhmm.minute
+        components.second = 0
+        components.timeZone = timeZone.flatMap(TimeZone.init(identifier:)) ?? .current
+        return (components.date ?? Date()).ISO8601Format()
     }
 
-    /// Check if a string matches ISO date pattern
-    public static func isISODate(_ string: String) -> Bool {
-        return Regex(isoDatePattern).matches(string)
+    public static func parseTimeValue(_ value: String) -> (hour: Int, minute: Int)? {
+        let parts = value.split(separator: ":")
+        guard parts.count >= 2, let hour = Int(parts[0]), let minute = Int(parts[1]) else { return nil }
+        return (min(max(hour, 0), 23), min(max(minute, 0), 59))
     }
 
-    /// Check if a string matches ISO datetime pattern
-    public static func isISODateTime(_ string: String) -> Bool {
-        return Regex(ISO8601DateFormatter().pattern).matches(string)
+    public static func formatDateKeyInTimeZone(_ date: Date, timeZone: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.timeZone = TimeZone(identifier: timeZone)
+        return formatter.string(from: date)
     }
+}
+
+private extension ISO8601DateFormatter {
+    static let taskify: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    static let taskifyFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 }
