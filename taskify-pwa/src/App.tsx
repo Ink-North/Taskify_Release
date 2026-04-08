@@ -4965,9 +4965,10 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
       {...props}
     >
       {header ?? (
-        <div
-          className={`mb-3 text-sm font-semibold tracking-wide text-secondary ${onTitleClick ? 'cursor-pointer hover:text-primary transition-colors' : ''}`}
-          onClick={onTitleClick}
+        <div className="flex items-center justify-between mb-3">
+          <div
+            className={`text-sm font-semibold tracking-wide text-secondary ${onTitleClick ? 'cursor-pointer hover:text-primary transition-colors' : ''}`}
+            onClick={onTitleClick}
           role={onTitleClick ? 'button' : undefined}
           tabIndex={onTitleClick ? 0 : undefined}
           aria-label={onTitleClick ? `Set ${title} as add target` : undefined}
@@ -4981,6 +4982,14 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
           title={onTitleClick ? 'Set as add target' : undefined}
         >
           {title}
+          </div>
+          <button 
+            type="button" 
+            className="p-1 text-secondary hover:text-primary rounded" 
+            onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('toggleSelectionMode')); }} 
+            title="Select tasks">
+            <svg width="16" height="16" viewBox="0 0 24 24"><path d="M6 12a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0zm8 0a2 2 0 11-4 0 2 2 0 014 0z" fill="currentColor"/></svg>
+          </button>
         </div>
       )}
       <div className={scrollable ? 'flex-1 min-h-0 overflow-y-auto pr-1' : ''}>
@@ -4995,6 +5004,16 @@ const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
 /* ================= App ================= */
 export default function App() {
   const { show: showToast } = useToast();
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const toggleItemSelection = useCallback((id: string) => {
+    setSelectedItemIds(p => p.includes(id) ? p.filter(i => i !== id) : [...p, id]);
+  }, []);
+  useEffect(() => {
+    const handleToggle = () => { setIsSelectionMode(p => !p); setSelectedItemIds([]); };
+    window.addEventListener('toggleSelectionMode', handleToggle);
+    return () => window.removeEventListener('toggleSelectionMode', handleToggle);
+  }, []);
   const [workerBaseUrl, setWorkerBaseUrl] = useState<string>(FALLBACK_WORKER_BASE_URL);
   const [vapidPublicKey, setVapidPublicKey] = useState<string>(FALLBACK_VAPID_PUBLIC_KEY);
   const runtimeConfigPromiseRef = useRef<Promise<void> | null>(null);
@@ -11457,6 +11476,9 @@ export default function App() {
     return (
       <div key={t.id} className="space-y-2">
         <Card
+                            isSelectionMode={isSelectionMode}
+                            isSelected={selectedItemIds.includes(t.id)}
+                            onToggleSelect={toggleItemSelection}
           task={t}
           meta={locationLabel}
           trailing={revealAction}
@@ -11538,6 +11560,9 @@ export default function App() {
 	          onEdit={isUsHoliday ? undefined : () => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 	          onDragStart={isUsHoliday ? undefined : (id) => setDraggingEventId(id)}
 	          onDragEnd={handleDragEnd}
+          isSelectionMode={isSelectionMode}
+          isSelected={selectedItemIds.includes(ev.id)}
+          onToggleSelect={toggleItemSelection}
 	        />
 	      </div>
 	    );
@@ -18225,12 +18250,18 @@ export default function App() {
 		                            onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 		                            onDragStart={(id) => setDraggingEventId(id)}
 		                            onDragEnd={handleDragEnd}
+                            isSelectionMode={isSelectionMode}
+                            isSelected={selectedItemIds.includes(ev.id)}
+                            onToggleSelect={toggleItemSelection}
 		                          />
 	                        ))}
 	                        {(byDay.get(day) || []).map((t) => (
 	                        <Card
-	                          key={t.id}
-	                          task={t}
+                            isSelectionMode={isSelectionMode}
+                            isSelected={selectedItemIds.includes(t.id)}
+                            onToggleSelect={toggleItemSelection}
+                            key={t.id}
+                            task={t}
 	                          onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
                           onComplete={(from) => {
                             if (!t.completed) completeTask(t.id);
@@ -18463,12 +18494,18 @@ export default function App() {
 		                          onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
 		                          onDragStart={(id) => setDraggingEventId(id)}
 		                          onDragEnd={handleDragEnd}
+                          isSelectionMode={isSelectionMode}
+                          isSelected={selectedItemIds.includes(ev.id)}
+                          onToggleSelect={toggleItemSelection}
 		                        />
 	                      ))}
 	                      {(itemsByColumn.get(col.id) || []).map((t) => (
 	                        <Card
-	                          key={t.id}
-	                          task={t}
+                            isSelectionMode={isSelectionMode}
+                            isSelected={selectedItemIds.includes(t.id)}
+                            onToggleSelect={toggleItemSelection}
+                            key={t.id}
+                            task={t}
                           onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
                           onComplete={(from) => {
                             if (!t.completed) completeTask(t.id);
